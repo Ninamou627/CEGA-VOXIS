@@ -38,9 +38,14 @@ code. React + Vite + TypeScript, même socle pour les trois surfaces.
 **Pourquoi.** Personne n'installe une app pour une formation ; un correctif se déploie
 en dix secondes pendant la session ; rien dans le besoin n'exige le natif.
 
-**Contraintes acceptées.** iOS suspend l'audio web à l'écran verrouillé → Wake Lock +
-consigne « gardez l'écran allumé » + test des deux lecteurs audio au J1. Le micro des
-téléphones exige HTTPS → certificat sur IP de LAN (D6).
+**Contraintes acceptées.** Le micro des téléphones exige HTTPS → certificat sur IP de
+LAN (D6).
+
+**Test J1, fait le 16/09/2026 sur iPhone 13 Pro Max / iOS 26.** Le lecteur média
+(`<audio>`, `ElementPlayer`) **continue de jouer écran verrouillé**. Web Audio est muet
+même écran allumé (il obéit au bouton silence du téléphone, la lecture média non). Le
+lecteur média est donc le défaut partout ; il porte aussi le `playbackRate` à hauteur
+préservée (parade locale contre la dérive). Le Wake Lock reste, pour l'affichage.
 
 ## D4 — WebSocket, pas WebRTC
 

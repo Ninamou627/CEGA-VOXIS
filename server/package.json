@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit",
     "replay": "tsx scripts/replay.ts",
     "check": "tsx scripts/check-providers.ts",
-    "voices": "tsx scripts/voices.ts"
+    "voices": "tsx scripts/voices.ts",
+    "load": "tsx scripts/load.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.125.0",

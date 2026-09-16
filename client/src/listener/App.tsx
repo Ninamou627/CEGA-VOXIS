@@ -6,7 +6,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { AudioHeader, FloorState, Lang, ServerEvent, StatsPayload } from "../../../shared/protocol";
 import { QuestionRecorder } from "../lib/mic";
-import { ElementPlayer, WebAudioPlayer, isIOS, type Player, type SegmentMeta } from "../lib/player";
+import { ElementPlayer, WebAudioPlayer, type Player, type SegmentMeta } from "../lib/player";
 import { keepWakeLockAlive, requestWakeLock } from "../lib/wakelock";
 import { SalleSocket, type ConnState } from "../lib/ws";
 
@@ -30,7 +30,10 @@ export function App() {
   const params = new URLSearchParams(location.search);
   const [session] = useState(params.get("s") ?? "TRAINING-01");
   const [lang, setLang] = useState<Lang>((params.get("lang") as Lang) ?? "fr");
-  const [playerKind, setPlayerKind] = useState<"webaudio" | "element">(isIOS() ? "element" : "webaudio");
+  // Lecteur média par défaut, partout : validé sur iPhone 13 Pro Max / iOS 26 écran
+  // verrouillé, insensible au bouton silence, et il porte le playbackRate à hauteur
+  // préservée. Web Audio reste disponible pour comparer sur ordinateur.
+  const [playerKind, setPlayerKind] = useState<"webaudio" | "element">("element");
   const [phase, setPhase] = useState<"join" | "live">("join");
   const [conn, setConn] = useState<ConnState>("closed");
   const [hello, setHello] = useState<Hello>();
@@ -221,10 +224,10 @@ export function App() {
             </select>
           </label>
           <label>
-            Lecteur audio <span className="tiny">(test J1 : lequel survit à l'écran verrouillé sur votre téléphone ?)</span>
+            Lecteur audio
             <select value={playerKind} onChange={(e) => setPlayerKind(e.target.value as "webaudio" | "element")}>
-              <option value="webaudio">Web Audio (enchaînement précis)</option>
-              <option value="element">Élément audio (lecture média iOS)</option>
+              <option value="element">Lecture média (recommandé — fonctionne écran verrouillé)</option>
+              <option value="webaudio">Web Audio (ordinateur seulement — muet sur iPhone)</option>
             </select>
           </label>
           <button className="primary big" onClick={() => void start()}>

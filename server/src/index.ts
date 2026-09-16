@@ -77,12 +77,43 @@ function publicUrl(): string {
   return `${tls ? "https" : "http"}://${lanIp() ?? "localhost"}:${cfg.PORT}`;
 }
 
+// ---- santé du processus : CPU depuis le dernier appel, mémoire, retard de la boucle ----
+let lastCpu = process.cpuUsage();
+let lastCpuAt = process.hrtime.bigint();
+let loopLagMaxMs = 0;
+{
+  let expected = performance.now() + 100;
+  setInterval(() => {
+    const now = performance.now();
+    loopLagMaxMs = Math.max(loopLagMaxMs, now - expected);
+    expected = now + 100;
+  }, 100);
+}
+function processHealth() {
+  const cpu = process.cpuUsage(lastCpu);
+  const now = process.hrtime.bigint();
+  const wallMs = Number(now - lastCpuAt) / 1e6;
+  lastCpu = process.cpuUsage();
+  lastCpuAt = now;
+  const lag = Math.round(loopLagMaxMs);
+  loopLagMaxMs = 0;
+  const mem = process.memoryUsage();
+  return {
+    cpuPercent: wallMs > 0 ? Math.round(((cpu.user + cpu.system) / 1000 / wallMs) * 100) : null,
+    rssMb: Math.round(mem.rss / 1048576),
+    heapMb: Math.round(mem.heapUsed / 1048576),
+    loopLagMaxMs: lag,
+  };
+}
+
 app.get("/api/health", async () => ({
   ok: true,
   uptimeS: Math.round((Date.now() - metrics.startedAt) / 1000),
   listeners: room.count("listener"),
   lecturer: room.count("lecturer") > 0,
   pipeline: pipeline.status,
+  process: processHealth(),
+  stats: metrics.snapshot(),
   audio: {
     wsBinaryFrames: binaryFrames,
     received: pipeline.audio.received,

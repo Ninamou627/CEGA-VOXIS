@@ -60,7 +60,13 @@ npm run build        # client → client/dist, servi ensuite par le serveur
 npm start            # serveur seul, sert client/dist
 npm run replay -- fixtures/formateur-10min.wav   # rejoue une fixture comme si c'était le micro
 npm run check        # valide les fournisseurs du .env en 30 s (écrit fixtures/check-tts.mp3)
+npm run load -- 50 80   # 50 apprenants simulés pendant 80 s (serveur + fan-out, pas le Wi-Fi)
 ```
+
+Test de charge du 16/09/2026, serveur isolé avec simulateurs (audio WAV non compressé,
+4× plus lourd que le MP3 réel) : 50 apprenants, 0 reconnexion, 0 trame perdue, CPU
+serveur 3–6 %, 88 Mo, retard de boucle ≤ 21 ms, bout-en-bout p95 identique à 1 client.
+Le serveur n'est pas la limite — la salle se joue sur le Wi-Fi.
 
 ## Les deux choses à faire avant de mettre un téléphone dans la salle
 
@@ -69,8 +75,9 @@ npm run check        # valide les fournisseurs du .env en 30 s (écrit fixtures/
    vers l'IP privée du PC → Let's Encrypt par challenge DNS-01 → `TLS_CERT` / `TLS_KEY`
    dans `.env`. En développement, `VITE_HTTPS=1 npm run dev:client` donne un certificat
    auto-signé (avertissement sur le téléphone, mais ça fonctionne).
-2. **Le test écran verrouillé sur un iPhone réel**, avec les deux lecteurs audio proposés
-   sur la page apprenant. C'est ce test qui décide du lecteur par défaut.
+2. ~~Le test écran verrouillé sur un iPhone réel~~ — **fait** (iPhone 13 Pro Max, iOS 26) :
+   le lecteur média continue écran verrouillé et ignore le bouton silence ; Web Audio est
+   muet sur iPhone. Le lecteur média est le défaut. Voir `docs/DECISIONS.md`, D3.
 
 ## Tester sur un seul PC (formateur et apprenant sur la même machine)
 

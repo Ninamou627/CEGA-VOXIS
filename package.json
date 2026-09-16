@@ -18,7 +18,8 @@
     "typecheck": "npm run typecheck -w server && npm run typecheck -w client",
     "replay": "npm run replay -w server --",
     "check": "npm run check -w server --",
-    "voices": "npm run voices -w server --"
+    "voices": "npm run voices -w server --",
+    "load": "npm run load -w server --"
   },
   "devDependencies": {
     "concurrently": "^9.1.0"
