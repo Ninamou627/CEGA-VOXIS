@@ -75,8 +75,12 @@ export type ServerEvent =
   /** Traduction d'un segment figé. `untranslated` = la traduction a échoué, texte source renvoyé. */
   | { t: "tr.segment"; seq: number; lang: Lang; text: string; srcSeq: number; untranslated?: boolean }
   | { t: "floor"; floor: FloorState }
-  /** Question d'un apprenant, transcrite et traduite (le son part en trame binaire au formateur). */
-  | { t: "question"; who: string; srcLang: Lang; srcText: string; lang: Lang; text: string }
+  /**
+   * Question d'un apprenant, transcrite et traduite (le son part en trame binaire au
+   * formateur). Envoyée au formateur, au tableau de bord et à l'apprenant qui l'a posée.
+   * `delivered` = un formateur était connecté pour l'entendre.
+   */
+  | { t: "question"; who: string; srcLang: Lang; srcText: string; lang: Lang; text: string; delivered: boolean }
   | { t: "stats"; stats: StatsPayload }
   | { t: "degraded"; mode: DegradedMode; reason: string }
   | { t: "error"; code: string; msg: string };

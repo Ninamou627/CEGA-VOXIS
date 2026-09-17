@@ -19,7 +19,8 @@
     "replay": "npm run replay -w server --",
     "check": "npm run check -w server --",
     "voices": "npm run voices -w server --",
-    "load": "npm run load -w server --"
+    "load": "npm run load -w server --",
+    "cert:dev": "npm run cert:dev -w server --"
   },
   "devDependencies": {
     "concurrently": "^9.1.0"

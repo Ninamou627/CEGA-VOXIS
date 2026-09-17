@@ -12,7 +12,8 @@
     "replay": "tsx scripts/replay.ts",
     "check": "tsx scripts/check-providers.ts",
     "voices": "tsx scripts/voices.ts",
-    "load": "tsx scripts/load.ts"
+    "load": "tsx scripts/load.ts",
+    "cert:dev": "tsx scripts/dev-cert.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.125.0",

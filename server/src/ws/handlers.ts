@@ -224,10 +224,20 @@ export function attachWs(wss: WebSocketServer, ctx: WsContext): void {
     const t0 = Date.now();
     try {
       const srcText = await providers.stt.transcribeOnce(audio, mime, srcLang);
+      if (!srcText.trim()) {
+        room.send(asker, { t: "question", who: asker.id, srcLang, srcText: "", lang: room.srcLang, text: "", delivered: false });
+        metrics.event("question.empty", { id: asker.id, bytes: total, mime });
+        return;
+      }
       const text = await providers.mt.translate({ text: srcText, from: srcLang, to: room.srcLang, context: [] });
       const tts = await providers.tts.synthesize({ text, lang: room.srcLang });
 
-      room.broadcast({ t: "question", who: asker.id, srcLang, srcText, lang: room.srcLang, text }, (p) => p.role !== "listener");
+      const delivered = room.count("lecturer") > 0;
+      room.broadcast(
+        { t: "question", who: asker.id, srcLang, srcText, lang: room.srcLang, text, delivered },
+        (p) => p.role !== "listener" || p.id === asker.id,
+      );
+      log.info({ id: asker.id, mime, bytes: total, srcText: srcText.slice(0, 80), delivered }, "question traitée");
       const header: AudioHeader = {
         t: "audio",
         seq: 0,
@@ -247,7 +257,7 @@ export function attachWs(wss: WebSocketServer, ctx: WsContext): void {
       pipeline.setMuted(true);
       setTimeout(() => pipeline.setMuted(wasMuted), tts.durMs + 300);
 
-      metrics.event("question", { id: asker.id, bytes: total, totalMs: Date.now() - t0, chars: srcText.length });
+      metrics.event("question", { id: asker.id, bytes: total, mime, totalMs: Date.now() - t0, chars: srcText.length, delivered });
     } catch (err) {
       log.error({ err: (err as Error).message }, "traitement de la question");
       room.send(asker, { t: "error", code: "question_failed", msg: "la question n'a pas pu être transmise" });

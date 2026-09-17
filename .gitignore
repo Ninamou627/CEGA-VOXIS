@@ -8,3 +8,4 @@ fixtures/*.mp3
 Thumbs.db
 *.log
 .impeccable/
+certs/

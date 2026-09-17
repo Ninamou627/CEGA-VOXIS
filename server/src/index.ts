@@ -3,13 +3,14 @@ import fastifyStatic from "@fastify/static";
 import { WebSocketServer } from "ws";
 import http from "node:http";
 import https from "node:https";
-import os from "node:os";
 import path from "node:path";
+import { X509Certificate } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "./config";
 import { Metrics } from "./metrics";
 import { Pipeline } from "./pipeline/pipeline";
+import { lanIp, lanIps } from "./net";
 import { makeProviders } from "./providers";
 import { Room } from "./room";
 import { attachWs, binaryFrames } from "./ws/handlers";
@@ -17,7 +18,25 @@ import { attachWs, binaryFrames } from "./ws/handlers";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const cfg = loadConfig();
 
-const tls = cfg.TLS_CERT && cfg.TLS_KEY ? { cert: readFileSync(cfg.TLS_CERT), key: readFileSync(cfg.TLS_KEY) } : undefined;
+// Chemins relatifs à la racine du dépôt (npm lance le serveur depuis server/).
+const fromRoot = (p: string) => (path.isAbsolute(p) ? p : path.resolve(here, "../..", p));
+const tls = cfg.TLS_CERT && cfg.TLS_KEY ? { cert: readFileSync(fromRoot(cfg.TLS_CERT)), key: readFileSync(fromRoot(cfg.TLS_KEY)) } : undefined;
+
+/** Un certificat auto-signé ne vaut que pour les IP qu'il liste : on prévient si l'IP a changé. */
+function certCoversCurrentIp(): string | undefined {
+  if (!tls || cfg.PUBLIC_URL) return undefined;
+  const ip = lanIp();
+  if (!ip) return undefined;
+  try {
+    const san = new X509Certificate(tls.cert).subjectAltName ?? "";
+    if (!san.includes(`IP Address:${ip}`) && !san.includes(`IP:${ip}`)) {
+      return `le certificat ${cfg.TLS_CERT} ne couvre pas l'IP courante ${ip} — les téléphones refuseront la connexion. Relancez : npm run cert:dev`;
+    }
+  } catch {
+    /* certificat illisible : la vraie erreur sortira au démarrage HTTPS */
+  }
+  return undefined;
+}
 
 let wss: WebSocketServer | undefined;
 const app = Fastify({
@@ -65,16 +84,9 @@ if (existsSync(clientDist)) {
 }
 
 // ---- API ---------------------------------------------------------------------------
-function lanIp(): string | undefined {
-  for (const list of Object.values(os.networkInterfaces())) {
-    for (const i of list ?? []) if (i.family === "IPv4" && !i.internal) return i.address;
-  }
-  return undefined;
-}
-
-function publicUrl(): string {
+function publicUrl(ip = lanIp()): string {
   if (cfg.PUBLIC_URL) return cfg.PUBLIC_URL.replace(/\/$/, "");
-  return `${tls ? "https" : "http"}://${lanIp() ?? "localhost"}:${cfg.PORT}`;
+  return `${tls ? "https" : "http"}://${ip ?? "localhost"}:${cfg.PORT}`;
 }
 
 // ---- santé du processus : CPU depuis le dernier appel, mémoire, retard de la boucle ----
@@ -131,6 +143,10 @@ app.get("/api/session", async () => ({
   srcLang: room.srcLang,
   langs: room.langs,
   joinUrl: `${publicUrl()}/?s=${encodeURIComponent(room.sessionId)}`,
+  /** Toutes les adresses candidates, les vraies interfaces d'abord (PUBLIC_URL les remplace). */
+  joinUrls: cfg.PUBLIC_URL
+    ? [{ url: `${publicUrl()}/?s=${encodeURIComponent(room.sessionId)}`, iface: "PUBLIC_URL", virtual: false }]
+    : lanIps().map((i) => ({ url: `${publicUrl(i.address)}/?s=${encodeURIComponent(room.sessionId)}`, iface: i.iface, virtual: i.virtual })),
   tls: Boolean(tls),
 }));
 
@@ -153,6 +169,8 @@ app.log.info(
   },
   "salle ouverte",
 );
+const certWarning = certCoversCurrentIp();
+if (certWarning) app.log.warn(certWarning);
 
 for (const sig of ["SIGINT", "SIGTERM"] as const) {
   process.on(sig, async () => {

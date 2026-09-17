@@ -11,6 +11,7 @@ interface SessionInfo {
   sessionId: string;
   langs: string[];
   joinUrl: string;
+  joinUrls?: { url: string; iface: string; virtual: boolean }[];
   tls: boolean;
 }
 
@@ -36,12 +37,15 @@ export function App() {
 
   useEffect(() => {
     fetch("/api/session")
-      .then((r) => r.json())
-      .then((i: SessionInfo) => {
+      .then(async (r) => {
+        if (!r.ok) throw new Error(`serveur : HTTP ${r.status}`);
+        return (await r.json()) as SessionInfo;
+      })
+      .then((i) => {
         setInfo(i);
         if (qr.current) void QRCode.toCanvas(qr.current, i.joinUrl, { width: 220, margin: 1 });
       })
-      .catch((e) => setErr(String(e)));
+      .catch((e) => setErr(`Serveur de salle injoignable (${(e as Error).message}). Est-il lancé, et sur le bon schéma (HTTP/HTTPS) ?`));
 
     const s = new SalleSocket(
       { t: "join", role: "dashboard", token },
@@ -140,6 +144,16 @@ export function App() {
           <div className="mono tiny" style={{ wordBreak: "break-all", textAlign: "center" }}>
             {info?.joinUrl}
           </div>
+          {info?.joinUrls && info.joinUrls.length > 1 && (
+            <details className="tiny" style={{ width: "100%" }}>
+              <summary>Autres adresses ({info.joinUrls.length - 1}) — si le téléphone ne joint pas celle du QR</summary>
+              {info.joinUrls.slice(1).map((j) => (
+                <div key={j.url} className="mono" style={{ wordBreak: "break-all", opacity: j.virtual ? 0.6 : 1 }}>
+                  {j.url} <span className="tiny">({j.iface}{j.virtual ? ", virtuelle" : ""})</span>
+                </div>
+              ))}
+            </details>
+          )}
           {info && !info.tls && <div className="banner crit">HTTP : les questions (micro) ne fonctionneront pas sur les téléphones.</div>}
           {p && (
             <div className="tiny mono">

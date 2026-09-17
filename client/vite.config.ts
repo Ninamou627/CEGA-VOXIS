@@ -1,9 +1,26 @@
 import { defineConfig, type PluginOption } from "vite";
 import react from "@vitejs/plugin-react";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
 const repo = fileURLToPath(new URL("..", import.meta.url));
+
+/** Lit le .env de la racine pour parler au serveur avec le bon schéma et le bon port. */
+function serverTarget(): string {
+  if (process.env.VITE_API_TARGET) return process.env.VITE_API_TARGET;
+  const envPath = `${repo}.env`;
+  const env: Record<string, string> = {};
+  if (existsSync(envPath)) {
+    for (const line of readFileSync(envPath, "utf8").split(/\r?\n/)) {
+      const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*(#.*)?$/);
+      if (m) env[m[1]] = m[2];
+    }
+  }
+  const tls = Boolean(env.TLS_CERT && env.TLS_KEY);
+  return `${tls ? "https" : "http"}://localhost:${env.PORT || 8787}`;
+}
+const apiTarget = serverTarget();
 
 /** En dev, /lecturer et /dashboard servent leurs pages (comme le serveur en production). */
 const prettyUrls: PluginOption = {
@@ -33,9 +50,10 @@ export default defineConfig(async () => {
       host: true,
       port: 5173,
       fs: { allow: [repo] },
+      // VITE_API_TARGET=https://localhost:8787 quand le serveur tourne en TLS (certificat de dev).
       proxy: {
-        "/api": { target: "http://localhost:8787", changeOrigin: true },
-        "/ws": { target: "ws://localhost:8787", ws: true },
+        "/api": { target: apiTarget, changeOrigin: true, secure: false },
+        "/ws": { target: apiTarget.replace(/^http/, "ws"), ws: true, secure: false },
       },
     },
     build: {

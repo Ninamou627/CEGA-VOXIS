@@ -45,6 +45,8 @@ export function App() {
   const [queueMs, setQueueMs] = useState(0);
   const [dropped, setDropped] = useState(0);
   const [asking, setAsking] = useState(false);
+  const [askStatus, setAskStatus] = useState<"idle" | "sending" | "done">("idle");
+  const [lastQuestion, setLastQuestion] = useState<{ srcText: string; text: string; delivered: boolean }>();
   const [wake, setWake] = useState(false);
   const [err, setErr] = useState<string>();
 
@@ -117,6 +119,12 @@ export function App() {
       case "floor":
         setFloor(e.floor);
         break;
+      case "question":
+        if (e.who === hello?.participantId || askStatus === "sending") {
+          setLastQuestion({ srcText: e.srcText, text: e.text, delivered: e.delivered });
+          setAskStatus("done");
+        }
+        break;
       case "stats":
         setStats(e.stats);
         serverSpeed.current = e.stats.pipeline.speed;
@@ -177,6 +185,8 @@ export function App() {
   async function askStart() {
     if (asking || floor.state === "question") return;
     setErr(undefined);
+    setLastQuestion(undefined);
+    setAskStatus("idle");
     setAsking(true);
     player.current?.setMuted(true); // on ne s'entend pas par-dessus la voix traduite
     sock.current?.send({ t: "ask", phase: "start" });
@@ -198,7 +208,10 @@ export function App() {
     const rec = recorder.current;
     recorder.current = undefined;
     const blob = rec ? await rec.stop() : new Blob([]);
-    if (blob.size) sock.current?.sendBinary(await blob.arrayBuffer());
+    if (blob.size) {
+      sock.current?.sendBinary(await blob.arrayBuffer());
+      setAskStatus("sending");
+    }
     sock.current?.send({ t: "ask", phase: "end", mime: rec?.mime });
     player.current?.setMuted(false);
   }
@@ -303,6 +316,16 @@ export function App() {
         {partial && <div className="partial">{partial}</div>}
       </div>
 
+      {askStatus === "sending" && <div className="banner info">Question envoyée, transcription en cours…</div>}
+      {askStatus === "done" && lastQuestion && (
+        <div className={`banner ${lastQuestion.srcText ? "info" : "crit"}`}>
+          {!lastQuestion.srcText
+            ? "Rien n'a été compris. Parlez plus près du téléphone, et gardez le bouton enfoncé pendant toute la question."
+            : lastQuestion.delivered
+              ? `Transmise au formateur : « ${lastQuestion.srcText} » → « ${lastQuestion.text} »`
+              : `Comprise : « ${lastQuestion.srcText} » — mais aucun formateur n'est connecté pour l'entendre.`}
+        </div>
+      )}
       {QuestionRecorder.supported() ? (
         <button
           className={`ptt ${asking ? "active" : ""}`}
