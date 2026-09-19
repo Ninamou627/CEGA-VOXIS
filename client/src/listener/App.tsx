@@ -1,30 +1,39 @@
 /**
- * Page apprenant. QR code → choix de langue → « Écouter » → voix + texte.
+ * Page apprenant. QR code → langue → « Écouter » → voix + texte, puis les vues
+ * (écoute, transcription, questions, canaux) par la barre du bas — le lecteur et
+ * le WebSocket vivent ici et survivent aux changements de vue.
+ *
  * Tout ce qui touche à la dérive est ici : file mesurée, abandon des segments
  * trop vieux, « revenir au direct », réécoute des 30 dernières secondes.
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type PointerEvent } from "react";
 import type { AudioHeader, FloorState, Lang, ServerEvent, StatsPayload } from "../../../shared/protocol";
 import { QuestionRecorder } from "../lib/mic";
 import { ElementPlayer, WebAudioPlayer, type Player, type SegmentMeta } from "../lib/player";
 import { keepWakeLockAlive, requestWakeLock } from "../lib/wakelock";
 import { SalleSocket, type ConnState } from "../lib/ws";
+import { ALL_LANGS } from "../ui/langs";
+import { BottomNav, type View } from "./BottomNav";
+import { Header, type LinkStatus } from "./Header";
+import type { Line, PlayerKind, QuestionOutcome } from "./types";
+import { Join } from "./views/Join";
+import { Listen } from "./views/Listen";
+import { Soon } from "./views/Soon";
 
 /** Au-delà, on saute le segment plutôt que de dériver (§10 de la revue). */
 const MAX_QUEUE_MS = 8000;
 const MAX_AGE_MS = 8000;
 const REPLAY_WINDOW_MS = 30_000;
 
-const LANG_LABEL: Record<Lang, string> = { fr: "Français", en: "English", es: "Español", ar: "العربية", pt: "Português" };
-
-interface Line {
-  seq: number;
-  src?: string;
-  tgt?: string;
-  untranslated?: boolean;
-}
-
 type Hello = Extract<ServerEvent, { t: "hello" }>;
+type AskStatus = "idle" | "sending" | "done";
+
+const LINK: Record<ConnState, LinkStatus> = {
+  open: { tone: "live", badge: "LIVE", caption: "Live Audio Stream" },
+  connecting: { tone: "wait", badge: "SYNC", caption: "Connexion…" },
+  reconnecting: { tone: "wait", badge: "SYNC", caption: "Reconnexion…" },
+  closed: { tone: "off", badge: "OFF", caption: "Hors ligne" },
+};
 
 export function App() {
   const params = new URLSearchParams(location.search);
@@ -33,8 +42,9 @@ export function App() {
   // Lecteur média par défaut, partout : validé sur iPhone 13 Pro Max / iOS 26 écran
   // verrouillé, insensible au bouton silence, et il porte le playbackRate à hauteur
   // préservée. Web Audio reste disponible pour comparer sur ordinateur.
-  const [playerKind, setPlayerKind] = useState<"webaudio" | "element">("element");
+  const [playerKind, setPlayerKind] = useState<PlayerKind>("element");
   const [phase, setPhase] = useState<"join" | "live">("join");
+  const [view, setView] = useState<View>("listen");
   const [conn, setConn] = useState<ConnState>("closed");
   const [hello, setHello] = useState<Hello>();
   const [partial, setPartial] = useState("");
@@ -45,10 +55,14 @@ export function App() {
   const [queueMs, setQueueMs] = useState(0);
   const [dropped, setDropped] = useState(0);
   const [asking, setAsking] = useState(false);
-  const [askStatus, setAskStatus] = useState<"idle" | "sending" | "done">("idle");
-  const [lastQuestion, setLastQuestion] = useState<{ srcText: string; text: string; delivered: boolean }>();
-  const [wake, setWake] = useState(false);
+  const [askStatus, setAskStatus] = useState<AskStatus>("idle");
+  const [lastQuestion, setLastQuestion] = useState<QuestionOutcome>();
   const [err, setErr] = useState<string>();
+  const [paused, setPaused] = useState(false);
+  const [muted, setMuted] = useState(false);
+  const [volume, setVolume] = useState(100);
+  const [showText, setShowText] = useState(true);
+  const [localRate, setLocalRate] = useState(1);
 
   const sock = useRef<SalleSocket>(undefined);
   const player = useRef<Player>(undefined);
@@ -56,7 +70,12 @@ export function App() {
   const ring = useRef<{ bytes: Uint8Array; mime: string; meta: SegmentMeta }[]>([]);
   const recorder = useRef<QuestionRecorder>(undefined);
   const serverSpeed = useRef(1);
-  const [localRate, setLocalRate] = useState(1);
+  // Lus depuis les rappels du WebSocket et du lecteur, qui ne voient pas l'état React.
+  const helloRef = useRef<Hello>(undefined);
+  const askStatusRef = useRef<AskStatus>("idle");
+  const askingRef = useRef(false);
+  const pausedRef = useRef(false);
+  const mutedRef = useRef(false);
 
   useEffect(() => {
     const id = setInterval(() => {
@@ -71,12 +90,27 @@ export function App() {
       p.setRate(rate);
       setLocalRate(rate);
     }, 500);
-    const stop = keepWakeLockAlive(setWake);
+    // Écran maintenu allumé pendant l'écoute (le lecteur média joue même écran verrouillé).
+    const stop = keepWakeLockAlive();
     return () => {
       clearInterval(id);
       stop();
     };
   }, []);
+
+  /** Ouvre le WebSocket de salle ; un ancien socket qu'on ferme ne parle plus à l'écran. */
+  function connect(l: Lang) {
+    const s: SalleSocket = new SalleSocket(
+      { t: "join", role: "listener", session, lang: l, ua: navigator.userAgent.slice(0, 200) },
+      {
+        onState: (st) => sock.current === s && setConn(st),
+        onEvent: (e) => sock.current === s && handleEvent(e),
+        onAudio: (h, b) => sock.current === s && handleAudio(h, b),
+      },
+    );
+    sock.current = s;
+    s.connect();
+  }
 
   async function start() {
     setErr(undefined);
@@ -86,22 +120,35 @@ export function App() {
       if (meta.replay) return;
       sock.current?.send({ t: "ack", seq: meta.seq, tOrigin: meta.tOrigin, queueMs: p.queueMs });
     };
+    p.setVolume(volume / 100);
     player.current = p;
-    setWake(await requestWakeLock());
-
-    const s = new SalleSocket(
-      { t: "join", role: "listener", session, lang, ua: navigator.userAgent.slice(0, 200) },
-      { onState: setConn, onEvent: handleEvent, onAudio: handleAudio },
-    );
-    sock.current = s;
-    s.connect();
+    void requestWakeLock();
+    connect(lang);
     setPhase("live");
+  }
+
+  /** Changer de langue en séance : on rejoint la salle avec la nouvelle langue, au direct. */
+  function changeLang(l: Lang) {
+    if (l === lang) return;
+    setLang(l);
+    player.current?.flush();
+    ring.current = [];
+    setLines([]);
+    setPartial("");
+    sock.current?.close();
+    connect(l);
+  }
+
+  function setAsk(status: AskStatus) {
+    askStatusRef.current = status;
+    setAskStatus(status);
   }
 
   function handleEvent(e: ServerEvent) {
     switch (e.t) {
       case "hello":
         clockOffset.current = e.tServer - Date.now();
+        helloRef.current = e;
         setHello(e);
         setFloor(e.floor);
         setDegraded(e.pipeline.degraded === "none" ? undefined : { mode: e.pipeline.degraded, reason: "" });
@@ -111,7 +158,7 @@ export function App() {
         break;
       case "src.commit":
         setPartial("");
-        upsert(e.seq, { src: e.text });
+        upsert(e.seq, { src: e.text, tOrigin: e.tOrigin });
         break;
       case "tr.segment":
         upsert(e.seq, { tgt: e.text, untranslated: e.untranslated });
@@ -120,9 +167,9 @@ export function App() {
         setFloor(e.floor);
         break;
       case "question":
-        if (e.who === hello?.participantId || askStatus === "sending") {
+        if (e.who === helloRef.current?.participantId || askStatusRef.current === "sending") {
           setLastQuestion({ srcText: e.srcText, text: e.text, delivered: e.delivered });
-          setAskStatus("done");
+          setAsk("done");
         }
         break;
       case "stats":
@@ -137,8 +184,9 @@ export function App() {
         setErr(e.msg);
         if (e.code === "floor_busy") {
           recorder.current?.cancel();
+          askingRef.current = false;
           setAsking(false);
-          player.current?.setMuted(false);
+          applyMute();
         }
         break;
     }
@@ -156,7 +204,7 @@ export function App() {
     const p = player.current;
     if (!p) return;
     const age = Date.now() + clockOffset.current - h.tOrigin;
-    if (p.queueMs > MAX_QUEUE_MS || age > MAX_AGE_MS) {
+    if (!pausedRef.current && (p.queueMs > MAX_QUEUE_MS || age > MAX_AGE_MS)) {
       setDropped((d) => d + 1);
       return;
     }
@@ -165,6 +213,8 @@ export function App() {
     r.push({ bytes, mime: h.mime, meta });
     let total = r.reduce((a, x) => a + x.meta.durMs, 0);
     while (r.length > 1 && total > REPLAY_WINDOW_MS) total -= r.shift()!.meta.durMs;
+    // En pause, on garde pour la réécoute mais on ne joue pas : à la reprise, on est au direct.
+    if (pausedRef.current) return;
     void p.enqueue(bytes, h.mime, meta);
   }
 
@@ -182,169 +232,153 @@ export function App() {
     for (const it of ring.current) void p.enqueue(it.bytes, it.mime, { ...it.meta, replay: true });
   }
 
-  async function askStart() {
-    if (asking || floor.state === "question") return;
+  /** Pause = on cesse d'écouter et on jette ce qui attend ; reprise = au direct, sans retard. */
+  function togglePause() {
+    const next = !pausedRef.current;
+    pausedRef.current = next;
+    setPaused(next);
+    if (next) resync();
+  }
+
+  /** Le silence effectif : celui choisi par l'apprenant, ou le temps de sa question. */
+  function applyMute() {
+    player.current?.setMuted(mutedRef.current || askingRef.current);
+  }
+
+  function toggleMute() {
+    mutedRef.current = !mutedRef.current;
+    setMuted(mutedRef.current);
+    applyMute();
+  }
+
+  function changeVolume(v: number) {
+    setVolume(v);
+    player.current?.setVolume(v / 100);
+    if (v === 0 && !mutedRef.current) {
+      mutedRef.current = true;
+      setMuted(true);
+    } else if (v > 0 && mutedRef.current) {
+      mutedRef.current = false;
+      setMuted(false);
+    }
+    applyMute();
+  }
+
+  async function askStart(e: PointerEvent<HTMLButtonElement>) {
+    e.currentTarget.setPointerCapture(e.pointerId);
+    if (askingRef.current || floor.state === "question") return;
     setErr(undefined);
     setLastQuestion(undefined);
-    setAskStatus("idle");
+    setAsk("idle");
+    askingRef.current = true;
     setAsking(true);
-    player.current?.setMuted(true); // on ne s'entend pas par-dessus la voix traduite
+    applyMute(); // on ne s'entend pas par-dessus la voix traduite
     sock.current?.send({ t: "ask", phase: "start" });
     const rec = new QuestionRecorder();
     recorder.current = rec;
     try {
       await rec.start();
-    } catch (e) {
-      setErr("micro indisponible : " + (e as Error).message);
+    } catch (err) {
+      setErr("micro indisponible : " + (err as Error).message);
       sock.current?.send({ t: "ask", phase: "end" });
+      askingRef.current = false;
       setAsking(false);
-      player.current?.setMuted(false);
+      applyMute();
     }
   }
 
   async function askEnd() {
-    if (!asking) return;
+    if (!askingRef.current) return;
+    askingRef.current = false;
     setAsking(false);
     const rec = recorder.current;
     recorder.current = undefined;
     const blob = rec ? await rec.stop() : new Blob([]);
     if (blob.size) {
       sock.current?.sendBinary(await blob.arrayBuffer());
-      setAskStatus("sending");
+      setAsk("sending");
     }
     sock.current?.send({ t: "ask", phase: "end", mime: rec?.mime });
-    player.current?.setMuted(false);
+    applyMute();
   }
 
   // ---------------------------------------------------------------------------
 
   if (phase === "join") {
     return (
-      <main className="app">
-        <h1>Interprète de salle</h1>
-        <div className="card" style={{ display: "grid", gap: 14 }}>
-          <p className="muted">
-            Session <b className="mono">{session}</b>. Mettez vos écouteurs, choisissez votre langue, puis appuyez sur Écouter.
-          </p>
-          <label>
-            Langue
-            <select value={lang} onChange={(e) => setLang(e.target.value as Lang)}>
-              {(["fr", "en", "es", "ar", "pt"] as Lang[]).map((l) => (
-                <option key={l} value={l}>
-                  {LANG_LABEL[l]}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Lecteur audio
-            <select value={playerKind} onChange={(e) => setPlayerKind(e.target.value as "webaudio" | "element")}>
-              <option value="element">Lecture média (recommandé — fonctionne écran verrouillé)</option>
-              <option value="webaudio">Web Audio (ordinateur seulement — muet sur iPhone)</option>
-            </select>
-          </label>
-          <button className="primary big" onClick={() => void start()}>
-            🎧 Écouter
-          </button>
-          <p className="tiny">
-            Gardez l'écran allumé pendant l'écoute. L'audio est traité par des services tiers pour produire la traduction et n'est pas conservé.
-          </p>
-        </div>
-      </main>
+      <>
+        <Header session={session} status={{ tone: "wait", badge: "READY", caption: "Prêt à écouter" }} />
+        <main className="flex flex-col relative w-full pt-16 pb-8 bg-surface min-h-screen">
+          <Join
+            session={session}
+            lang={lang}
+            onLang={setLang}
+            playerKind={playerKind}
+            onPlayerKind={setPlayerKind}
+            onStart={() => void start()}
+            error={err}
+          />
+        </main>
+      </>
     );
   }
 
-  const connPill = conn === "open" ? "ok" : conn === "closed" ? "crit" : "warn";
-  const queueClass = queueMs > 5000 ? "crit" : queueMs > 2500 ? "warn" : "";
   const floorBusyByOther = floor.state === "question" && floor.who !== hello?.participantId;
+  const rate = Math.round(serverSpeed.current * localRate * 100) / 100;
 
   return (
-    <main className="app">
-      <div className="row">
-        <h1 className="grow">
-          {LANG_LABEL[lang]} <span className="tiny mono">{session}</span>
-        </h1>
-        <span className={`pill ${connPill}`}>
-          {conn === "open" ? "Connecté" : conn === "reconnecting" ? "Reconnexion…" : conn === "connecting" ? "Connexion…" : "Déconnecté"}
-        </span>
-        {wake && <span className="pill ok">Écran maintenu</span>}
-        {stats && stats.pipeline.speed > 1 && <span className="pill warn">Voix ×{stats.pipeline.speed.toFixed(2)}</span>}
-        {localRate > 1 && player.current?.kind === "element" && <span className="pill warn">Lecture ×{localRate.toFixed(2)}</span>}
-      </div>
-
-      {err && <div className="banner crit">{err}</div>}
-      {degraded && (
-        <div className="banner crit">
-          Mode dégradé : {degraded.mode === "text-only" ? "texte seul, la voix reviendra dès que possible" : degraded.mode}
-          {degraded.reason ? ` — ${degraded.reason}` : ""}
-        </div>
-      )}
-      {floorBusyByOther && <div className="banner info">Un apprenant pose une question.</div>}
-
-      <div className="card grid">
-        <div className={`stat ${queueClass}`}>
-          <b>{(queueMs / 1000).toFixed(1)} s</b>
-          <span>d'avance en file</span>
-        </div>
-        <div className="stat">
-          <b>{stats?.e2eP50 != null ? `${(stats.e2eP50 / 1000).toFixed(1)} s` : "—"}</b>
-          <span>décalage (salle)</span>
-        </div>
-        <div className="stat">
-          <b>{dropped}</b>
-          <span>segments sautés</span>
-        </div>
-      </div>
-
-      <div className="row">
-        <button className="grow" onClick={resync} disabled={queueMs < 300}>
-          ⏩ Revenir au direct
-        </button>
-        <button className="grow" onClick={replay} disabled={!ring.current.length}>
-          ↺ Réécouter 30 s
-        </button>
-      </div>
-
-      <div className="card transcript">
-        {lines.length === 0 && !partial && <p className="muted">En attente du formateur…</p>}
-        {lines.map((l) => (
-          <div className="line" key={l.seq}>
-            <div className={`tgt ${l.untranslated ? "untranslated" : ""}`}>{l.tgt ?? "…"}</div>
-            {l.src && <div className="src">{l.src}</div>}
+    <>
+      <Header session={session} status={LINK[conn]} />
+      <main className="flex flex-col relative w-full pt-16 pb-24 bg-surface min-h-screen gap-space-md">
+        {(err || degraded) && (
+          <div className="flex flex-col gap-space-xs px-gutter-mobile pt-space-xs">
+            {err && (
+              <div className="bg-error-container text-on-error-container rounded-xl px-space-md py-space-sm font-body-sm text-body-sm" role="alert">
+                {err}
+              </div>
+            )}
+            {degraded && (
+              <div className="bg-error-container text-on-error-container rounded-xl px-space-md py-space-sm font-body-sm text-body-sm" role="alert">
+                Mode dégradé : {degraded.mode === "text-only" ? "texte seul, la voix reviendra dès que possible" : degraded.mode}
+                {degraded.reason ? ` — ${degraded.reason}` : ""}
+              </div>
+            )}
           </div>
-        ))}
-        {partial && <div className="partial">{partial}</div>}
-      </div>
+        )}
 
-      {askStatus === "sending" && <div className="banner info">Question envoyée, transcription en cours…</div>}
-      {askStatus === "done" && lastQuestion && (
-        <div className={`banner ${lastQuestion.srcText ? "info" : "crit"}`}>
-          {!lastQuestion.srcText
-            ? "Rien n'a été compris. Parlez plus près du téléphone, et gardez le bouton enfoncé pendant toute la question."
-            : lastQuestion.delivered
-              ? `Transmise au formateur : « ${lastQuestion.srcText} » → « ${lastQuestion.text} »`
-              : `Comprise : « ${lastQuestion.srcText} » — mais aucun formateur n'est connecté pour l'entendre.`}
-        </div>
-      )}
-      {QuestionRecorder.supported() ? (
-        <button
-          className={`ptt ${asking ? "active" : ""}`}
-          disabled={floorBusyByOther || conn !== "open"}
-          onPointerDown={(e) => {
-            e.currentTarget.setPointerCapture(e.pointerId);
-            void askStart();
-          }}
-          onPointerUp={() => void askEnd()}
-          onPointerCancel={() => void askEnd()}
-          onContextMenu={(e) => e.preventDefault()}
-        >
-          {asking ? "🎙️ Parlez… relâchez pour envoyer" : "🙋 Maintenir pour poser une question"}
-        </button>
-      ) : (
-        <p className="tiny">
-          Les questions exigent une connexion sécurisée (HTTPS). Voir docs/DECISIONS.md — certificat sur IP de LAN.
-        </p>
-      )}
-    </main>
+        {view === "listen" && (
+          <Listen
+            session={session}
+            conn={conn}
+            secure={location.protocol === "https:"}
+            playerKind={playerKind}
+            srcLang={hello?.srcLang ?? "en"}
+            lang={lang}
+            langs={hello?.langs ?? ALL_LANGS}
+            onLang={changeLang}
+            degraded={degraded?.mode}
+            audio={{ paused, muted, volume, playing: queueMs > 0, queueMs, dropped, e2eMs: stats?.e2eP50 ?? null, rate }}
+            onPause={togglePause}
+            onMute={toggleMute}
+            onVolume={changeVolume}
+            onResync={resync}
+            lines={lines}
+            partial={partial}
+            clockOffset={clockOffset.current}
+            showText={showText}
+            onToggleText={() => setShowText((s) => !s)}
+            canReplay={ring.current.length > 0}
+            onReplay={replay}
+            question={{ supported: QuestionRecorder.supported(), asking, busy: floorBusyByOther, status: askStatus, last: lastQuestion }}
+            onAskStart={(e) => void askStart(e)}
+            onAskEnd={() => void askEnd()}
+          />
+        )}
+        {view === "transcript" && <Soon icon="subtitles" title="Transcript" />}
+        {view === "questions" && <Soon icon="live_help" title="Ask Q&A" />}
+        {view === "channels" && <Soon icon="tune" title="Channels" />}
+      </main>
+      <BottomNav view={view} onChange={setView} />
+    </>
   );
 }

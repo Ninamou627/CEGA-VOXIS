@@ -29,6 +29,8 @@ export interface Player {
   /** « Revenir au direct » : vide la file et coupe ce qui joue. */
   flush(): void;
   setMuted(muted: boolean): void;
+  /** Volume d'écoute, 0 à 1. iOS l'ignore (les boutons du téléphone font foi) ; `setMuted` reste le vrai silence. */
+  setVolume(volume: number): void;
   /**
    * Vitesse de lecture locale (1 = normale). Parade immédiate contre la dérive, sans
    * attendre le serveur. Seul ElementPlayer l'applique (hauteur préservée) ; sur
@@ -49,6 +51,8 @@ export class WebAudioPlayer implements Player {
   private chain: Promise<void> = Promise.resolve();
   private sources = new Set<AudioBufferSourceNode>();
   private timers = new Set<number>();
+  private muted = false;
+  private volume = 1;
 
   get queueMs(): number {
     if (!this.ctx) return 0;
@@ -117,7 +121,17 @@ export class WebAudioPlayer implements Player {
   }
 
   setMuted(muted: boolean): void {
-    if (this.gain) this.gain.gain.value = muted ? 0 : 1;
+    this.muted = muted;
+    this.applyGain();
+  }
+
+  setVolume(volume: number): void {
+    this.volume = Math.min(1, Math.max(0, volume));
+    this.applyGain();
+  }
+
+  private applyGain() {
+    if (this.gain) this.gain.gain.value = this.muted ? 0 : this.volume;
   }
 
   setRate(_rate: number): void {
@@ -163,6 +177,7 @@ export class ElementPlayer implements Player {
   private playing = false;
   private current?: { meta: SegmentMeta; startedAt: number };
   private muted = false;
+  private volume = 1;
   private rate = 1;
 
   get queueMs(): number {
@@ -207,6 +222,7 @@ export class ElementPlayer implements Player {
     const el = this.els[this.i];
     this.i ^= 1;
     el.muted = this.muted;
+    el.volume = this.volume;
     el.playbackRate = this.rate;
     if (el.src !== item.url) el.src = item.url;
     el.onplaying = () => {
@@ -250,6 +266,11 @@ export class ElementPlayer implements Player {
   setMuted(muted: boolean): void {
     this.muted = muted;
     for (const el of this.els) el.muted = muted; // iOS ignore `volume`, pas `muted`
+  }
+
+  setVolume(volume: number): void {
+    this.volume = Math.min(1, Math.max(0, volume));
+    for (const el of this.els) el.volume = this.volume;
   }
 
   setRate(rate: number): void {

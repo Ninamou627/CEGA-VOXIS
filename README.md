@@ -45,7 +45,8 @@ latence — est donc exercé pour de vrai, sans dépenser un centime.
 | Guide certificat DNS-01 | `docs/CERTIFICAT.md` | ✅ |
 | Salle, mutex de parole, fan-out | `server/src/room.ts`, `ws/handlers.ts` | ✅ |
 | Métriques JSONL + bout-en-bout mesuré à l'ack | `server/src/metrics.ts` | ✅ |
-| Page apprenant (2 lecteurs audio, wake lock, dérive, PTT) | `client/src/listener` | ✅ |
+| Page apprenant (maquette VOXIS : écoute, volume, transcription, PTT, vues) | `client/src/listener` | ✅ |
+| Design system des interfaces (tokens Tailwind, polices et icônes embarquées) | `client/tailwind.config.ts`, `client/src/theme.css`, `client/src/ui` | ✅ |
 | Page formateur (capture navigateur, MUTE, questions) | `client/src/lecturer` | ✅ |
 | Tableau de bord (QR, latences, file, journal) | `client/src/dashboard` | ✅ |
 | Rejeu d'une fixture WAV dans le pipeline | `server/scripts/replay.ts` | ✅ |
@@ -67,6 +68,18 @@ Test de charge du 16/09/2026, serveur isolé avec simulateurs (audio WAV non com
 4× plus lourd que le MP3 réel) : 50 apprenants, 0 reconnexion, 0 trame perdue, CPU
 serveur 3–6 %, 88 Mo, retard de boucle ≤ 21 ms, bout-en-bout p95 identique à 1 client.
 Le serveur n'est pas la limite — la salle se joue sur le Wi-Fi.
+
+## Les interfaces
+
+Les écrans sont maquettés (VOXIS, Material 3 sombre) puis reproduits dans `client/src`
+avec le même vocabulaire : les tokens de la maquette (couleurs, rayons, espacements,
+styles de texte) vivent dans `client/tailwind.config.ts`, les polices (Inter, Plus
+Jakarta Sans, JetBrains Mono) et les icônes Material Symbols sont embarquées dans le
+build — un téléphone sur la borne de la salle n'a pas forcément Internet. Les briques
+communes (icône, logo, thème clair/sombre, langues) sont dans `client/src/ui`, chaque
+page garde son dossier (`listener`, `lecturer`, `dashboard`). Les vues de la page
+apprenant (écoute, transcription, questions, canaux) sont des onglets d'une même page :
+l'audio ne s'arrête pas quand on change de vue.
 
 ## Les deux choses à faire avant de mettre un téléphone dans la salle
 

@@ -132,6 +132,24 @@ aux apprenants ; il l'est au formateur et au tableau de bord.
 timeout à chaque phrase. Et un moteur qui change ne regarde pas l'apprenant — seule une
 voix absente mérite un bandeau.
 
+## D13 — Interfaces reproduites depuis les maquettes, tout embarqué
+
+**Décision.** Les écrans sont dessinés en maquette (VOXIS, Material 3), puis reproduits
+à l'identique en React avec Tailwind (v3, le moteur de la maquette) : les tokens de la
+maquette sont la configuration Tailwind du client, une interface = ses classes. Polices
+et icônes sont des dépendances npm servies par le serveur de salle, jamais un CDN.
+
+**Pourquoi.** Reproduire fidèlement sans réécrire chaque écran en CSS maison ; et en
+salle, les téléphones sont sur la borne Wi-Fi dédiée (D2) : rien ne garantit l'accès à
+Google Fonts — des icônes absentes s'affichent comme des mots. Accessoirement, aucune
+requête des participants ne part vers un tiers.
+
+**Contraintes acceptées.** Un build un peu plus lourd (≈ 500 Ko pour la police
+d'icônes, servie une fois par téléphone sur le LAN). Les vues de la page apprenant sont
+des onglets d'une seule page : le lecteur audio et le WebSocket doivent survivre à la
+navigation. Le mode clair existe dans la maquette (bascule, classe `theme-light`)
+mais sa palette n'est pas encore définie.
+
 ## Ce que six semaines (au lieu de 48 h) remettent sur la table
 
 Dans l'ordre de valeur : tests automatisés dès le départ (fait) ; multilingue réel
