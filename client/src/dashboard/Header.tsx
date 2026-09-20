@@ -99,20 +99,32 @@ export function Header(p: HeaderProps) {
           href={p.lecturerUrl}
           target="_blank"
           rel="noreferrer"
+          title="Page formateur"
           className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-surface-container-high hover:bg-surface-bright text-on-surface border border-outline-variant/40 font-headline-sm text-xs font-bold whitespace-nowrap transition-all active:scale-95 shadow-sm"
         >
           <Icon name="record_voice_over" className="text-secondary text-[18px]" />
-          <span>Page formateur</span>
+          <span className="hidden 2xl:inline">Page formateur</span>
+        </a>
+        <a
+          href="/screen"
+          target="_blank"
+          rel="noreferrer"
+          title="Sous-titres en grand pour le projecteur"
+          className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-surface-container-high hover:bg-surface-bright text-on-surface border border-outline-variant/40 font-headline-sm text-xs font-bold whitespace-nowrap transition-all active:scale-95 shadow-sm"
+        >
+          <Icon name="cast" className="text-tertiary text-[18px]" />
+          <span className="hidden 2xl:inline">Écran de salle</span>
         </a>
         {p.joinUrl && (
           <a
             href={p.joinUrl}
             target="_blank"
             rel="noreferrer"
+            title="Page apprenant"
             className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-surface-container-high hover:bg-surface-bright text-on-surface border border-outline-variant/40 font-headline-sm text-xs font-bold whitespace-nowrap transition-all active:scale-95 shadow-sm"
           >
             <Icon name="headphones" className="text-primary text-[18px]" />
-            <span>Page apprenant</span>
+            <span className="hidden 2xl:inline">Page apprenant</span>
           </a>
         )}
       </div>

@@ -22,13 +22,13 @@ function serverTarget(): string {
 }
 const apiTarget = serverTarget();
 
-/** En dev, /lecturer et /dashboard servent leurs pages (comme le serveur en production). */
+/** En dev, /lecturer, /dashboard et /screen servent leurs pages (comme le serveur en production). */
 const prettyUrls: PluginOption = {
   name: "salle-pretty-urls",
   configureServer(server) {
     server.middlewares.use((req, _res, next) => {
       const url = req.url ?? "";
-      if (/^\/(lecturer|dashboard)(\?|$)/.test(url)) req.url = url.replace(/^\/(lecturer|dashboard)/, "/$1.html");
+      if (/^\/(lecturer|dashboard|screen)(\?|$)/.test(url)) req.url = url.replace(/^\/(lecturer|dashboard|screen)/, "/$1.html");
       next();
     });
   },
@@ -44,7 +44,7 @@ export default defineConfig(async () => {
   }
   return {
     plugins,
-    // Trois pages distinctes : pas de repli SPA vers index.html pour les adresses inconnues.
+    // Quatre pages distinctes : pas de repli SPA vers index.html pour les adresses inconnues.
     appType: "mpa" as const,
     server: {
       host: true,
@@ -62,6 +62,7 @@ export default defineConfig(async () => {
           index: `${root}index.html`,
           lecturer: `${root}lecturer.html`,
           dashboard: `${root}dashboard.html`,
+          screen: `${root}screen.html`,
         },
       },
     },

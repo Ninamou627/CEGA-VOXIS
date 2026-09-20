@@ -17,11 +17,12 @@ npm run dev
 
 Puis, dans cet ordre :
 
-1. **Tableau de bord** — <http://localhost:5173/dashboard.html?token=change-me>
-2. **Formateur** — <http://localhost:5173/lecturer.html?token=change-me> → *Démarrer le micro*
+1. **Tableau de bord** — <http://localhost:5173/dashboard?token=change-me>
+2. **Formateur** — <http://localhost:5173/lecturer?token=change-me> → *Démarrer le micro*
    (sans micro : mettez `MOCK_STT_CLOCK=timer` dans `.env`)
 3. **Apprenant** — <http://localhost:5173/> → *Écouter*. Depuis un téléphone sur le même
    Wi-Fi : `http://<IP-du-PC>:5173/`
+4. **Écran de salle** — <http://localhost:5173/screen> sur le projecteur, en plein écran (touche F)
 
 Les fournisseurs simulés (`mock`) produisent de vraies hypothèses partielles instables,
 une pseudo-traduction et un vrai fichier audio jouable dont la durée correspond à celle
@@ -50,6 +51,7 @@ latence — est donc exercé pour de vrai, sans dépenser un centime.
 | Design system des interfaces (tokens Tailwind clair/sombre, polices et icônes embarquées) | `client/tailwind.config.ts`, `client/src/theme.css`, `client/src/ui` | ✅ |
 | Poste formateur (maquette Control Hub : micro et niveaux, onde réelle, pipeline, flux bilingue, questions, muet à l'Espace) | `client/src/lecturer` | ✅ |
 | Tableau de bord (QR, checklist d'avant-séance, latence et dérive sur 10 min, pipeline et santé du serveur, flux, questions, journal) | `client/src/dashboard` | ✅ |
+| Écran de salle pour le projecteur (QR en grand avant la séance, sous-titres géants, questions en bandeau, réglages à la souris et au clavier) | `client/src/screen` | ✅ |
 | Rejeu d'une fixture WAV dans le pipeline | `server/scripts/replay.ts` | ✅ |
 
 ## Commandes
@@ -80,7 +82,8 @@ build — un téléphone sur la borne de la salle n'a pas forcément Internet. L
 communes (icône, logo, thème clair/sombre, langues, courbes) sont dans `client/src/ui`,
 chaque page garde son dossier (`listener`, `lecturer`, `dashboard`) avec ses vues. Les vues de la page
 apprenant (écoute, transcription, questions, canaux) sont des onglets d'une même page :
-l'audio ne s'arrête pas quand on change de vue.
+l'audio ne s'arrête pas quand on change de vue. L'écran de salle (`/screen`) se branche
+avec le rôle `screen` : tout le texte, toutes les langues, jamais d'audio, pas de jeton.
 
 ## Les deux choses à faire avant de mettre un téléphone dans la salle
 

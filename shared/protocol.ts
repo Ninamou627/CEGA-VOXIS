@@ -16,7 +16,8 @@ export const PROTOCOL_VERSION = 1;
 export const LangSchema = z.enum(["en", "fr", "es", "ar", "pt"]);
 export type Lang = z.infer<typeof LangSchema>;
 
-export const RoleSchema = z.enum(["listener", "lecturer", "dashboard"]);
+/** `screen` : l'écran de salle (projecteur) — tout le texte, toutes les langues, jamais d'audio, pas de jeton. */
+export const RoleSchema = z.enum(["listener", "lecturer", "dashboard", "screen"]);
 export type Role = z.infer<typeof RoleSchema>;
 
 export type DegradedMode = "none" | "text-only" | "backup-mt" | "backup-tts" | "stt-lost" | "s2s";

@@ -4,7 +4,8 @@
  * Un participant commence par un `join` (validé par zod). Ensuite :
  *   - formateur  : binaire = PCM du micro → pipeline ; reçoit l'audio des questions ;
  *   - apprenant  : reçoit texte + audio de sa langue ; envoie ack / ask / resync ;
- *   - tableau de bord : reçoit tout le texte et les stats, jamais l'audio.
+ *   - tableau de bord : reçoit tout le texte et les stats, jamais l'audio ;
+ *   - écran de salle : comme le tableau de bord, sans jeton (sous-titres projetés).
  */
 import { randomUUID } from "node:crypto";
 import type { RawData, WebSocket, WebSocketServer } from "ws";

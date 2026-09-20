@@ -129,7 +129,7 @@ function variables(palette: Record<string, string>): Record<string, string> {
 const colors = Object.fromEntries(Object.keys(DARK).map((name) => [name, `rgb(var(--${name}) / <alpha-value>)`]));
 
 export default {
-  content: ["./index.html", "./lecturer.html", "./dashboard.html", "./src/**/*.{ts,tsx}"],
+  content: ["./index.html", "./lecturer.html", "./dashboard.html", "./screen.html", "./src/**/*.{ts,tsx}"],
   darkMode: "class",
   theme: {
     extend: {

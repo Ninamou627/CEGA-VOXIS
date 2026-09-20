@@ -79,8 +79,9 @@ Ce qui permet de le vendre plusieurs fois sans un développeur dans la salle.
       les tests, et l'interface en écriture droite-à-gauche pour l'arabe.
 - [ ] **Sessions multiples** : plusieurs salles, codes de session, expiration, un serveur
       pour plusieurs formations en parallèle.
-- [ ] **Écran de salle** : une page « sous-titres » en gros caractères pour le projecteur —
+- [x] **Écran de salle** : une page « sous-titres » en gros caractères pour le projecteur —
       l'accès pour les malentendants, et l'assurance pour ceux dont le téléphone est à plat.
+      Fait le 21/09/2026 (`/screen`) : QR en grand avant la séance, questions en bandeau.
 - [ ] **File de questions** : lever la main, le formateur choisit qui parle, voit le texte
       avant de l'entendre, peut choisir « lire » ou « afficher ». Le mutex actuel suffit à
       dix personnes, pas à quarante.

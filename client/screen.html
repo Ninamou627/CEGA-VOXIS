@@ -1,0 +1,22 @@
+<!doctype html>
+<html class="dark" lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0f131c" />
+    <title>Écran de salle · VOXIS</title>
+    <!-- Thème mémorisé appliqué avant le premier rendu (voir src/ui/theme.ts). -->
+    <script>
+      try {
+        if (localStorage.getItem("voxis-theme") === "light") {
+          document.documentElement.classList.replace("dark", "theme-light");
+          document.querySelector('meta[name="theme-color"]').content = "#f9f9ff";
+        }
+      } catch (e) {}
+    </script>
+  </head>
+  <body class="bg-background font-body-md text-on-surface antialiased selection:bg-secondary/30 selection:text-secondary min-h-screen flex flex-col overflow-hidden">
+    <div id="root"></div>
+    <script type="module" src="/src/screen/main.tsx"></script>
+  </body>
+</html>

@@ -77,6 +77,7 @@ if (existsSync(clientDist)) {
   await app.register(fastifyStatic, { root: clientDist, prefix: "/" });
   app.get("/lecturer", (_req, reply) => reply.sendFile("lecturer.html"));
   app.get("/dashboard", (_req, reply) => reply.sendFile("dashboard.html"));
+  app.get("/screen", (_req, reply) => reply.sendFile("screen.html"));
 } else {
   app.get("/", async () => ({
     message: "Client non compilé. En développement, ouvrez le serveur Vite (npm run dev) ; en production, npm run build.",
@@ -168,6 +169,7 @@ app.log.info(
     joinUrl: `${publicUrl()}/?s=${room.sessionId}`,
     lecturerUrl: `${publicUrl()}/lecturer?token=…`,
     dashboardUrl: `${publicUrl()}/dashboard?token=…`,
+    screenUrl: `${publicUrl()}/screen`,
     tls: Boolean(tls),
   },
   "salle ouverte",
