@@ -5,6 +5,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <meta name="theme-color" content="#0f131c" />
     <title>VOXIS · Interprète de salle</title>
+    <!-- Thème mémorisé appliqué avant le premier rendu (voir src/ui/theme.ts). -->
+    <script>
+      try {
+        if (localStorage.getItem("voxis-theme") === "light") {
+          document.documentElement.classList.replace("dark", "theme-light");
+          document.querySelector('meta[name="theme-color"]').content = "#f9f9ff";
+        }
+      } catch (e) {}
+    </script>
   </head>
   <body class="bg-surface text-on-surface font-body-md text-body-md antialiased selection:bg-primary-container selection:text-on-primary-container flex flex-col min-h-screen">
     <div id="root"></div>

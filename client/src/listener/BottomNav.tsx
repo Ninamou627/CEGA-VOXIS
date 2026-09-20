@@ -15,7 +15,7 @@ export const TABS: { id: View; icon: string; label: string }[] = [
 
 export function BottomNav({ view, onChange }: { view: View; onChange: (v: View) => void }) {
   return (
-    <nav className="fixed bottom-0 inset-x-0 z-50 pb-safe bg-surface-container-low/85 backdrop-blur-xl shadow-[0_-1px_12px_rgba(0,0,0,0.5)]">
+    <nav className="fixed bottom-0 inset-x-0 z-50 pb-safe bg-surface-container-low/85 backdrop-blur-xl shadow-[0_-1px_12px_rgba(25,27,35,0.12)] dark:shadow-[0_-1px_12px_rgba(0,0,0,0.5)]">
       <div className="flex justify-around items-center h-20 px-gutter-mobile">
         {TABS.map((t) => {
           const active = t.id === view;

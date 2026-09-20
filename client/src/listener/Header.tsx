@@ -29,7 +29,7 @@ const BADGE: Record<LinkTone, { pill: string; dot: string }> = {
 
 export function Header(p: HeaderProps) {
   return (
-    <header className="fixed top-0 inset-x-0 z-50 bg-surface/80 backdrop-blur-xl pt-safe shadow-[0_1px_8px_rgba(0,0,0,0.4)]">
+    <header className="fixed top-0 inset-x-0 z-50 bg-surface/80 backdrop-blur-xl pt-safe shadow-[0_1px_8px_rgba(25,27,35,0.10)] dark:shadow-[0_1px_8px_rgba(0,0,0,0.4)]">
       <div className="h-16 px-gutter-mobile flex items-center justify-between gap-space-sm">
         {p.kind === "brand" ? <Brand session={p.session} status={p.status} /> : <Page title={p.title} subtitle={p.subtitle} onBack={p.onBack} />}
         <div className="flex items-center gap-space-xs flex-shrink-0">

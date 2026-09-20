@@ -1,8 +1,9 @@
 /**
  * Thème clair / sombre, mémorisé sur l'appareil (clé `voxis-theme`, comme la maquette).
- * `dark` sur <html> pilote les variantes `dark:` de Tailwind ; `theme-light` est la
- * classe que la maquette pose en mode clair. La palette claire n'est pas encore définie :
- * aujourd'hui seule la classe change.
+ * `dark` sur <html> choisit le jeu de couleurs sombre (client/tailwind.config.ts) et
+ * pilote les variantes `dark:` ; sans la classe, le jeu clair. `theme-light` est la
+ * classe que la maquette pose en mode clair, gardée pour ses sélecteurs éventuels.
+ * index.html applique le choix mémorisé avant le premier rendu, pour ne pas cligner.
  */
 import { useEffect, useState } from "react";
 
@@ -17,10 +18,14 @@ export function readTheme(): Theme {
   }
 }
 
+/** Couleur de la barre du navigateur : la surface de chaque thème. */
+const THEME_COLOR: Record<Theme, string> = { dark: "#0f131c", light: "#f9f9ff" };
+
 export function applyTheme(theme: Theme): void {
   const el = document.documentElement;
   el.classList.toggle("dark", theme === "dark");
   el.classList.toggle("theme-light", theme === "light");
+  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", THEME_COLOR[theme]);
   try {
     localStorage.setItem(KEY, theme);
   } catch {

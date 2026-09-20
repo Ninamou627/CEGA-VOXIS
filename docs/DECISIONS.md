@@ -147,8 +147,10 @@ requête des participants ne part vers un tiers.
 **Contraintes acceptées.** Un build un peu plus lourd (≈ 500 Ko pour la police
 d'icônes, servie une fois par téléphone sur le LAN). Les vues de la page apprenant sont
 des onglets d'une seule page : le lecteur audio et le WebSocket doivent survivre à la
-navigation. Le mode clair existe dans la maquette (bascule, classe `theme-light`)
-mais sa palette n'est pas encore définie.
+navigation. Les couleurs sont des variables CSS sur `<html>` : `dark` donne le jeu de
+la maquette, son absence le jeu clair — la déclinaison Material 3 des mêmes palettes
+tonales (accents au ton 40, conteneurs au ton 90, surfaces de 87 à 100). Le choix est
+mémorisé sur l'appareil et appliqué avant le premier rendu.
 
 ## Ce que six semaines (au lieu de 48 h) remettent sur la table
 
