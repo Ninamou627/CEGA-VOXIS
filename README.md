@@ -46,6 +46,7 @@ latence — est donc exercé pour de vrai, sans dépenser un centime.
 | Salle, mutex de parole, fan-out | `server/src/room.ts`, `ws/handlers.ts` | ✅ |
 | Métriques JSONL + bout-en-bout mesuré à l'ack | `server/src/metrics.ts` | ✅ |
 | Page apprenant (maquette VOXIS : écoute, volume, transcription, PTT, vues) | `client/src/listener` | ✅ |
+| Studio de question (micro, pause, 30 s max, étapes, retour bilingue) | `client/src/listener/views/Studio.tsx` | ✅ |
 | Design system des interfaces (tokens Tailwind, polices et icônes embarquées) | `client/tailwind.config.ts`, `client/src/theme.css`, `client/src/ui` | ✅ |
 | Page formateur (capture navigateur, MUTE, questions) | `client/src/lecturer` | ✅ |
 | Tableau de bord (QR, latences, file, journal) | `client/src/dashboard` | ✅ |

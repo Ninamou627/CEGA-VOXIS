@@ -6,7 +6,7 @@
  * Tout ce qui touche à la dérive est ici : file mesurée, abandon des segments
  * trop vieux, « revenir au direct », réécoute des 30 dernières secondes.
  */
-import { useEffect, useRef, useState, type PointerEvent } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { AudioHeader, FloorState, Lang, ServerEvent, StatsPayload } from "../../../shared/protocol";
 import { QuestionRecorder } from "../lib/mic";
 import { ElementPlayer, WebAudioPlayer, type Player, type SegmentMeta } from "../lib/player";
@@ -19,14 +19,17 @@ import type { Line, PlayerKind, QuestionOutcome } from "./types";
 import { Join } from "./views/Join";
 import { Listen } from "./views/Listen";
 import { Soon } from "./views/Soon";
+import { Studio, type StudioPhase } from "./views/Studio";
 
 /** Au-delà, on saute le segment plutôt que de dériver (§10 de la revue). */
 const MAX_QUEUE_MS = 8000;
 const MAX_AGE_MS = 8000;
 const REPLAY_WINDOW_MS = 30_000;
+/** Une question dure au plus 30 s : au-delà, elle part toute seule. */
+const MAX_ASK_MS = 30_000;
 
 type Hello = Extract<ServerEvent, { t: "hello" }>;
-type AskStatus = "idle" | "sending" | "done";
+type AskStatus = "idle" | "sending" | "done" | "failed";
 
 const LINK: Record<ConnState, LinkStatus> = {
   open: { tone: "live", badge: "LIVE", caption: "Live Audio Stream" },
@@ -56,7 +59,11 @@ export function App() {
   const [dropped, setDropped] = useState(0);
   const [asking, setAsking] = useState(false);
   const [askStatus, setAskStatus] = useState<AskStatus>("idle");
+  const [askPaused, setAskPaused] = useState(false);
+  const [askMs, setAskMs] = useState(0);
+  const [micLevel, setMicLevel] = useState(0);
   const [lastQuestion, setLastQuestion] = useState<QuestionOutcome>();
+  const [processedMs, setProcessedMs] = useState<number>();
   const [err, setErr] = useState<string>();
   const [paused, setPaused] = useState(false);
   const [muted, setMuted] = useState(false);
@@ -76,6 +83,9 @@ export function App() {
   const askingRef = useRef(false);
   const pausedRef = useRef(false);
   const mutedRef = useRef(false);
+  // Chrono de la question : temps effectivement enregistré, pauses exclues.
+  const askClock = useRef<{ accumMs: number; since: number | null }>({ accumMs: 0, since: null });
+  const askSentAt = useRef(0);
 
   useEffect(() => {
     const id = setInterval(() => {
@@ -97,6 +107,19 @@ export function App() {
       stop();
     };
   }, []);
+
+  useEffect(() => {
+    if (!asking) return;
+    let level = 0;
+    const id = setInterval(() => {
+      const ms = askElapsed();
+      setAskMs(ms);
+      level = level * 0.6 + (recorder.current?.level() ?? 0) * 0.4; // lissé, sinon l'anneau tremble
+      setMicLevel(level);
+      if (ms >= MAX_ASK_MS) void askEnd();
+    }, 100);
+    return () => clearInterval(id);
+  }, [asking]);
 
   /** Ouvre le WebSocket de salle ; un ancien socket qu'on ferme ne parle plus à l'écran. */
   function connect(l: Lang) {
@@ -169,6 +192,7 @@ export function App() {
       case "question":
         if (e.who === helloRef.current?.participantId || askStatusRef.current === "sending") {
           setLastQuestion({ srcText: e.srcText, text: e.text, delivered: e.delivered });
+          setProcessedMs(askSentAt.current ? Date.now() - askSentAt.current : undefined);
           setAsk("done");
         }
         break;
@@ -182,12 +206,8 @@ export function App() {
         break;
       case "error":
         setErr(e.msg);
-        if (e.code === "floor_busy") {
-          recorder.current?.cancel();
-          askingRef.current = false;
-          setAsking(false);
-          applyMute();
-        }
+        if (e.code === "floor_busy") askDiscard();
+        if (e.code === "question_failed") setAsk("failed");
         break;
     }
   }
@@ -264,14 +284,23 @@ export function App() {
     applyMute();
   }
 
-  async function askStart(e: PointerEvent<HTMLButtonElement>) {
-    e.currentTarget.setPointerCapture(e.pointerId);
+  function askElapsed(): number {
+    const c = askClock.current;
+    return c.accumMs + (c.since != null ? performance.now() - c.since : 0);
+  }
+
+  /** Prend la parole et ouvre le micro. Depuis le PTT (maintenir) comme depuis le studio (toucher). */
+  async function askStart() {
     if (askingRef.current || floor.state === "question") return;
     setErr(undefined);
     setLastQuestion(undefined);
+    setProcessedMs(undefined);
     setAsk("idle");
     askingRef.current = true;
     setAsking(true);
+    setAskPaused(false);
+    askClock.current = { accumMs: 0, since: performance.now() };
+    setAskMs(0);
     applyMute(); // on ne s'entend pas par-dessus la voix traduite
     sock.current?.send({ t: "ask", phase: "start" });
     const rec = new QuestionRecorder();
@@ -280,22 +309,52 @@ export function App() {
       await rec.start();
     } catch (err) {
       setErr("micro indisponible : " + (err as Error).message);
-      sock.current?.send({ t: "ask", phase: "end" });
-      askingRef.current = false;
-      setAsking(false);
-      applyMute();
+      askDiscard();
     }
   }
 
+  /** Studio : un toucher démarre, le suivant suspend, le suivant reprend. */
+  function askToggle() {
+    const rec = recorder.current;
+    if (!askingRef.current) return void askStart();
+    const c = askClock.current;
+    if (rec?.state === "paused") {
+      rec.resume();
+      c.since = performance.now();
+      setAskPaused(false);
+    } else if (rec) {
+      rec.pause();
+      if (c.since != null) c.accumMs += performance.now() - c.since;
+      c.since = null;
+      setAskPaused(true);
+    }
+  }
+
+  /** Ferme le micro et rend la parole sans rien envoyer. */
+  function askDiscard() {
+    recorder.current?.cancel();
+    recorder.current = undefined;
+    askingRef.current = false;
+    setAsking(false);
+    setAskPaused(false);
+    askClock.current = { accumMs: 0, since: null };
+    setAskMs(0);
+    sock.current?.send({ t: "ask", phase: "end" });
+    applyMute();
+  }
+
+  /** Ferme le micro et envoie la question en un bloc. */
   async function askEnd() {
     if (!askingRef.current) return;
     askingRef.current = false;
     setAsking(false);
+    setAskPaused(false);
     const rec = recorder.current;
     recorder.current = undefined;
     const blob = rec ? await rec.stop() : new Blob([]);
     if (blob.size) {
       sock.current?.sendBinary(await blob.arrayBuffer());
+      askSentAt.current = Date.now();
       setAsk("sending");
     }
     sock.current?.send({ t: "ask", phase: "end", mime: rec?.mime });
@@ -307,7 +366,7 @@ export function App() {
   if (phase === "join") {
     return (
       <>
-        <Header session={session} status={{ tone: "wait", badge: "READY", caption: "Prêt à écouter" }} />
+        <Header kind="brand" session={session} status={{ tone: "wait", badge: "READY", caption: "Prêt à écouter" }} />
         <main className="flex flex-col relative w-full pt-16 pb-8 bg-surface min-h-screen">
           <Join
             session={session}
@@ -325,11 +384,18 @@ export function App() {
 
   const floorBusyByOther = floor.state === "question" && floor.who !== hello?.participantId;
   const rate = Math.round(serverSpeed.current * localRate * 100) / 100;
+  const studioPhase: StudioPhase = asking ? (askPaused ? "paused" : "recording") : askStatus;
+  // Le studio est un écran plein : flèche retour dans l'en-tête, pas de barre du bas.
+  const studio = view === "questions";
 
   return (
     <>
-      <Header session={session} status={LINK[conn]} />
-      <main className="flex flex-col relative w-full pt-16 pb-24 bg-surface min-h-screen gap-space-md">
+      {studio ? (
+        <Header kind="page" title="Push To Talk Studio" subtitle="VOXIS ACTIVE FEED" onBack={() => setView("listen")} />
+      ) : (
+        <Header kind="brand" session={session} status={LINK[conn]} />
+      )}
+      <main className={`flex flex-col relative w-full pt-16 bg-surface min-h-screen gap-space-md ${studio ? "" : "pb-24"}`}>
         {(err || degraded) && (
           <div className="flex flex-col gap-space-xs px-gutter-mobile pt-space-xs">
             {err && (
@@ -370,15 +436,36 @@ export function App() {
             canReplay={ring.current.length > 0}
             onReplay={replay}
             question={{ supported: QuestionRecorder.supported(), asking, busy: floorBusyByOther, status: askStatus, last: lastQuestion }}
-            onAskStart={(e) => void askStart(e)}
+            onAskStart={(e) => {
+              e.currentTarget.setPointerCapture(e.pointerId);
+              void askStart();
+            }}
             onAskEnd={() => void askEnd()}
           />
         )}
         {view === "transcript" && <Soon icon="subtitles" title="Transcript" />}
-        {view === "questions" && <Soon icon="live_help" title="Ask Q&A" />}
+        {studio && (
+          <Studio
+            srcLang={hello?.srcLang ?? "en"}
+            lang={lang}
+            live={conn === "open"}
+            supported={QuestionRecorder.supported()}
+            busy={floorBusyByOther}
+            phase={studioPhase}
+            ms={askMs}
+            maxMs={MAX_ASK_MS}
+            level={micLevel}
+            last={lastQuestion}
+            processedMs={processedMs}
+            onMic={askToggle}
+            onSend={() => void askEnd()}
+            onCancel={askDiscard}
+            onBack={() => setView("listen")}
+          />
+        )}
         {view === "channels" && <Soon icon="tune" title="Channels" />}
       </main>
-      <BottomNav view={view} onChange={setView} />
+      {!studio && <BottomNav view={view} onChange={setView} />}
     </>
   );
 }

@@ -30,7 +30,7 @@ export interface QuestionState {
   asking: boolean;
   /** Un autre apprenant a la parole. */
   busy: boolean;
-  status: "idle" | "sending" | "done";
+  status: "idle" | "sending" | "done" | "failed";
   last?: QuestionOutcome;
 }
 
@@ -110,6 +110,8 @@ export function Listen(p: ListenProps) {
       ? { text: "Un apprenant pose une question — patientez.", cls: "text-tertiary" }
       : q.status === "sending"
         ? { text: "Question envoyée, transcription en cours…", cls: "text-primary" }
+        : q.status === "failed"
+          ? { text: "La question n'a pas pu être transmise. Réessayez.", cls: "text-error" }
         : q.status === "done" && q.last
           ? !q.last.srcText
             ? { text: "Rien n'a été compris. Parlez plus près du téléphone, et gardez le bouton enfoncé pendant toute la question.", cls: "text-error" }

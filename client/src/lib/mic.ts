@@ -92,13 +92,29 @@ export class QuestionRecorder {
   private rec?: MediaRecorder;
   private stream?: MediaStream;
   private chunks: Blob[] = [];
+  private ctx?: AudioContext;
+  private analyser?: AnalyserNode;
+  private samples?: Uint8Array<ArrayBuffer>;
   mime = "";
 
   static supported(): boolean {
     return typeof MediaRecorder !== "undefined" && !!navigator.mediaDevices?.getUserMedia;
   }
 
+  get state(): RecordingState {
+    return this.rec?.state ?? "inactive";
+  }
+
   async start(): Promise<void> {
+    // Le contexte audio du vumètre se crée avant le premier await : sur iOS il doit
+    // naître dans le geste de l'utilisateur. Facultatif — sans lui, l'anneau reste plat.
+    try {
+      const Ctor = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      this.ctx = new Ctor();
+      void this.ctx.resume();
+    } catch {
+      this.ctx = undefined;
+    }
     this.stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
     const candidates = ["audio/webm;codecs=opus", "audio/mp4", "audio/ogg;codecs=opus", "audio/webm"];
     const mime = candidates.find((m) => MediaRecorder.isTypeSupported(m));
@@ -109,6 +125,39 @@ export class QuestionRecorder {
       if (e.data.size) this.chunks.push(e.data);
     };
     this.rec.start(250);
+    if (this.ctx) {
+      try {
+        this.analyser = this.ctx.createAnalyser();
+        this.analyser.fftSize = 512;
+        this.ctx.createMediaStreamSource(this.stream).connect(this.analyser);
+        this.samples = new Uint8Array(this.analyser.fftSize);
+      } catch {
+        this.analyser = undefined;
+      }
+    }
+  }
+
+  /** Niveau instantané du micro, 0 à 1 (RMS). 0 en pause ou sans vumètre. */
+  level(): number {
+    const a = this.analyser;
+    const b = this.samples;
+    if (!a || !b || this.rec?.state !== "recording") return 0;
+    a.getByteTimeDomainData(b);
+    let s = 0;
+    for (let i = 0; i < b.length; i++) {
+      const v = (b[i] - 128) / 128;
+      s += v * v;
+    }
+    return Math.min(1, Math.sqrt(s / b.length) * 4);
+  }
+
+  /** Suspend l'enregistrement sans le clore : la question reprend là où elle en était. */
+  pause(): void {
+    if (this.rec?.state === "recording") this.rec.pause();
+  }
+
+  resume(): void {
+    if (this.rec?.state === "paused") this.rec.resume();
   }
 
   /** Résout avec le fichier complet, une fois le dernier morceau reçu. */
@@ -117,7 +166,7 @@ export class QuestionRecorder {
       const rec = this.rec;
       if (!rec) return resolve(new Blob([]));
       rec.onstop = () => {
-        for (const t of this.stream?.getTracks() ?? []) t.stop();
+        this.release();
         resolve(new Blob(this.chunks, { type: this.mime }));
         this.rec = undefined;
       };
@@ -127,8 +176,15 @@ export class QuestionRecorder {
 
   cancel(): void {
     this.rec?.stop();
-    for (const t of this.stream?.getTracks() ?? []) t.stop();
+    this.release();
     this.rec = undefined;
     this.chunks = [];
+  }
+
+  private release() {
+    for (const t of this.stream?.getTracks() ?? []) t.stop();
+    void this.ctx?.close().catch(() => {});
+    this.ctx = undefined;
+    this.analyser = undefined;
   }
 }
