@@ -35,6 +35,8 @@ export interface PipelineStatus {
 
 export interface StatsPayload {
   listeners: number;
+  /** Auditeurs par langue d'écoute (tableau de bord). */
+  byLang?: Partial<Record<Lang, number>>;
   /** Bout-en-bout mesuré à la réception des ack (ms), fenêtre glissante 60 s. */
   e2eP50: number | null;
   e2eP95: number | null;

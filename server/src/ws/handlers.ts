@@ -67,7 +67,7 @@ export function attachWs(wss: WebSocketServer, ctx: WsContext): void {
     const snap = metrics.snapshot();
     room.broadcast({
       t: "stats",
-      stats: { listeners: room.count("listener"), ...snap, pipeline: pipeline.status },
+      stats: { listeners: room.count("listener"), byLang: room.listenersByLang(), ...snap, pipeline: pipeline.status },
     });
   }, 2000);
   wss.on("close", () => clearInterval(statsTimer));

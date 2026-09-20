@@ -49,7 +49,7 @@ latence — est donc exercé pour de vrai, sans dépenser un centime.
 | Studio de question (micro, pause, 30 s max, étapes, retour bilingue) | `client/src/listener/views/Studio.tsx` | ✅ |
 | Design system des interfaces (tokens Tailwind clair/sombre, polices et icônes embarquées) | `client/tailwind.config.ts`, `client/src/theme.css`, `client/src/ui` | ✅ |
 | Poste formateur (maquette Control Hub : micro et niveaux, onde réelle, pipeline, flux bilingue, questions, muet à l'Espace) | `client/src/lecturer` | ✅ |
-| Tableau de bord (QR, latences, file, journal) | `client/src/dashboard` | ✅ |
+| Tableau de bord (QR, checklist d'avant-séance, latence et dérive sur 10 min, pipeline et santé du serveur, flux, questions, journal) | `client/src/dashboard` | ✅ |
 | Rejeu d'une fixture WAV dans le pipeline | `server/scripts/replay.ts` | ✅ |
 
 ## Commandes
@@ -77,8 +77,8 @@ avec le même vocabulaire : les tokens de la maquette (couleurs, rayons, espacem
 styles de texte) vivent dans `client/tailwind.config.ts`, les polices (Inter, Plus
 Jakarta Sans, JetBrains Mono) et les icônes Material Symbols sont embarquées dans le
 build — un téléphone sur la borne de la salle n'a pas forcément Internet. Les briques
-communes (icône, logo, thème clair/sombre, langues) sont dans `client/src/ui`, chaque
-page garde son dossier (`listener`, `lecturer`, `dashboard`). Les vues de la page
+communes (icône, logo, thème clair/sombre, langues, courbes) sont dans `client/src/ui`,
+chaque page garde son dossier (`listener`, `lecturer`, `dashboard`) avec ses vues. Les vues de la page
 apprenant (écoute, transcription, questions, canaux) sont des onglets d'une même page :
 l'audio ne s'arrête pas quand on change de vue.
 

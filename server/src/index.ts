@@ -142,6 +142,9 @@ app.get("/api/session", async () => ({
   sessionId: room.sessionId,
   srcLang: room.srcLang,
   langs: room.langs,
+  providers: { stt: providers.stt.name, mt: providers.mt.name, tts: providers.tts.name },
+  /** Certificat auto-signé qui ne couvre pas l'IP courante : la checklist du tableau de bord le montre. */
+  certWarning: certCoversCurrentIp() ?? null,
   joinUrl: `${publicUrl()}/?s=${encodeURIComponent(room.sessionId)}`,
   /** Toutes les adresses candidates, les vraies interfaces d'abord (PUBLIC_URL les remplace). */
   joinUrls: cfg.PUBLIC_URL

@@ -42,6 +42,15 @@ export class Room {
     return n;
   }
 
+  /** Auditeurs par langue d'écoute. */
+  listenersByLang(): Partial<Record<Lang, number>> {
+    const out: Partial<Record<Lang, number>> = {};
+    for (const p of this.participants.values()) {
+      if (p.role === "listener" && p.lang) out[p.lang] = (out[p.lang] ?? 0) + 1;
+    }
+    return out;
+  }
+
   send(p: Participant, evt: ServerEvent): void {
     if (p.ws.readyState === p.ws.OPEN) p.ws.send(JSON.stringify(evt));
   }
