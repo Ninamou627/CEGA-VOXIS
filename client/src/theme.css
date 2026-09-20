@@ -47,8 +47,73 @@
   }
 }
 
+/* Barres de défilement : fines sur un ordinateur (poste formateur), absentes au doigt. */
 ::-webkit-scrollbar {
-  display: none;
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgb(var(--outline) / 0.25);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgb(var(--outline) / 0.45);
+}
+@media (pointer: coarse) {
+  ::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/* Poste formateur : le micro qui capte (anneaux acoustiques, halo qui respire). */
+@keyframes mic-pulse-ring {
+  0% {
+    transform: scale(0.92);
+    opacity: 0.9;
+  }
+  50% {
+    opacity: 0.45;
+  }
+  100% {
+    transform: scale(1.65);
+    opacity: 0;
+  }
+}
+@keyframes mic-pulse-outer {
+  0% {
+    transform: scale(0.9);
+    opacity: 0.7;
+  }
+  100% {
+    transform: scale(2.1);
+    opacity: 0;
+  }
+}
+@keyframes glow-breathe {
+  0%,
+  100% {
+    box-shadow: 0 0 14px rgb(var(--secondary) / 0.35), inset 0 0 10px rgb(var(--secondary) / 0.2);
+  }
+  50% {
+    box-shadow: 0 0 28px rgb(var(--secondary) / 0.75), inset 0 0 16px rgb(var(--secondary) / 0.45);
+  }
+}
+@layer components {
+  .mic-ring-1 {
+    animation: mic-pulse-ring 1.8s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
+  }
+  .mic-ring-2 {
+    animation: mic-pulse-outer 1.8s cubic-bezier(0.215, 0.61, 0.355, 1) infinite 0.6s;
+  }
+  .mic-glowing-badge {
+    animation: glow-breathe 2.2s ease-in-out infinite;
+  }
+  .waveform-bar {
+    transition: height 0.12s cubic-bezier(0.4, 0, 0.2, 1);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

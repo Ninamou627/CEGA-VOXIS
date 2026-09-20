@@ -1,11 +1,21 @@
 <!doctype html>
-<html lang="fr">
+<html class="dark" lang="fr">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Formateur · Interprète de salle</title>
+    <meta name="theme-color" content="#0f131c" />
+    <title>Formateur · VOXIS</title>
+    <!-- Thème mémorisé appliqué avant le premier rendu (voir src/ui/theme.ts). -->
+    <script>
+      try {
+        if (localStorage.getItem("voxis-theme") === "light") {
+          document.documentElement.classList.replace("dark", "theme-light");
+          document.querySelector('meta[name="theme-color"]').content = "#f9f9ff";
+        }
+      } catch (e) {}
+    </script>
   </head>
-  <body>
+  <body class="bg-background font-body-md text-on-surface antialiased selection:bg-secondary/30 selection:text-secondary min-h-screen flex flex-col">
     <div id="root"></div>
     <script type="module" src="/src/lecturer/main.tsx"></script>
   </body>

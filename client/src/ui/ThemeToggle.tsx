@@ -2,12 +2,27 @@ import { Icon } from "./Icon";
 import { useTheme } from "./theme";
 
 /**
- * Deux formes dans les maquettes : l'interrupteur à deux icônes (écran d'écoute) et
- * le bouton rond à une icône (studio de question). Même thème derrière.
+ * Trois formes dans les maquettes : l'interrupteur à deux icônes (écran d'écoute), le
+ * bouton rond à une icône (studio de question) et le bouton carré du poste formateur,
+ * qui montre le thème vers lequel on bascule. Même thème derrière.
  */
-export function ThemeToggle({ variant = "switch" }: { variant?: "switch" | "round" }) {
+export function ThemeToggle({ variant = "switch" }: { variant?: "switch" | "round" | "square" }) {
   const [theme, toggle] = useTheme();
   const light = theme === "light";
+  if (variant === "square") {
+    return (
+      <button
+        type="button"
+        aria-label="Basculer thème sombre / clair"
+        title="Basculer thème clair/sombre"
+        aria-pressed={light}
+        onClick={toggle}
+        className="flex items-center justify-center w-10 h-10 rounded-xl bg-surface-container hover:bg-surface-container-high border border-outline-variant/30 text-on-surface transition-all cursor-pointer shadow-sm"
+      >
+        <Icon name={light ? "dark_mode" : "light_mode"} className={`text-[20px] ${light ? "text-primary" : "text-tertiary"}`} />
+      </button>
+    );
+  }
   if (variant === "round") {
     return (
       <button

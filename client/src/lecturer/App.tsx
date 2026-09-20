@@ -1,65 +1,103 @@
 /**
- * Page formateur, ouverte dans Chrome sur le PC de la salle. Capture le micro HF,
- * l'envoie en PCM au serveur local, affiche ce que la salle entend, joue les
- * questions traduites dans le casque (fermé !) du formateur.
+ * Poste formateur (maquette « Formateur Control Hub »), ouvert dans Chrome sur le PC
+ * de la salle. Capture le micro HF, l'envoie en PCM au serveur local, montre ce que
+ * la salle entend, joue les questions traduites dans le casque (fermé !) du formateur.
  *
  * Deux niveaux sont affichés : celui capté ici, et celui reçu par le serveur. S'ils
  * divergent, le problème est réseau ; si les deux sont bas, c'est le micro.
  */
 import { useEffect, useRef, useState } from "react";
-import type { AudioHeader, FloorState, ServerEvent, StatsPayload } from "../../../shared/protocol";
+import type { AudioHeader, FloorState, Lang, ServerEvent, StatsPayload } from "../../../shared/protocol";
 import { listMics, startMic, type MicHandle } from "../lib/mic";
 import { WebAudioPlayer } from "../lib/player";
 import { SalleSocket, type ConnState } from "../lib/ws";
+import { Header } from "./Header";
+import type { Line, QuestionItem } from "./types";
+import { AudioPanel, SPEECH_DB } from "./views/AudioPanel";
+import { Join } from "./views/Join";
+import { Questions } from "./views/Questions";
+import { TranslationHub } from "./views/TranslationHub";
+import { VocalStage, WAVE_BARS } from "./views/VocalStage";
 
-interface Line {
-  seq: number;
-  src?: string;
-  tgt?: string;
-}
+type Hello = Extract<ServerEvent, { t: "hello" }>;
 
-const SPEECH_DB = -35;
+/** Niveau RMS local au-delà duquel on considère que le formateur parle. */
+const SPEAK_LEVEL = 0.06;
+/** Après le premier clic sur « Terminer », le second doit arriver dans ce délai. */
+const STOP_ARM_MS = 4000;
 
 export function App() {
   const params = new URLSearchParams(location.search);
   const [token, setToken] = useState(params.get("token") ?? "");
   const [running, setRunning] = useState(false);
   const [conn, setConn] = useState<ConnState>("closed");
+  const [hello, setHello] = useState<Hello>();
   const [level, setLevel] = useState(0);
+  const [history, setHistory] = useState<number[]>([]);
   const [muted, setMuted] = useState(false);
   const [partial, setPartial] = useState("");
   const [lines, setLines] = useState<Line[]>([]);
   const [floor, setFloor] = useState<FloorState>({ state: "lecturer" });
-  const [question, setQuestion] = useState<{ srcText: string; text: string }>();
+  const [questions, setQuestions] = useState<QuestionItem[]>([]);
   const [stats, setStats] = useState<StatsPayload>();
   const [err, setErr] = useState<string>();
   const [degraded, setDegraded] = useState<string>();
   const [mics, setMics] = useState<MediaDeviceInfo[]>([]);
   const [deviceId, setDeviceId] = useState<string>(localStorage.getItem("salle.mic") ?? "");
   const [aec, setAec] = useState<boolean>(localStorage.getItem("salle.aec") !== "off");
-  const [micLabel, setMicLabel] = useState<string>("");
+  const [micLabel, setMicLabel] = useState<string>();
   const [sampleRate, setSampleRate] = useState<number>();
+  const [now, setNow] = useState(Date.now());
+  const [stopArmed, setStopArmed] = useState(false);
 
   const sock = useRef<SalleSocket>(undefined);
   const mic = useRef<MicHandle>(undefined);
   const player = useRef<WebAudioPlayer>(undefined);
+  const clockOffset = useRef(0);
+  const startedAt = useRef(0);
+  const historyRef = useRef<number[]>([]);
+  const questionSeq = useRef(0);
+  const mutedRef = useRef(false);
+  const stopTimer = useRef<number>(undefined);
 
   useEffect(() => {
     void listMics().then(setMics);
-    return () => stop();
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => {
+      clearInterval(id);
+      stop();
+    };
   }, []);
+
+  // Barre Espace = muet, comme sur une console : sauf quand on tape ou qu'on vise un bouton.
+  useEffect(() => {
+    if (!running) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.code !== "Space" || e.repeat) return;
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || tag === "BUTTON") return;
+      e.preventDefault();
+      toggleMute();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [running]);
 
   async function openMic(id: string, echoCancellation = aec) {
     mic.current?.stop();
     const m = await startMic(
       (frame, lvl) => {
         setLevel(lvl);
+        const h = historyRef.current;
+        h.push(lvl);
+        if (h.length > WAVE_BARS) h.splice(0, h.length - WAVE_BARS);
+        setHistory([...h]);
         if (frame.byteLength) sock.current?.sendBinary(frame);
       },
       { deviceId: id || undefined, echoCancellation },
     );
     mic.current = m;
-    m.setMuted(muted);
+    m.setMuted(mutedRef.current);
     setMicLabel(m.label);
     setSampleRate(m.sampleRate);
     setDeviceId(m.deviceId);
@@ -79,18 +117,11 @@ export function App() {
 
       const s = new SalleSocket(
         { t: "join", role: "lecturer", token, sampleRate: mic.current!.sampleRate, ua: navigator.userAgent.slice(0, 200) },
-        {
-          onState: setConn,
-          onEvent: handleEvent,
-          onAudio: (h: AudioHeader, bytes) => {
-            if (h.kind !== "question") return;
-            setQuestion({ srcText: "", text: h.text });
-            void p.enqueue(bytes, h.mime, { seq: 0, tOrigin: h.tOrigin, durMs: h.durMs, text: h.text, lang: h.lang, replay: true });
-          },
-        },
+        { onState: setConn, onEvent: handleEvent, onAudio: handleAudio },
       );
       sock.current = s;
       s.connect();
+      startedAt.current = Date.now();
       setRunning(true);
     } catch (e) {
       setErr((e as Error).message);
@@ -105,25 +136,58 @@ export function App() {
     sock.current = undefined;
     player.current?.destroy();
     player.current = undefined;
+    historyRef.current = [];
+    setHistory([]);
     setRunning(false);
+    setStopArmed(false);
     setLevel(0);
   }
 
+  /** « Terminer la session » en deux clics : le premier arme, le second dans les 4 s arrête. */
+  function requestStop() {
+    if (stopArmed) {
+      clearTimeout(stopTimer.current);
+      stop();
+      return;
+    }
+    setStopArmed(true);
+    stopTimer.current = window.setTimeout(() => setStopArmed(false), STOP_ARM_MS);
+  }
+
   function toggleMute() {
-    const m = !muted;
+    const m = !mutedRef.current;
+    mutedRef.current = m;
     setMuted(m);
     mic.current?.setMuted(m);
     sock.current?.send({ t: "lecturer.mute", muted: m });
   }
 
+  function changeDevice(id: string) {
+    setDeviceId(id);
+    localStorage.setItem("salle.mic", id);
+    if (running) void openMic(id).catch((e) => setErr((e as Error).message));
+  }
+
+  function changeAec(on: boolean) {
+    setAec(on);
+    localStorage.setItem("salle.aec", on ? "on" : "off");
+    if (running) void openMic(deviceId, on).catch((e) => setErr((e as Error).message));
+  }
+
   function handleEvent(e: ServerEvent) {
     switch (e.t) {
+      case "hello":
+        clockOffset.current = e.tServer - Date.now();
+        setHello(e);
+        setFloor(e.floor);
+        setDegraded(e.pipeline.degraded === "none" ? undefined : e.pipeline.degraded);
+        break;
       case "src.partial":
         setPartial(e.text);
         break;
       case "src.commit":
         setPartial("");
-        upsert(e.seq, { src: e.text });
+        upsert(e.seq, { src: e.text, tOrigin: e.tOrigin, reason: e.reason });
         break;
       case "tr.segment":
         upsert(e.seq, { tgt: e.text });
@@ -132,7 +196,9 @@ export function App() {
         setFloor(e.floor);
         break;
       case "question":
-        setQuestion({ srcText: e.srcText, text: e.text });
+        setQuestions((prev) =>
+          [...prev, { n: ++questionSeq.current, who: e.who, srcLang: e.srcLang, srcText: e.srcText, lang: e.lang, text: e.text, at: Date.now() }].slice(-30),
+        );
         break;
       case "stats":
         setStats(e.stats);
@@ -146,6 +212,30 @@ export function App() {
     }
   }
 
+  /** Le son d'une question arrive après son texte : on le range avec elle, et on le joue. */
+  function handleAudio(h: AudioHeader, bytes: Uint8Array) {
+    if (h.kind !== "question") return;
+    const audio = { bytes: bytes.slice(), mime: h.mime, durMs: h.durMs };
+    setQuestions((prev) => {
+      let j = prev.length - 1;
+      for (let i = prev.length - 1; i >= 0; i--) {
+        if (!prev[i].audio && prev[i].text === h.text) {
+          j = i;
+          break;
+        }
+      }
+      return prev.map((q, k) => (k === j ? { ...q, audio } : q));
+    });
+    void player.current?.enqueue(audio.bytes, h.mime, { seq: 0, tOrigin: h.tOrigin, durMs: h.durMs, text: h.text, lang: h.lang, replay: true });
+  }
+
+  function replay(q: QuestionItem) {
+    const p = player.current;
+    if (!p || !q.audio) return;
+    p.flush();
+    void p.enqueue(q.audio.bytes, q.audio.mime, { seq: 0, tOrigin: Date.now(), durMs: q.audio.durMs, text: q.text, lang: q.lang, replay: true });
+  }
+
   function upsert(seq: number, patch: Partial<Line>) {
     setLines((prev) => {
       const i = prev.findIndex((l) => l.seq === seq);
@@ -154,130 +244,88 @@ export function App() {
     });
   }
 
-  const connPill = conn === "open" ? "ok" : conn === "closed" ? "crit" : "warn";
+  // ---------------------------------------------------------------------------
+
   const serverDb = stats?.micDb ?? null;
   const silentS = stats?.micSilentS ?? null;
   // 20 s sans parole : au-delà d'une pause normale de formateur, en deçà du doute.
   const serverSilent = running && !muted && serverDb != null && serverDb < SPEECH_DB && (silentS ?? 0) >= 20;
-
-  const micSelect = (
-    <>
-      <label>
-        Micro
-        <select
-          value={deviceId}
-          onChange={(e) => {
-            const id = e.target.value;
-            setDeviceId(id);
-            localStorage.setItem("salle.mic", id);
-            if (running) void openMic(id).catch((err) => setErr((err as Error).message));
-          }}
-        >
-          <option value="">Par défaut du système</option>
-          {mics.map((m, i) => (
-            <option key={m.deviceId || i} value={m.deviceId}>
-              {m.label || `Micro ${i + 1} (autorisez le micro pour voir le nom)`}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="row" style={{ gap: 8 }}>
-        <input
-          type="checkbox"
-          checked={aec}
-          onChange={(e) => {
-            const on = e.target.checked;
-            setAec(on);
-            localStorage.setItem("salle.aec", on ? "on" : "off");
-            if (running) void openMic(deviceId, on).catch((err) => setErr((err as Error).message));
-          }}
-        />
-        <span>
-          Annulation d'écho — <span className="tiny">obligatoire si la traduction sort des haut-parleurs de ce PC (test sur une seule machine)</span>
-        </span>
-      </label>
-    </>
-  );
+  const srcLang: Lang = hello?.srcLang ?? "en";
+  const tgtLang: Lang = hello?.langs[0] ?? "fr";
+  const asking = floor.state === "question";
 
   return (
-    <main className="app">
-      <div className="row">
-        <h1 className="grow">Formateur</h1>
-        {running && <span className={`pill ${connPill}`}>{conn === "open" ? "Connecté" : conn}</span>}
-        {stats && (
-          <span className="pill">
-            {stats.listeners} à l'écoute · {stats.pipeline.stt} / {stats.pipeline.mt} / {stats.pipeline.tts}
-          </span>
-        )}
-      </div>
-
-      {err && <div className="banner crit">{err}</div>}
-      {degraded && <div className="banner crit">Mode dégradé : {degraded}</div>}
-      {serverSilent && (
-        <div className="banner crit">
-          Le serveur reçoit du silence ({serverDb} dB depuis {silentS} s). Ce n'est pas le bon micro, ou son niveau est trop bas : choisissez-en un autre
-          ci-dessous, et vérifiez le niveau d'entrée dans Windows.
-        </div>
-      )}
-
-      {!running ? (
-        <div className="card" style={{ display: "grid", gap: 12 }}>
-          <label>
-            Jeton de session
-            <input value={token} onChange={(e) => setToken(e.target.value)} placeholder="SESSION_TOKEN du .env" />
-          </label>
-          {micSelect}
-          <button className="primary big" onClick={() => void start()} disabled={!token}>
-            🎙️ Démarrer le micro
-          </button>
-          <p className="tiny">
-            Chrome recommandé. Casque fermé obligatoire : un casque ouvert à côté d'un micro ouvert, c'est un larsen.
-          </p>
-        </div>
-      ) : (
-        <>
-          <div className="card" style={{ display: "grid", gap: 10 }}>
-            <div className="meter">
-              <div style={{ width: `${Math.round(level * 100)}%`, background: muted ? "var(--ink-3)" : undefined }} />
-            </div>
-            <div className="row">
-              <button className={`grow ${muted ? "primary" : ""}`} onClick={toggleMute}>
-                {muted ? "🔇 MUET — reprendre" : "🔴 En direct — couper le micro"}
-              </button>
-              <button onClick={stop}>Arrêter</button>
-            </div>
-            {micSelect}
-            <p className="tiny">
-              {micLabel} · {sampleRate} Hz · niveau ici {Math.round(level * 100)} % · reçu par le serveur{" "}
-              <b className={serverDb != null && serverDb > SPEECH_DB ? "" : "mono"}>{serverDb != null ? `${serverDb} dB` : "—"}</b>
-              {" · "}
-              {floor.state === "question" ? "un apprenant pose une question" : "vous avez la parole"}
-              {stats?.e2eP50 != null && ` · décalage salle ${(stats.e2eP50 / 1000).toFixed(1)} s`}
-              {stats?.queueMaxMs != null && ` · file max ${(stats.queueMaxMs / 1000).toFixed(1)} s`}
-            </p>
-          </div>
-
-          {question && (
-            <div className="card">
-              <h2>Dernière question</h2>
-              <p style={{ fontWeight: 600 }}>{question.text}</p>
-              {question.srcText && <p className="tiny">{question.srcText}</p>}
-            </div>
-          )}
-
-          <div className="card transcript">
-            <h2>Ce que la salle entend</h2>
-            {lines.map((l) => (
-              <div className="line" key={l.seq}>
-                <div className="src">{l.src}</div>
-                <div className="tgt">{l.tgt ?? "…"}</div>
+    <>
+      <Header
+        running={running}
+        conn={conn}
+        session={hello?.sessionId}
+        elapsedS={running ? (now - startedAt.current) / 1000 : 0}
+        micLabel={micLabel}
+        muted={muted}
+        serverDb={serverDb}
+        listeners={stats?.listeners}
+        srcLang={srcLang}
+        stopArmed={stopArmed}
+        onStop={requestStop}
+      />
+      <main className="flex-1 w-full max-w-[1780px] mx-auto p-4 md:p-6 lg:p-7 flex flex-col gap-5">
+        {(err || degraded || serverSilent) && (
+          <div className="flex flex-col gap-2">
+            {err && (
+              <div className="bg-error-container text-on-error-container border border-error/30 rounded-xl px-4 py-3 text-sm" role="alert">
+                {err}
               </div>
-            ))}
-            {partial && <div className="partial">{partial}</div>}
-            {!lines.length && !partial && <p className="muted">Parlez : la transcription apparaît ici.</p>}
+            )}
+            {degraded && (
+              <div className="bg-error-container text-on-error-container border border-error/30 rounded-xl px-4 py-3 text-sm" role="alert">
+                Mode dégradé : {degraded}
+              </div>
+            )}
+            {serverSilent && (
+              <div className="bg-error-container text-on-error-container border border-error/30 rounded-xl px-4 py-3 text-sm" role="alert">
+                Le serveur reçoit du silence ({serverDb} dB depuis {silentS} s). Ce n'est pas le bon micro, ou son niveau est trop bas : choisissez-en un
+                autre dans le panneau audio, et vérifiez le niveau d'entrée dans Windows.
+              </div>
+            )}
           </div>
-        </>
-      )}
-    </main>
+        )}
+
+        {!running ? (
+          <Join token={token} onToken={setToken} mics={mics} deviceId={deviceId} onDevice={changeDevice} aec={aec} onAec={changeAec} onStart={() => void start()} />
+        ) : (
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 w-full items-start">
+            <AudioPanel
+              mics={mics}
+              deviceId={deviceId}
+              onDevice={changeDevice}
+              aec={aec}
+              onAec={changeAec}
+              level={level}
+              serverDb={serverDb}
+              sampleRate={sampleRate}
+              muted={muted}
+              onMute={toggleMute}
+              stats={stats}
+              degraded={degraded}
+            />
+            <div className="lg:col-span-6 flex flex-col gap-4">
+              <VocalStage
+                muted={muted}
+                speaking={level > SPEAK_LEVEL}
+                question={asking}
+                history={history}
+                serverDb={serverDb}
+                sampleRate={sampleRate}
+                e2eP50={stats?.e2eP50 ?? null}
+                queueMaxMs={stats?.queueMaxMs ?? null}
+              />
+              <TranslationHub lines={lines} partial={partial} srcLang={srcLang} tgtLang={tgtLang} stats={stats} degraded={degraded} clockOffset={clockOffset.current} />
+            </div>
+            <Questions questions={questions} asking={asking} now={now} onReplay={replay} onArchive={(q) => setQuestions((prev) => prev.map((x) => (x.n === q.n ? { ...x, archived: true } : x)))} />
+          </div>
+        )}
+      </main>
+    </>
   );
 }
