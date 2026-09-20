@@ -88,10 +88,11 @@ export function AudioPanel(p: AudioPanelProps) {
 
         {/* Muet */}
         <button
+          key={String(p.muted)}
           type="button"
           onClick={p.onMute}
           aria-pressed={p.muted}
-          className={`w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl border text-on-surface font-headline-sm text-xs font-semibold transition-all cursor-pointer active:scale-[0.98] ${
+          className={`pop w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl border text-on-surface font-headline-sm text-xs font-semibold transition-all cursor-pointer active:scale-[0.98] ${
             p.muted ? "bg-error-container/30 border-error/40 hover:bg-error-container/40" : "bg-surface-container hover:bg-surface-container-high border-outline-variant/30"
           }`}
         >

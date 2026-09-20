@@ -6,8 +6,9 @@
  * Tout ce qui touche à la dérive est ici : file mesurée, abandon des segments
  * trop vieux, « revenir au direct », réécoute des 30 dernières secondes.
  */
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { AudioHeader, FloorState, Lang, ServerEvent, StatsPayload } from "../../../shared/protocol";
+import { BIN_MS, envelope } from "../lib/envelope";
 import { QuestionRecorder } from "../lib/mic";
 import { ElementPlayer, WebAudioPlayer, type Player, type SegmentMeta } from "../lib/player";
 import { keepWakeLockAlive, requestWakeLock } from "../lib/wakelock";
@@ -19,6 +20,7 @@ import type { Line, PlayerKind, QuestionOutcome } from "./types";
 import { Join } from "./views/Join";
 import { Listen } from "./views/Listen";
 import { Soon } from "./views/Soon";
+import { WAVE_BARS, type WaveSample } from "./views/Waveform";
 import { Studio, type StudioPhase } from "./views/Studio";
 
 /** Au-delà, on saute le segment plutôt que de dériver (§10 de la revue). */
@@ -75,6 +77,8 @@ export function App() {
   const player = useRef<Player>(undefined);
   const clockOffset = useRef(0);
   const ring = useRef<{ bytes: Uint8Array; mime: string; meta: SegmentMeta }[]>([]);
+  /** Enveloppes d'amplitude par segment, pour l'onde qui suit la voix. */
+  const envelopes = useRef(new Map<number, Float32Array>());
   const recorder = useRef<QuestionRecorder>(undefined);
   const serverSpeed = useRef(1);
   // Lus depuis les rappels du WebSocket et du lecteur, qui ne voient pas l'état React.
@@ -229,6 +233,13 @@ export function App() {
       return;
     }
     const meta: SegmentMeta = { seq: h.seq, tOrigin: h.tOrigin, durMs: h.durMs, text: h.text, lang: h.lang };
+    envelope(bytes)
+      .then((env) => {
+        const m = envelopes.current;
+        m.set(h.seq, env);
+        while (m.size > 40) m.delete(m.keys().next().value!); // les plus anciennes d'abord
+      })
+      .catch(() => {}); // sans enveloppe, l'onde pulse simplement
     const r = ring.current;
     r.push({ bytes, mime: h.mime, meta });
     let total = r.reduce((a, x) => a + x.meta.durMs, 0);
@@ -237,6 +248,19 @@ export function App() {
     if (pausedRef.current) return;
     void p.enqueue(bytes, h.mime, meta);
   }
+
+  /** Ce que l'onde doit montrer maintenant : lu à chaque image, sans passer par l'état React. */
+  const waveSample = useCallback((): WaveSample => {
+    const pl = player.current?.playing;
+    if (!pl || pausedRef.current || mutedRef.current) return { kind: "idle" };
+    const env = envelopes.current.get(pl.meta.seq);
+    if (!env) return { kind: "pulse" };
+    // Fenêtre centrée sur la position de lecture : le passé à gauche, la suite à droite.
+    const at = Math.floor(pl.elapsedMs / BIN_MS);
+    const levels: number[] = [];
+    for (let i = 0; i < WAVE_BARS; i++) levels.push(env[at + i - WAVE_BARS / 2] ?? 0);
+    return { kind: "levels", levels };
+  }, []);
 
   function resync() {
     const p = player.current;
@@ -424,6 +448,7 @@ export function App() {
             onLang={changeLang}
             degraded={degraded?.mode}
             audio={{ paused, muted, volume, playing: queueMs > 0, queueMs, dropped, e2eMs: stats?.e2eP50 ?? null, rate }}
+            waveSample={waveSample}
             onPause={togglePause}
             onMute={toggleMute}
             onVolume={changeVolume}

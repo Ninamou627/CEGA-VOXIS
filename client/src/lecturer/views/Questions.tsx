@@ -3,6 +3,7 @@
  * traduites et jouées dans le casque (D8) ; ici on les relit, on les réécoute et
  * on les archive. Pas de file à modérer : la parole va au premier qui la prend.
  */
+import { useEffect, useRef } from "react";
 import { ago, mmss } from "../../ui/format";
 import { Icon } from "../../ui/Icon";
 import { LANGS } from "../../ui/langs";
@@ -13,8 +14,30 @@ export interface QuestionsProps {
   /** Un apprenant est en train d'enregistrer sa question. */
   asking: boolean;
   now: number;
+  /** Question en cours de lecture dans le casque. */
+  playing?: { n: number; startedAt: number; durMs: number };
   onReplay: (q: QuestionItem) => void;
   onArchive: (q: QuestionItem) => void;
+}
+
+/** Barre qui avance au rythme réel de la lecture : une transition CSS, pas de minuterie. */
+function Progress({ startedAt, durMs }: { startedAt: number; durMs: number }) {
+  const bar = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = bar.current;
+    if (!el) return;
+    const elapsed = Math.min(durMs, performance.now() - startedAt);
+    el.style.transition = "none";
+    el.style.width = `${(elapsed / durMs) * 100}%`;
+    void el.offsetWidth; // le navigateur prend la position de départ avant la transition
+    el.style.transition = `width ${Math.max(0, durMs - elapsed)}ms linear`;
+    el.style.width = "100%";
+  }, [startedAt, durMs]);
+  return (
+    <div className="h-1 w-full bg-surface-container-highest rounded-full overflow-hidden">
+      <div ref={bar} className="h-full bg-secondary rounded-full" />
+    </div>
+  );
 }
 
 export function Questions(p: QuestionsProps) {
@@ -34,13 +57,22 @@ export function Questions(p: QuestionsProps) {
           </div>
         </div>
         <span
-          className={`flex items-center gap-1.5 text-[10px] font-label-badge font-bold uppercase px-2 py-1 rounded-full border shrink-0 ${
-            p.asking ? "text-tertiary bg-tertiary/10 border-tertiary/30" : "text-on-surface-variant bg-surface-container-low border-outline-variant/30"
+          key={p.playing ? "playing" : p.asking ? "asking" : "free"}
+          className={`pop flex items-center gap-1.5 text-[10px] font-label-badge font-bold uppercase px-2 py-1 rounded-full border shrink-0 ${
+            p.playing
+              ? "text-secondary bg-secondary/10 border-secondary/30"
+              : p.asking
+                ? "text-tertiary bg-tertiary/10 border-tertiary/30"
+                : "text-on-surface-variant bg-surface-container-low border-outline-variant/30"
           }`}
-          title={p.asking ? "Un apprenant enregistre sa question" : "Les apprenants peuvent prendre la parole"}
+          title={p.playing ? "Une question joue dans votre casque" : p.asking ? "Un apprenant enregistre sa question" : "Les apprenants peuvent prendre la parole"}
         >
-          <span className={`w-1.5 h-1.5 rounded-full ${p.asking ? "bg-tertiary animate-pulse" : "bg-secondary"}`}></span>
-          {p.asking ? "Un apprenant parle" : "Parole libre"}
+          {p.playing ? (
+            <Icon name="headphones" className="text-[12px] animate-pulse" />
+          ) : (
+            <span className={`w-1.5 h-1.5 rounded-full ${p.asking ? "bg-tertiary animate-pulse" : "bg-secondary"}`}></span>
+          )}
+          {p.playing ? "Lecture casque" : p.asking ? "Un apprenant parle" : "Parole libre"}
         </span>
       </div>
 
@@ -55,11 +87,12 @@ export function Questions(p: QuestionsProps) {
         )}
         {open.map((q, i) => {
           const fresh = i === 0 && p.now - q.at < 60_000;
+          const playing = p.playing?.n === q.n ? p.playing : undefined;
           return (
             <div
               key={q.n}
-              className={`bg-surface-container-lowest border rounded-2xl p-4 shadow-xl flex flex-col gap-3 relative transition-all ${
-                fresh ? "border-2 border-primary/40 hover:border-primary" : "border-outline-variant/25"
+              className={`rise-in bg-surface-container-lowest border rounded-2xl p-4 shadow-xl flex flex-col gap-3 relative transition-all ${
+                playing ? "border-2 border-secondary/50" : fresh ? "border-2 border-primary/40 hover:border-primary" : "border-outline-variant/25"
               }`}
             >
               <div className="flex items-center justify-between">
@@ -95,10 +128,21 @@ export function Questions(p: QuestionsProps) {
                 </div>
               )}
 
+              {playing && (
+                <div className="flex flex-col gap-1.5 rise-in">
+                  <div className="flex items-center gap-1.5 text-[11px] font-metric-mono-sm text-secondary font-semibold">
+                    <Icon name="headphones" className="text-[15px] animate-pulse" />
+                    <span>Lecture dans votre casque</span>
+                    <span className="ml-auto text-on-surface-variant">{mmss(playing.durMs)}</span>
+                  </div>
+                  <Progress startedAt={playing.startedAt} durMs={playing.durMs} />
+                </div>
+              )}
+
               <div className="grid grid-cols-2 gap-2 pt-1">
                 <button
                   type="button"
-                  disabled={!q.audio}
+                  disabled={!q.audio || !!playing}
                   onClick={() => p.onReplay(q)}
                   title="Rejouer la question dans le casque"
                   className="flex items-center justify-center gap-1 bg-surface-container hover:bg-surface-container-high text-on-surface py-2 px-2 rounded-xl text-xs font-medium border border-outline-variant/20 transition-all active:scale-95 cursor-pointer disabled:opacity-40 disabled:cursor-default"

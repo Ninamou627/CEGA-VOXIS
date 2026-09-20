@@ -2,13 +2,13 @@
  * Vue « Listen » : l'écran d'écoute de la maquette, branché sur l'état réel.
  * Purement présentationnelle — l'état et les actions viennent de App.
  */
-import type { PointerEvent } from "react";
+import { useEffect, useRef, type PointerEvent } from "react";
 import type { Lang } from "../../../../shared/protocol";
 import type { ConnState } from "../../lib/ws";
 import { Icon } from "../../ui/Icon";
 import { LANGS } from "../../ui/langs";
 import type { Line, PlayerKind, QuestionOutcome } from "../types";
-import { Waveform } from "./Waveform";
+import { Waveform, type WaveSample } from "./Waveform";
 
 export interface AudioState {
   paused: boolean;
@@ -45,6 +45,8 @@ export interface ListenProps {
   onLang: (l: Lang) => void;
   degraded?: string;
   audio: AudioState;
+  /** Échantillon de l'onde, lu à chaque image par le composant Waveform. */
+  waveSample: () => WaveSample;
   onPause: () => void;
   onMute: () => void;
   onVolume: (v: number) => void;
@@ -83,6 +85,13 @@ export function Listen(p: ListenProps) {
   const q = p.question;
   const latest = p.lines[p.lines.length - 1];
   const previous = p.lines.slice(-3, -1);
+  // Hypothèse en cours : les mots au-delà de ceux du rendu précédent viennent d'arriver.
+  const words = p.partial ? p.partial.split(" ") : [];
+  const seenWords = useRef(0);
+  const newFrom = seenWords.current;
+  useEffect(() => {
+    seenWords.current = words.length;
+  });
 
   // Ce que dit la pastille au-dessus de l'onde, du plus bloquant au nominal.
   const status = p.degraded
@@ -130,7 +139,7 @@ export function Listen(p: ListenProps) {
           <div className="flex items-center gap-space-xs">
             <span className="font-label-badge text-label-badge uppercase tracking-wider text-primary">REAL-TIME INTERPRETATION</span>
           </div>
-          <div className="flex items-center gap-space-xs bg-surface-container-low px-2 py-0.5 rounded-full shadow-sm">
+          <div key={p.conn} className="pop flex items-center gap-space-xs bg-surface-container-low px-2 py-0.5 rounded-full shadow-sm">
             <span className="relative flex h-2 w-2">
               {live && <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-secondary opacity-75"></span>}
               <span className={`relative inline-flex rounded-full h-2 w-2 ${linkDot}`}></span>
@@ -194,12 +203,12 @@ export function Listen(p: ListenProps) {
         <div className="absolute -top-16 left-1/2 -translate-x-1/2 w-64 h-64 bg-secondary/10 rounded-full blur-3xl pointer-events-none"></div>
         <div className="absolute -bottom-16 left-1/2 -translate-x-1/2 w-56 h-56 bg-primary-container/15 rounded-full blur-3xl pointer-events-none"></div>
 
-        <div className="relative z-10 flex items-center gap-space-xs bg-surface-container-high/90 px-3 py-1 rounded-full shadow-sm mb-space-sm" role="status">
+        <div key={status.text} className="pop relative z-10 flex items-center gap-space-xs bg-surface-container-high/90 px-3 py-1 rounded-full shadow-sm mb-space-sm" role="status">
           <Icon name={status.icon} className={`text-[18px] ${status.cls}`} />
           <span className="font-headline-sm text-headline-sm text-on-surface">{status.text}</span>
         </div>
 
-        <Waveform active={live && a.playing && !a.paused && !a.muted} />
+        <Waveform sample={p.waveSample} />
 
         {/* Télémétrie : décalage de la salle, profondeur de file (dérive) */}
         <div className="relative z-10 flex items-center justify-between w-full px-space-xs pt-space-xs pb-space-sm">
@@ -305,21 +314,30 @@ export function Listen(p: ListenProps) {
             ))}
 
             {latest ? (
-              <>
+              <div key={latest.seq} className="rise-in flex flex-col gap-space-xs">
                 {latest.src && <div className="font-body-sm text-body-sm text-on-surface-variant italic pl-2 border-l-0">“{latest.src}”</div>}
                 <div
-                  className={`font-body-transcript-lg-mobile text-body-transcript-lg-mobile pt-1 ${
+                  key={latest.tgt ? "tgt" : "wait"}
+                  className={`font-body-transcript-lg-mobile text-body-transcript-lg-mobile pt-1 ${latest.tgt ? "rise-in" : ""} ${
                     latest.untranslated ? "text-error font-normal" : "text-on-surface font-medium"
                   }`}
                 >
                   {latest.tgt ? `“${latest.tgt}”` : "…"}
                 </div>
-              </>
+              </div>
             ) : (
               !p.partial && <div className="font-body-md text-body-md text-on-surface-variant">En attente du formateur…</div>
             )}
 
-            {p.partial && <div className="font-body-sm text-body-sm text-on-surface-variant/70 italic">{p.partial}</div>}
+            {p.partial && (
+              <div className="font-body-sm text-body-sm text-on-surface-variant/70 italic">
+                {words.map((w, i) => (
+                  <span key={`${i}-${w}`} className={i >= newFrom ? "word-in inline-block" : undefined}>
+                    {w}{" "}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </div>

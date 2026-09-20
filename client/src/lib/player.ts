@@ -20,9 +20,16 @@ export interface SegmentMeta {
   replay?: boolean;
 }
 
+/** Ce qui joue en ce moment et où on en est, pour l'onde qui suit la voix. */
+export interface Playing {
+  meta: SegmentMeta;
+  elapsedMs: number;
+}
+
 export interface Player {
   readonly kind: "webaudio" | "element";
   readonly queueMs: number;
+  readonly playing: Playing | undefined;
   onStart?: (meta: SegmentMeta) => void;
   unlock(): Promise<void>;
   enqueue(bytes: Uint8Array, mime: string, meta: SegmentMeta): Promise<void>;
@@ -53,10 +60,16 @@ export class WebAudioPlayer implements Player {
   private timers = new Set<number>();
   private muted = false;
   private volume = 1;
+  private current?: { meta: SegmentMeta; startedAt: number };
 
   get queueMs(): number {
     if (!this.ctx) return 0;
     return Math.max(0, (this.nextTime - this.ctx.currentTime) * 1000);
+  }
+
+  get playing(): Playing | undefined {
+    const c = this.current;
+    return c ? { meta: c.meta, elapsedMs: performance.now() - c.startedAt } : undefined;
   }
 
   async unlock(): Promise<void> {
@@ -94,10 +107,14 @@ export class WebAudioPlayer implements Player {
     src.start(start);
     this.nextTime = start + buf.duration;
     this.sources.add(src);
-    src.onended = () => this.sources.delete(src);
+    src.onended = () => {
+      this.sources.delete(src);
+      if (this.current?.meta === meta) this.current = undefined;
+    };
     const id = window.setTimeout(
       () => {
         this.timers.delete(id);
+        this.current = { meta, startedAt: performance.now() };
         this.onStart?.(meta);
       },
       Math.max(0, (start - now) * 1000),
@@ -117,6 +134,7 @@ export class WebAudioPlayer implements Player {
     for (const t of this.timers) clearTimeout(t);
     this.timers.clear();
     this.nextTime = 0;
+    this.current = undefined;
     this.chain = Promise.resolve();
   }
 
@@ -174,7 +192,7 @@ export class ElementPlayer implements Player {
   private els: HTMLAudioElement[] = [new Audio(), new Audio()];
   private i = 0;
   private queue: { url: string; meta: SegmentMeta }[] = [];
-  private playing = false;
+  private busy = false;
   private current?: { meta: SegmentMeta; startedAt: number };
   private muted = false;
   private volume = 1;
@@ -184,6 +202,11 @@ export class ElementPlayer implements Player {
     let ms = this.queue.reduce((a, q) => a + q.meta.durMs, 0);
     if (this.current) ms += Math.max(0, this.current.meta.durMs - (performance.now() - this.current.startedAt) * this.rate);
     return ms / this.rate;
+  }
+
+  get playing(): Playing | undefined {
+    const c = this.current;
+    return c ? { meta: c.meta, elapsedMs: (performance.now() - c.startedAt) * this.rate } : undefined;
   }
 
   async unlock(): Promise<void> {
@@ -208,17 +231,17 @@ export class ElementPlayer implements Player {
     // slice() : la charge utile est une vue sur la trame WebSocket, on copie dans un ArrayBuffer propre.
     const url = URL.createObjectURL(new Blob([bytes.slice().buffer as ArrayBuffer], { type: mime }));
     this.queue.push({ url, meta });
-    if (!this.playing) this.next();
+    if (!this.busy) this.next();
   }
 
   private next() {
     const item = this.queue.shift();
     if (!item) {
-      this.playing = false;
+      this.busy = false;
       this.current = undefined;
       return;
     }
-    this.playing = true;
+    this.busy = true;
     const el = this.els[this.i];
     this.i ^= 1;
     el.muted = this.muted;
@@ -259,7 +282,7 @@ export class ElementPlayer implements Player {
       el.onplaying = null;
       el.pause();
     }
-    this.playing = false;
+    this.busy = false;
     this.current = undefined;
   }
 

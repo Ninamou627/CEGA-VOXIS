@@ -21,8 +21,16 @@ export function readTheme(): Theme {
 /** Couleur de la barre du navigateur : la surface de chaque thème. */
 const THEME_COLOR: Record<Theme, string> = { dark: "#0f131c", light: "#f9f9ff" };
 
+let fadeTimer: number | undefined;
+
 export function applyTheme(theme: Theme): void {
   const el = document.documentElement;
+  // Fondu de couleurs quand le thème change vraiment, sauf si l'appareil demande moins d'animations.
+  if (el.classList.contains("dark") !== (theme === "dark") && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    el.classList.add("theme-fade");
+    clearTimeout(fadeTimer);
+    fadeTimer = window.setTimeout(() => el.classList.remove("theme-fade"), 400);
+  }
   el.classList.toggle("dark", theme === "dark");
   el.classList.toggle("theme-light", theme === "light");
   document.querySelector('meta[name="theme-color"]')?.setAttribute("content", THEME_COLOR[theme]);

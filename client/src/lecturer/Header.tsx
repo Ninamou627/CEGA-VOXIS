@@ -51,7 +51,7 @@ export function Header(p: HeaderProps) {
             <div className="flex items-center gap-2">
               <span className="font-headline-md text-lg font-bold tracking-tight text-on-surface">VOXIS</span>
               <span className="text-xs uppercase tracking-widest text-primary font-label-badge font-bold whitespace-nowrap">Live Studio</span>
-              <div className={`flex items-center gap-1.5 border px-2.5 py-0.5 rounded-full text-[11px] font-label-badge font-bold ml-1 ${live.cls}`}>
+              <div key={live.label} className={`pop flex items-center gap-1.5 border px-2.5 py-0.5 rounded-full text-[11px] font-label-badge font-bold ml-1 ${live.cls}`}>
                 <span className={`w-2 h-2 rounded-full ${live.dot}`}></span>
                 <span>{live.label}</span>
               </div>

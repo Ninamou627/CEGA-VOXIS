@@ -54,7 +54,7 @@ function Brand({ session, status }: { session: string; status: LinkStatus }) {
           <span className="font-metric-mono-sm text-metric-mono-sm text-on-surface-variant/80 tracking-wider uppercase truncate">#{session}</span>
         </div>
         <div className="flex items-center gap-space-xs">
-          <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full font-label-badge text-label-badge tracking-wider ${b.pill}`}>
+          <span key={status.badge} className={`pop inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full font-label-badge text-label-badge tracking-wider ${b.pill}`}>
             <span className={`w-1.5 h-1.5 rounded-full ${b.dot}`}></span>
             {status.badge}
           </span>

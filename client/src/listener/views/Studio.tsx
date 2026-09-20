@@ -7,6 +7,7 @@
 import type { Lang } from "../../../../shared/protocol";
 import { Icon } from "../../ui/Icon";
 import { LANGS } from "../../ui/langs";
+import { useTypewriter } from "../../ui/useTypewriter";
 import type { QuestionOutcome } from "../types";
 
 export type StudioPhase = "idle" | "recording" | "paused" | "sending" | "done" | "failed";
@@ -77,6 +78,13 @@ export function Studio(p: StudioProps) {
   const done = p.phase === "done";
   const understood = done && !!p.last?.srcText;
   const micDisabled = !p.supported || !p.live || p.busy || p.phase === "sending";
+  // Le retour de la salle s'écrit : l'original d'abord, la traduction ensuite.
+  const src = useTypewriter(understood ? p.last!.srcText : "", { start: understood });
+  const tgt = useTypewriter(understood ? p.last!.text : "", { start: understood && src.done });
+  // Halo du micro : il respire avec la voix (rayon et intensité suivent le niveau).
+  const glow = recording
+    ? `0 0 ${Math.round(24 + p.level * 40)}px rgb(var(--secondary-container) / ${(0.35 + p.level * 0.5).toFixed(2)})`
+    : undefined;
 
   // Bouton micro : vert quand il écoute, gris sinon (l'état « off » de la maquette).
   const micOn = recording;
@@ -135,16 +143,20 @@ export function Studio(p: StudioProps) {
       <div className="flex flex-col items-center justify-center py-space-sm relative">
         <div className="relative flex items-center justify-center w-64 h-64">
           <div className={`absolute w-56 h-56 rounded-full bg-secondary/10 ${recording ? "animate-ping" : "opacity-0"}`} style={{ animationDuration: "2.2s" }}></div>
-          <div className={`absolute w-44 h-44 rounded-full bg-secondary/15 ${recording ? "animate-pulse" : capturing ? "" : "opacity-40"}`}></div>
+          <div
+            className={`absolute w-44 h-44 rounded-full bg-secondary/15 transition-transform duration-100 ${recording ? "" : capturing ? "" : "opacity-40"}`}
+            style={recording ? { transform: `scale(${(1 + p.level * 0.22).toFixed(3)})` } : undefined}
+          ></div>
           <button
             type="button"
             aria-label={recording ? "Mettre la question en pause" : paused ? "Reprendre la question" : "Commencer à parler"}
             aria-pressed={recording}
             disabled={micDisabled}
             onClick={p.onMic}
-            className={`relative z-10 w-36 h-36 rounded-full shadow-[0_0_35px_rgba(0,165,114,0.45)] active:scale-95 transition-transform flex flex-col items-center justify-center group focus:outline-none disabled:shadow-none disabled:active:scale-100 ${
+            className={`relative z-10 w-36 h-36 rounded-full shadow-[0_0_35px_rgba(0,165,114,0.45)] active:scale-95 transition-[transform,box-shadow] duration-100 flex flex-col items-center justify-center group focus:outline-none disabled:shadow-none disabled:active:scale-100 ${
               micOn ? "bg-secondary-container text-on-secondary-container" : "bg-surface-variant text-on-surface-variant"
             }`}
+            style={glow ? { boxShadow: glow } : undefined}
           >
             <Icon name={p.phase === "sending" ? "hourglass_top" : "mic"} fill className="text-[48px] transition-transform group-active:scale-110" />
             <span className="font-label-badge text-label-badge tracking-wider uppercase mt-1">{micLabel}</span>
@@ -167,7 +179,7 @@ export function Studio(p: StudioProps) {
 
         {/* État, onde, chrono */}
         <div className="flex flex-col items-center space-y-space-xs mt-space-xs">
-          <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-surface-container-high text-on-surface shadow-sm whitespace-nowrap" role="status">
+          <div key={pill.text} className="pop inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-surface-container-high text-on-surface shadow-sm whitespace-nowrap" role="status">
             <span className={`w-2.5 h-2.5 rounded-full ${pill.dot}`}></span>
             <span className={`font-metric-mono-sm text-metric-mono-sm ${pill.cls}`}>{pill.text}</span>
             <span className="text-outline-variant font-body-sm text-body-sm">•</span>
@@ -214,7 +226,10 @@ export function Studio(p: StudioProps) {
           <p className={`font-body-transcript-lg-mobile text-body-transcript-lg-mobile leading-relaxed ${done && !understood ? "text-error" : "text-on-surface"}`}>
             {done ? (
               understood ? (
-                `« ${p.last!.srcText} »`
+                <>
+                  « {src.shown}
+                  {src.done ? " »" : <span className="inline-block w-1.5 h-4 bg-primary align-middle animate-pulse ml-0.5"></span>}
+                </>
               ) : (
                 "Rien n'a été compris. Parlez plus près du téléphone, et gardez le micro ouvert pendant toute la question."
               )
@@ -244,7 +259,14 @@ export function Studio(p: StudioProps) {
             </span>
           </div>
           <p className="font-body-transcript-lg-mobile text-body-transcript-lg-mobile text-on-surface-variant italic leading-relaxed">
-            {understood ? `“${p.last!.text}”` : "…"}
+            {understood && src.done ? (
+              <>
+                “{tgt.shown}
+                {tgt.done ? "”" : <span className="inline-block w-1.5 h-4 bg-secondary align-middle animate-pulse ml-0.5"></span>}
+              </>
+            ) : (
+              "…"
+            )}
           </p>
         </div>
       </div>

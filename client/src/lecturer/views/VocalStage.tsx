@@ -88,7 +88,7 @@ export function VocalStage(p: VocalStageProps) {
               {p.sampleRate ? ` (${p.sampleRate / 1000} kHz)` : ""}
             </span>
           </div>
-          <span className={`flex items-center gap-1.5 border px-3 py-1.5 rounded-xl text-xs font-headline-sm font-bold shadow-sm ${chip.cls}`}>
+          <span key={chip.label} className={`pop flex items-center gap-1.5 border px-3 py-1.5 rounded-xl text-xs font-headline-sm font-bold shadow-sm ${chip.cls}`}>
             <Icon name={chip.icon} className="text-[16px]" />
             <span>{chip.label}</span>
           </span>

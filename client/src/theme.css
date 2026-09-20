@@ -101,7 +101,63 @@
     box-shadow: 0 0 28px rgb(var(--secondary) / 0.75), inset 0 0 16px rgb(var(--secondary) / 0.45);
   }
 }
+/* Entrées en scène : un segment qui arrive, un mot qui se fige, une pastille qui change d'état. */
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes word-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes pop {
+  0% {
+    transform: scale(0.85);
+  }
+  60% {
+    transform: scale(1.08);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* Bascule de thème en fondu : la classe ne vit que le temps de la transition (voir src/ui/theme.ts). */
+.theme-fade,
+.theme-fade *,
+.theme-fade *::before,
+.theme-fade *::after {
+  transition:
+    background-color 0.3s ease,
+    color 0.3s ease,
+    border-color 0.3s ease,
+    fill 0.3s ease,
+    stroke 0.3s ease,
+    box-shadow 0.3s ease !important;
+}
+
 @layer components {
+  .rise-in {
+    animation: rise-in 0.35s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  }
+  .word-in {
+    animation: word-in 0.25s ease-out both;
+  }
+  .pop {
+    animation: pop 0.35s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  }
   .mic-ring-1 {
     animation: mic-pulse-ring 1.8s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
   }

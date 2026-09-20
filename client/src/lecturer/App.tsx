@@ -23,6 +23,8 @@ type Hello = Extract<ServerEvent, { t: "hello" }>;
 
 /** Niveau RMS local au-delà duquel on considère que le formateur parle. */
 const SPEAK_LEVEL = 0.06;
+/** La parole reste « détectée » ce temps après la dernière trame forte : pas de clignotement entre deux mots. */
+const SPEAK_HOLD_MS = 700;
 /** Après le premier clic sur « Terminer », le second doit arriver dans ce délai. */
 const STOP_ARM_MS = 4000;
 
@@ -33,6 +35,7 @@ export function App() {
   const [conn, setConn] = useState<ConnState>("closed");
   const [hello, setHello] = useState<Hello>();
   const [level, setLevel] = useState(0);
+  const [speaking, setSpeaking] = useState(false);
   const [history, setHistory] = useState<number[]>([]);
   const [muted, setMuted] = useState(false);
   const [partial, setPartial] = useState("");
@@ -49,6 +52,8 @@ export function App() {
   const [sampleRate, setSampleRate] = useState<number>();
   const [now, setNow] = useState(Date.now());
   const [stopArmed, setStopArmed] = useState(false);
+  /** Question en cours de lecture dans le casque, pour la barre de progression de sa carte. */
+  const [playingQ, setPlayingQ] = useState<{ n: number; startedAt: number; durMs: number }>();
 
   const sock = useRef<SalleSocket>(undefined);
   const mic = useRef<MicHandle>(undefined);
@@ -56,9 +61,16 @@ export function App() {
   const clockOffset = useRef(0);
   const startedAt = useRef(0);
   const historyRef = useRef<number[]>([]);
+  const speakUntil = useRef(0);
   const questionSeq = useRef(0);
+  const questionsRef = useRef<QuestionItem[]>([]);
   const mutedRef = useRef(false);
   const stopTimer = useRef<number>(undefined);
+  const playingTimer = useRef<number>(undefined);
+
+  useEffect(() => {
+    questionsRef.current = questions;
+  }, [questions]);
 
   useEffect(() => {
     void listMics().then(setMics);
@@ -88,6 +100,8 @@ export function App() {
     const m = await startMic(
       (frame, lvl) => {
         setLevel(lvl);
+        if (lvl > SPEAK_LEVEL) speakUntil.current = performance.now() + SPEAK_HOLD_MS;
+        setSpeaking(performance.now() < speakUntil.current);
         const h = historyRef.current;
         h.push(lvl);
         if (h.length > WAVE_BARS) h.splice(0, h.length - WAVE_BARS);
@@ -111,6 +125,12 @@ export function App() {
     try {
       const p = new WebAudioPlayer();
       await p.unlock();
+      // Le son d'une question porte son rang (seq) : la carte sait qu'elle joue, et jusqu'à quand.
+      p.onStart = (meta) => {
+        setPlayingQ({ n: meta.seq, startedAt: performance.now(), durMs: meta.durMs });
+        clearTimeout(playingTimer.current);
+        playingTimer.current = window.setTimeout(() => setPlayingQ(undefined), meta.durMs + 150);
+      };
       player.current = p;
 
       await openMic(deviceId);
@@ -136,11 +156,14 @@ export function App() {
     sock.current = undefined;
     player.current?.destroy();
     player.current = undefined;
+    clearTimeout(playingTimer.current);
+    setPlayingQ(undefined);
     historyRef.current = [];
     setHistory([]);
     setRunning(false);
     setStopArmed(false);
     setLevel(0);
+    setSpeaking(false);
   }
 
   /** « Terminer la session » en deux clics : le premier arme, le second dans les 4 s arrête. */
@@ -216,24 +239,23 @@ export function App() {
   function handleAudio(h: AudioHeader, bytes: Uint8Array) {
     if (h.kind !== "question") return;
     const audio = { bytes: bytes.slice(), mime: h.mime, durMs: h.durMs };
-    setQuestions((prev) => {
-      let j = prev.length - 1;
-      for (let i = prev.length - 1; i >= 0; i--) {
-        if (!prev[i].audio && prev[i].text === h.text) {
-          j = i;
-          break;
-        }
+    const qs = questionsRef.current;
+    let target = qs[qs.length - 1];
+    for (let i = qs.length - 1; i >= 0; i--) {
+      if (!qs[i].audio && qs[i].text === h.text) {
+        target = qs[i];
+        break;
       }
-      return prev.map((q, k) => (k === j ? { ...q, audio } : q));
-    });
-    void player.current?.enqueue(audio.bytes, h.mime, { seq: 0, tOrigin: h.tOrigin, durMs: h.durMs, text: h.text, lang: h.lang, replay: true });
+    }
+    if (target) setQuestions((prev) => prev.map((q) => (q.n === target.n ? { ...q, audio } : q)));
+    void player.current?.enqueue(audio.bytes, h.mime, { seq: target?.n ?? 0, tOrigin: h.tOrigin, durMs: h.durMs, text: h.text, lang: h.lang, replay: true });
   }
 
   function replay(q: QuestionItem) {
     const p = player.current;
     if (!p || !q.audio) return;
     p.flush();
-    void p.enqueue(q.audio.bytes, q.audio.mime, { seq: 0, tOrigin: Date.now(), durMs: q.audio.durMs, text: q.text, lang: q.lang, replay: true });
+    void p.enqueue(q.audio.bytes, q.audio.mime, { seq: q.n, tOrigin: Date.now(), durMs: q.audio.durMs, text: q.text, lang: q.lang, replay: true });
   }
 
   function upsert(seq: number, patch: Partial<Line>) {
@@ -312,7 +334,7 @@ export function App() {
             <div className="lg:col-span-6 flex flex-col gap-4">
               <VocalStage
                 muted={muted}
-                speaking={level > SPEAK_LEVEL}
+                speaking={speaking}
                 question={asking}
                 history={history}
                 serverDb={serverDb}
@@ -322,7 +344,14 @@ export function App() {
               />
               <TranslationHub lines={lines} partial={partial} srcLang={srcLang} tgtLang={tgtLang} stats={stats} degraded={degraded} clockOffset={clockOffset.current} />
             </div>
-            <Questions questions={questions} asking={asking} now={now} onReplay={replay} onArchive={(q) => setQuestions((prev) => prev.map((x) => (x.n === q.n ? { ...x, archived: true } : x)))} />
+            <Questions
+              questions={questions}
+              asking={asking}
+              now={now}
+              playing={playingQ}
+              onReplay={replay}
+              onArchive={(q) => setQuestions((prev) => prev.map((x) => (x.n === q.n ? { ...x, archived: true } : x)))}
+            />
           </div>
         )}
       </main>
