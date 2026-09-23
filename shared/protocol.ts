@@ -22,6 +22,10 @@ export type Role = z.infer<typeof RoleSchema>;
 
 export type DegradedMode = "none" | "text-only" | "backup-mt" | "backup-tts" | "stt-lost" | "s2s";
 
+/** Ce qu'un apprenant peut signaler depuis son téléphone. */
+export const ReportKindSchema = z.enum(["transcription", "translation", "slow", "voice", "audio"]);
+export type ReportKind = z.infer<typeof ReportKindSchema>;
+
 export interface PipelineStatus {
   stt: string;
   mt: string;
@@ -83,7 +87,35 @@ export type ServerEvent =
    * formateur). Envoyée au formateur, au tableau de bord et à l'apprenant qui l'a posée.
    * `delivered` = un formateur était connecté pour l'entendre.
    */
-  | { t: "question"; who: string; srcLang: Lang; srcText: string; lang: Lang; text: string; delivered: boolean }
+  | {
+      t: "question";
+      who: string;
+      srcLang: Lang;
+      srcText: string;
+      lang: Lang;
+      text: string;
+      delivered: boolean;
+      /** « voice » : parlée au micro ; « text » : écrite sur le téléphone. */
+      mode: "voice" | "text";
+    }
+  /**
+   * Signalement d'un apprenant sur la qualité, avec le contexte que le serveur a
+   * retrouvé : c'est la matière première de l'amélioration du système (glossaire,
+   * segmentation, choix de voix). Envoyé au formateur et au tableau de bord.
+   */
+  | {
+      t: "report";
+      who: string;
+      kind: ReportKind;
+      lang: Lang;
+      at: number;
+      /** Segment visé, si l'apprenant en écoutait un. */
+      seq?: number;
+      srcText?: string;
+      text?: string;
+      /** Décalage ressenti au moment du signalement (ms). */
+      e2eMs?: number | null;
+    }
   | { t: "stats"; stats: StatsPayload }
   | { t: "degraded"; mode: DegradedMode; reason: string }
   | { t: "error"; code: string; msg: string };
@@ -101,6 +133,8 @@ export interface AudioHeader {
   text: string;
   /** "question" = audio d'une question d'apprenant, destiné au formateur. */
   kind?: "translation" | "question";
+  /** Question : faux pour une question écrite, que le formateur lance lui-même. */
+  autoplay?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -126,6 +160,13 @@ export const ClientEventSchema = z.discriminatedUnion("t", [
   }),
   /** Push-to-talk. L'audio (un seul message binaire) est envoyé entre start et end. */
   z.object({ t: z.literal("ask"), phase: z.enum(["start", "end"]), mime: z.string().max(100).optional() }),
+  /** Question écrite : pas de micro, pas de mutex de parole — elle ne coupe personne. */
+  z.object({ t: z.literal("ask.text"), text: z.string().trim().min(1).max(500) }),
+  /**
+   * Signalement de qualité. Le client dit ce qui n'allait pas et sur quel segment ;
+   * le serveur retrouve les textes et horodate — l'apprenant ne ressaisit rien.
+   */
+  z.object({ t: z.literal("report"), kind: ReportKindSchema, seq: z.number().int().optional(), e2eMs: z.number().nullable().optional() }),
   /** « Revenir au direct » : le client a vidé sa file. */
   z.object({ t: z.literal("resync"), droppedMs: z.number().optional() }),
   z.object({ t: z.literal("lecturer.mute"), muted: z.boolean() }),

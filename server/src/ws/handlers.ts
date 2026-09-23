@@ -34,13 +34,35 @@ function toBytes(data: RawData): Uint8Array {
 /** Messages binaires reçus, tous rôles confondus (diagnostic). */
 export let binaryFrames = 0;
 
+/** Derniers segments diffusés, pour retrouver ce qu'un apprenant signale. */
+const RECENT_SEGMENTS = 60;
+interface RecentSegment {
+  seq: number;
+  srcText: string;
+  tOrigin: number;
+  tgt: Partial<Record<Lang, string>>;
+}
+
 export function attachWs(wss: WebSocketServer, ctx: WsContext): void {
   const { room, pipeline, providers, metrics, config, log } = ctx;
 
+  const recent = new Map<number, RecentSegment>();
+  function remember(seq: number, patch: Partial<RecentSegment>) {
+    const cur = recent.get(seq) ?? { seq, srcText: "", tOrigin: Date.now(), tgt: {} };
+    recent.set(seq, { ...cur, ...patch, tgt: { ...cur.tgt, ...patch.tgt } });
+    while (recent.size > RECENT_SEGMENTS) recent.delete(recent.keys().next().value!);
+  }
+
   // ---- pipeline → salle -----------------------------------------------------
   pipeline.on("src.partial", (e) => room.broadcast({ t: "src.partial", text: e.text }, (p) => p.role !== "listener" || p.lang === room.srcLang));
-  pipeline.on("src.commit", (e) => room.broadcast({ t: "src.commit", ...e }));
-  pipeline.on("tr.segment", (e) => room.broadcast({ t: "tr.segment", ...e }, (p) => p.role !== "listener" || p.lang === e.lang));
+  pipeline.on("src.commit", (e) => {
+    remember(e.seq, { srcText: e.text, tOrigin: e.tOrigin });
+    room.broadcast({ t: "src.commit", ...e });
+  });
+  pipeline.on("tr.segment", (e) => {
+    remember(e.seq, { tgt: { [e.lang]: e.text } });
+    room.broadcast({ t: "tr.segment", ...e }, (p) => p.role !== "listener" || p.lang === e.lang);
+  });
   pipeline.on("audio", (e) => {
     const header: AudioHeader = {
       t: "audio",
@@ -182,7 +204,45 @@ export function attachWs(wss: WebSocketServer, ctx: WsContext): void {
         questionAudio = [];
         const asker = me;
         room.broadcast({ t: "floor", floor: room.floor });
-        void handleQuestion(asker, chunks, evt.mime ?? questionMime);
+        void handleVoiceQuestion(asker, chunks, evt.mime ?? questionMime);
+        return;
+      }
+      /** Question écrite : rien à transcrire, et elle ne prend la parole à personne. */
+      if (evt.t === "ask.text") {
+        if (me.role !== "listener") return sendErr("not_listener", "réservé aux apprenants");
+        void deliverQuestion(me, evt.text.trim(), "text", Date.now());
+        return;
+      }
+      if (evt.t === "report") {
+        if (me.role !== "listener") return sendErr("not_listener", "réservé aux apprenants");
+        const lang = me.lang ?? room.langs[0];
+        // Le serveur retrouve le contexte : l'apprenant ne ressaisit jamais la phrase.
+        const seg = evt.seq != null ? recent.get(evt.seq) : undefined;
+        const report = {
+          t: "report" as const,
+          who: me.id,
+          kind: evt.kind,
+          lang,
+          at: Date.now(),
+          seq: seg?.seq,
+          srcText: seg?.srcText,
+          text: seg?.tgt[lang],
+          e2eMs: evt.e2eMs ?? null,
+        };
+        room.broadcast(report, (p) => p.role === "lecturer" || p.role === "dashboard");
+        // Le JSONL est la mémoire longue : c'est là qu'on relira les signalements
+        // pour régler la segmentation, enrichir le glossaire ou changer de voix.
+        metrics.event("report", {
+          id: me.id,
+          kind: evt.kind,
+          lang,
+          seq: seg?.seq ?? null,
+          srcText: seg?.srcText ?? null,
+          text: seg?.tgt[lang] ?? null,
+          e2eMs: evt.e2eMs ?? null,
+          pipeline: pipeline.status,
+        });
+        log.info({ id: me.id, kind: evt.kind, seq: seg?.seq ?? null }, "signalement d'un apprenant");
         return;
       }
 
@@ -212,7 +272,8 @@ export function attachWs(wss: WebSocketServer, ctx: WsContext): void {
   });
 
   // ---- flux inverse : question d'un apprenant, en batch --------------------------
-  async function handleQuestion(asker: Participant, chunks: Uint8Array[], mime: string) {
+  /** Question parlée : on transcrit d'abord, puis c'est le même chemin qu'une question écrite. */
+  async function handleVoiceQuestion(asker: Participant, chunks: Uint8Array[], mime: string) {
     const total = chunks.reduce((n, c) => n + c.byteLength, 0);
     if (!total) return;
     const audio = new Uint8Array(total);
@@ -226,19 +287,31 @@ export function attachWs(wss: WebSocketServer, ctx: WsContext): void {
     try {
       const srcText = await providers.stt.transcribeOnce(audio, mime, srcLang);
       if (!srcText.trim()) {
-        room.send(asker, { t: "question", who: asker.id, srcLang, srcText: "", lang: room.srcLang, text: "", delivered: false });
+        room.send(asker, { t: "question", who: asker.id, srcLang, srcText: "", lang: room.srcLang, text: "", delivered: false, mode: "voice" });
         metrics.event("question.empty", { id: asker.id, bytes: total, mime });
         return;
       }
+      await deliverQuestion(asker, srcText, "voice", t0, { bytes: total, mime });
+    } catch (err) {
+      log.error({ err: (err as Error).message }, "traitement de la question");
+      room.send(asker, { t: "error", code: "question_failed", msg: "la question n'a pas pu être transmise" });
+    }
+  }
+
+  /**
+   * Traduit la question vers la langue du formateur, la synthétise et l'envoie.
+   * Le son part dans les deux cas ; seule une question parlée se joue d'elle-même
+   * dans le casque (`autoplay`), une question écrite attend que le formateur la lance.
+   */
+  async function deliverQuestion(asker: Participant, srcText: string, mode: "voice" | "text", t0: number, extra: Record<string, unknown> = {}) {
+    const srcLang = asker.lang ?? room.langs[0];
+    try {
       const text = await providers.mt.translate({ text: srcText, from: srcLang, to: room.srcLang, context: [] });
       const tts = await providers.tts.synthesize({ text, lang: room.srcLang });
 
       const delivered = room.count("lecturer") > 0;
-      room.broadcast(
-        { t: "question", who: asker.id, srcLang, srcText, lang: room.srcLang, text, delivered },
-        (p) => p.role !== "listener" || p.id === asker.id,
-      );
-      log.info({ id: asker.id, mime, bytes: total, srcText: srcText.slice(0, 80), delivered }, "question traitée");
+      room.broadcast({ t: "question", who: asker.id, srcLang, srcText, lang: room.srcLang, text, delivered, mode }, (p) => p.role !== "listener" || p.id === asker.id);
+      log.info({ id: asker.id, mode, srcText: srcText.slice(0, 80), delivered }, "question traitée");
       const header: AudioHeader = {
         t: "audio",
         seq: 0,
@@ -249,16 +322,19 @@ export function attachWs(wss: WebSocketServer, ctx: WsContext): void {
         srcSeq: 0,
         text,
         kind: "question",
+        autoplay: mode === "voice",
       };
       room.broadcastBinary(encodeFrame(header, tts.audio), (p) => p.role === "lecturer");
 
-      // Pendant que la question sort dans le casque du formateur, son micro n'alimente
-      // plus le STT — sinon on retranscrit la question et on boucle.
-      const wasMuted = pipeline.status.muted;
-      pipeline.setMuted(true);
-      setTimeout(() => pipeline.setMuted(wasMuted), tts.durMs + 300);
+      if (mode === "voice") {
+        // Pendant que la question sort dans le casque du formateur, son micro n'alimente
+        // plus le STT — sinon on retranscrit la question et on boucle.
+        const wasMuted = pipeline.status.muted;
+        pipeline.setMuted(true);
+        setTimeout(() => pipeline.setMuted(wasMuted), tts.durMs + 300);
+      }
 
-      metrics.event("question", { id: asker.id, bytes: total, mime, totalMs: Date.now() - t0, chars: srcText.length, delivered });
+      metrics.event("question", { id: asker.id, mode, totalMs: Date.now() - t0, chars: srcText.length, delivered, ...extra });
     } catch (err) {
       log.error({ err: (err as Error).message }, "traitement de la question");
       room.send(asker, { t: "error", code: "question_failed", msg: "la question n'a pas pu être transmise" });

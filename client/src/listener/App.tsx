@@ -1,27 +1,27 @@
 /**
- * Page apprenant. QR code → langue → « Écouter » → voix + texte, puis les vues
- * (écoute, transcription, questions, canaux) par la barre du bas — le lecteur et
- * le WebSocket vivent ici et survivent aux changements de vue.
+ * Page apprenant. QR code → langue → « Écouter » → voix + texte. Un seul écran,
+ * deux boutons flottants : poser une question (studio par-dessus) et signaler un
+ * problème (feuille par le bas). Le lecteur et le WebSocket vivent ici.
  *
  * Tout ce qui touche à la dérive est ici : file mesurée, abandon des segments
  * trop vieux, « revenir au direct », réécoute des 30 dernières secondes.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { AudioHeader, FloorState, Lang, ServerEvent, StatsPayload } from "../../../shared/protocol";
+import type { AudioHeader, FloorState, Lang, ReportKind, ServerEvent, StatsPayload } from "../../../shared/protocol";
 import { BIN_MS, envelope } from "../lib/envelope";
 import { QuestionRecorder } from "../lib/mic";
 import { ElementPlayer, WebAudioPlayer, type Player, type SegmentMeta } from "../lib/player";
 import { keepWakeLockAlive, requestWakeLock } from "../lib/wakelock";
 import { SalleSocket, type ConnState } from "../lib/ws";
 import { ALL_LANGS } from "../ui/langs";
-import { BottomNav, type View } from "./BottomNav";
 import { Header, type LinkStatus } from "./Header";
 import type { Line, PlayerKind, QuestionOutcome } from "./types";
+import { Fabs } from "./views/Fabs";
 import { Join } from "./views/Join";
 import { Listen } from "./views/Listen";
-import { Soon } from "./views/Soon";
-import { WAVE_BARS, type WaveSample } from "./views/Waveform";
+import { ReportSheet } from "./views/ReportSheet";
 import { Studio, type StudioPhase } from "./views/Studio";
+import { WAVE_BARS, type WaveSample } from "./views/Waveform";
 
 /** Au-delà, on saute le segment plutôt que de dériver (§10 de la revue). */
 const MAX_QUEUE_MS = 8000;
@@ -29,6 +29,15 @@ const MAX_AGE_MS = 8000;
 const REPLAY_WINDOW_MS = 30_000;
 /** Une question dure au plus 30 s : au-delà, elle part toute seule. */
 const MAX_ASK_MS = 30_000;
+/**
+ * Le bouton de signalement se montre dès qu'un souci apparaît, s'efface au bout de
+ * 20 s et revient toutes les 90 s tant que ça dure : présent, jamais collant.
+ */
+const ALERT_SHOW_MS = 20_000;
+const ALERT_EVERY_MS = 90_000;
+/** Au-delà, le décalage ne s'explique plus par le fonctionnement normal (D7). */
+const TROUBLE_E2E_MS = 4000;
+const TROUBLE_QUEUE_MS = 5000;
 
 type Hello = Extract<ServerEvent, { t: "hello" }>;
 type AskStatus = "idle" | "sending" | "done" | "failed";
@@ -49,7 +58,8 @@ export function App() {
   // préservée. Web Audio reste disponible pour comparer sur ordinateur.
   const [playerKind, setPlayerKind] = useState<PlayerKind>("element");
   const [phase, setPhase] = useState<"join" | "live">("join");
-  const [view, setView] = useState<View>("listen");
+  /** Ce qui est ouvert par-dessus l'écoute : rien, le studio, la feuille de signalement. */
+  const [sheet, setSheet] = useState<"none" | "ask" | "report">("none");
   const [conn, setConn] = useState<ConnState>("closed");
   const [hello, setHello] = useState<Hello>();
   const [partial, setPartial] = useState("");
@@ -72,6 +82,10 @@ export function App() {
   const [volume, setVolume] = useState(100);
   const [showText, setShowText] = useState(true);
   const [localRate, setLocalRate] = useState(1);
+  const [alert, setAlert] = useState<string>();
+  const [reportSent, setReportSent] = useState(false);
+  /** Passage figé à l'ouverture de la feuille : on signale ce qu'on a entendu, pas la suite. */
+  const [reportOn, setReportOn] = useState<{ seq?: number; src?: string; tgt?: string; e2eMs: number | null }>();
 
   const sock = useRef<SalleSocket>(undefined);
   const player = useRef<Player>(undefined);
@@ -90,6 +104,8 @@ export function App() {
   // Chrono de la question : temps effectivement enregistré, pauses exclues.
   const askClock = useRef<{ accumMs: number; since: number | null }>({ accumMs: 0, since: null });
   const askSentAt = useRef(0);
+  const troubleRef = useRef<string>(undefined);
+  const reportTimer = useRef<number>(undefined);
 
   useEffect(() => {
     const id = setInterval(() => {
@@ -124,6 +140,37 @@ export function App() {
     }, 100);
     return () => clearInterval(id);
   }, [asking]);
+
+  // Ce qui, vu du téléphone, dit que la traduction ne va pas. Le libellé est celui
+  // que l'apprenant lira sur le bouton : on ne lui demande pas de deviner.
+  const trouble =
+    degraded?.mode === "text-only" || degraded?.mode === "stt-lost"
+      ? "La voix s'est arrêtée — signalez-le"
+      : queueMs > TROUBLE_QUEUE_MS || (stats?.e2eP50 ?? 0) > TROUBLE_E2E_MS
+        ? "La traduction a du retard — signalez-le"
+        : lines[lines.length - 1]?.untranslated
+          ? "Un passage n'a pas été traduit"
+          : dropped > 0 && queueMs > TROUBLE_QUEUE_MS / 2
+            ? "Des passages ont été sautés"
+            : undefined;
+
+  useEffect(() => {
+    troubleRef.current = trouble;
+    setAlert(trouble);
+  }, [trouble]);
+
+  useEffect(() => {
+    if (!alert) return;
+    const id = setTimeout(() => setAlert(undefined), ALERT_SHOW_MS);
+    return () => clearTimeout(id);
+  }, [alert]);
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (troubleRef.current) setAlert(troubleRef.current);
+    }, ALERT_EVERY_MS);
+    return () => clearInterval(id);
+  }, []);
 
   /** Ouvre le WebSocket de salle ; un ancien socket qu'on ferme ne parle plus à l'écran. */
   function connect(l: Lang) {
@@ -367,6 +414,30 @@ export function App() {
     applyMute();
   }
 
+  /** Question écrite : pas de micro, pas de tour de parole — elle ne coupe personne. */
+  function askText(text: string) {
+    if (conn !== "open") return setErr("hors ligne : la question n'a pas pu partir");
+    setErr(undefined);
+    setLastQuestion(undefined);
+    setProcessedMs(undefined);
+    askSentAt.current = Date.now();
+    setAsk("sending");
+    sock.current?.send({ t: "ask.text", text });
+  }
+
+  /** Signalement de qualité : le serveur y joint l'heure, la phrase et sa traduction. */
+  function sendReport(kind: ReportKind) {
+    if (conn !== "open") {
+      setSheet("none");
+      return setErr("hors ligne : le signalement n'a pas pu partir");
+    }
+    sock.current?.send({ t: "report", kind, seq: reportOn?.seq, e2eMs: reportOn?.e2eMs ?? null });
+    setReportSent(true);
+    setAlert(undefined);
+    clearTimeout(reportTimer.current);
+    reportTimer.current = window.setTimeout(() => setSheet("none"), 1800);
+  }
+
   /** Ferme le micro et envoie la question en un bloc. */
   async function askEnd() {
     if (!askingRef.current) return;
@@ -409,17 +480,19 @@ export function App() {
   const floorBusyByOther = floor.state === "question" && floor.who !== hello?.participantId;
   const rate = Math.round(serverSpeed.current * localRate * 100) / 100;
   const studioPhase: StudioPhase = asking ? (askPaused ? "paused" : "recording") : askStatus;
-  // Le studio est un écran plein : flèche retour dans l'en-tête, pas de barre du bas.
-  const studio = view === "questions";
+  // Le studio est un écran plein : flèche retour dans l'en-tête, pas de boutons flottants.
+  const studio = sheet === "ask";
+  const last = lines[lines.length - 1];
+  const micSupported = QuestionRecorder.supported();
 
   return (
     <>
       {studio ? (
-        <Header kind="page" title="Push To Talk Studio" subtitle="VOXIS ACTIVE FEED" onBack={() => setView("listen")} />
+        <Header kind="page" title="Poser une question" subtitle="VOXIS ACTIVE FEED" onBack={() => setSheet("none")} />
       ) : (
         <Header kind="brand" session={session} status={LINK[conn]} />
       )}
-      <main className={`flex flex-col relative w-full pt-16 bg-surface min-h-screen gap-space-md ${studio ? "" : "pb-24"}`}>
+      <main className={`flex flex-col relative w-full pt-16 bg-surface min-h-screen gap-space-md ${studio ? "" : "pb-40"}`}>
         {(err || degraded) && (
           <div className="flex flex-col gap-space-xs px-gutter-mobile pt-space-xs">
             {err && (
@@ -436,7 +509,7 @@ export function App() {
           </div>
         )}
 
-        {view === "listen" && (
+        {!studio && (
           <Listen
             session={session}
             conn={conn}
@@ -460,21 +533,15 @@ export function App() {
             onToggleText={() => setShowText((s) => !s)}
             canReplay={ring.current.length > 0}
             onReplay={replay}
-            question={{ supported: QuestionRecorder.supported(), asking, busy: floorBusyByOther, status: askStatus, last: lastQuestion }}
-            onAskStart={(e) => {
-              e.currentTarget.setPointerCapture(e.pointerId);
-              void askStart();
-            }}
-            onAskEnd={() => void askEnd()}
+            question={{ supported: micSupported, asking, busy: floorBusyByOther, status: askStatus, last: lastQuestion }}
           />
         )}
-        {view === "transcript" && <Soon icon="subtitles" title="Transcript" />}
         {studio && (
           <Studio
             srcLang={hello?.srcLang ?? "en"}
             lang={lang}
             live={conn === "open"}
-            supported={QuestionRecorder.supported()}
+            supported={micSupported}
             busy={floorBusyByOther}
             phase={studioPhase}
             ms={askMs}
@@ -484,13 +551,41 @@ export function App() {
             processedMs={processedMs}
             onMic={askToggle}
             onSend={() => void askEnd()}
+            onSendText={askText}
             onCancel={askDiscard}
-            onBack={() => setView("listen")}
+            onBack={() => setSheet("none")}
           />
         )}
-        {view === "channels" && <Soon icon="tune" title="Channels" />}
       </main>
-      {!studio && <BottomNav view={view} onChange={setView} />}
+
+      {!studio && (
+        <Fabs
+          askDisabled={conn !== "open"}
+          askHint={
+            !micSupported
+              ? "Écrivez : le micro exige une connexion sécurisée"
+              : floorBusyByOther
+                ? "Un apprenant parle — vous pouvez écrire"
+                : "Parlez ou écrivez, c'est traduit pour le formateur"
+          }
+          alert={Boolean(alert)}
+          alertLabel={alert}
+          onAsk={() => setSheet("ask")}
+          onReport={() => {
+            setReportSent(false);
+            setReportOn({ seq: last?.seq, src: last?.src, tgt: last?.tgt, e2eMs: stats?.e2eP50 ?? null });
+            setSheet("report");
+          }}
+        />
+      )}
+
+      <ReportSheet
+        open={sheet === "report"}
+        context={reportOn}
+        sent={reportSent}
+        onSend={sendReport}
+        onClose={() => setSheet("none")}
+      />
     </>
   );
 }

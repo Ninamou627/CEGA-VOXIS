@@ -7,6 +7,7 @@ import { Card } from "./Card";
 const KIND: Record<EventKind, { label: string; cls: string; icon: string }> = {
   parole: { label: "parole", cls: "text-tertiary bg-tertiary/10 border-tertiary/30", icon: "front_hand" },
   question: { label: "question", cls: "text-primary bg-primary/10 border-primary/30", icon: "contact_support" },
+  signalement: { label: "signalé", cls: "text-tertiary bg-tertiary/10 border-tertiary/30", icon: "flag" },
   degrade: { label: "dégradé", cls: "text-error bg-error/10 border-error/30", icon: "warning" },
   erreur: { label: "erreur", cls: "text-error bg-error/10 border-error/30", icon: "error" },
   salle: { label: "salle", cls: "text-secondary bg-secondary/10 border-secondary/30", icon: "groups" },
@@ -23,7 +24,7 @@ export function Journal({ entries, onClear }: { entries: JournalEntry[]; onClear
       tone="primary"
       right={
         <div className="flex items-center gap-1.5">
-          {(["all", "parole", "question", "degrade", "erreur", "salle", "liaison"] as const).map((k) => (
+          {(["all", "parole", "question", "signalement", "degrade", "erreur", "salle", "liaison"] as const).map((k) => (
             <button
               key={k}
               type="button"

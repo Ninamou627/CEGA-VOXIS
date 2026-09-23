@@ -152,6 +152,32 @@ la maquette, son absence le jeu clair — la déclinaison Material 3 des mêmes 
 tonales (accents au ton 40, conteneurs au ton 90, surfaces de 87 à 100). Le choix est
 mémorisé sur l'appareil et appliqué avant le premier rendu.
 
+## D14 — Une question s'écrit aussi, et un problème se signale en deux gestes
+
+**Décision.** L'apprenant a deux chemins vers le formateur : parler (mutex de parole,
+D8) ou **écrire** — une question écrite ne prend la parole à personne, elle est
+traduite et synthétisée comme l'autre, mais ne se joue pas d'elle-même dans le casque :
+le formateur la lit, et l'écoute s'il veut. Et il a un bouton **« Signaler un
+problème »** : cinq causes (transcription, traduction, lenteur, voix, audio), un
+toucher, envoyé. Le serveur y joint l'heure, le segment visé, sa transcription, sa
+traduction et le décalage mesuré ; tout part dans `metrics.jsonl`.
+
+**Pourquoi.** Tout le monde ne prend pas la parole devant trente personnes, et le
+téléphone est déjà dans la main. Surtout : les seuls à savoir que la traduction est
+mauvaise sont ceux qui l'écoutent — ni le formateur ni le tableau de bord ne peuvent
+l'entendre. Un signalement daté et rattaché à sa phrase est la matière première du
+réglage (glossaire, segmentation, choix de voix) ; demander à l'apprenant de ressaisir
+la phrase garantirait qu'il ne signale rien.
+
+**Conséquences d'interface.** La barre d'onglets de la page apprenant disparaît — elle
+masquait le bouton de question. Il reste un bouton flottant « Cliquez ici pour poser une
+question » et, au-dessus, le signalement : discret par défaut, il s'ouvre et pulse dès
+que le système repère un souci (voix perdue, décalage > 4 s, file > 5 s, passage non
+traduit), s'efface au bout de 20 s et revient toutes les 90 s tant que ça dure.
+
+**Ce qui ferait changer d'avis.** Des signalements en rafale sans rapport avec la
+qualité (chahut) : il faudrait alors les compter par apprenant, pas les afficher un par un.
+
 ## Ce que six semaines (au lieu de 48 h) remettent sur la table
 
 Dans l'ordre de valeur : tests automatisés dès le départ (fait) ; multilingue réel

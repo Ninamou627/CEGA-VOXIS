@@ -42,6 +42,10 @@
   .pb-safe {
     padding-bottom: env(safe-area-inset-bottom, 0px);
   }
+  /** Marge visible du bas, la barre d'accueil du téléphone en plus. */
+  .pb-safe-md {
+    padding-bottom: calc(1rem + env(safe-area-inset-bottom, 0px));
+  }
   .pt-safe {
     padding-top: env(safe-area-inset-top, 0px);
   }
@@ -134,6 +138,24 @@
   }
 }
 
+/* Feuille qui monte du bas (signalement) et son fond. */
+@keyframes sheet-up {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: none;
+  }
+}
+@keyframes sheet-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
 /* Bascule de thème en fondu : la classe ne vit que le temps de la transition (voir src/ui/theme.ts). */
 .theme-fade,
 .theme-fade *,
@@ -149,6 +171,12 @@
 }
 
 @layer components {
+  .sheet-up {
+    animation: sheet-up 0.28s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  }
+  .sheet-fade {
+    animation: sheet-fade 0.2s ease-out both;
+  }
   .rise-in {
     animation: rise-in 0.35s cubic-bezier(0.2, 0.8, 0.2, 1) both;
   }

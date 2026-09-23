@@ -42,8 +42,9 @@ function Progress({ startedAt, durMs }: { startedAt: number; durMs: number }) {
 
 export function Questions(p: QuestionsProps) {
   const open = p.questions.filter((q) => !q.archived).slice().reverse();
+  const unheard = open.filter((q) => q.mode === "text").length;
   return (
-    <div className="lg:col-span-3 flex flex-col gap-4">
+    <>
       <div className="bg-surface-container-lowest border border-outline-variant/25 rounded-2xl p-4 shadow-lg flex items-center justify-between gap-2">
         <div className="flex items-center gap-2.5 min-w-0">
           <div className="w-8 h-8 rounded-lg bg-secondary/15 flex items-center justify-center text-secondary shrink-0">
@@ -52,7 +53,7 @@ export function Questions(p: QuestionsProps) {
           <div className="flex flex-col min-w-0">
             <h2 className="font-headline-sm text-xs font-bold text-on-surface uppercase tracking-wider">Interventions apprenants</h2>
             <span className="font-metric-mono-sm text-[11px] text-secondary font-semibold truncate">
-              {open.length === 0 ? "Aucune question en attente" : `${open.length} question${open.length > 1 ? "s" : ""} à traiter`}
+              {open.length === 0 ? "Aucune question en attente" : `${open.length} question${open.length > 1 ? "s" : ""} à traiter${unheard ? ` · ${unheard} écrite${unheard > 1 ? "s" : ""}` : ""}`}
             </span>
           </div>
         </div>
@@ -105,10 +106,17 @@ export function Questions(p: QuestionsProps) {
                       <span className="font-headline-sm text-xs font-bold text-on-surface">Apprenant {q.who.slice(-4).toUpperCase()}</span>
                       <span className="font-metric-mono-sm text-[10px] text-outline font-semibold">#{q.n}</span>
                     </div>
-                    <span className="font-metric-mono-sm text-[11px] text-secondary font-medium">Push-to-talk • {ago(q.at, p.now)}</span>
+                    <span className="font-metric-mono-sm text-[11px] text-secondary font-medium flex items-center gap-1">
+                      <Icon name={q.mode === "text" ? "keyboard" : "mic"} className="text-[13px]" />
+                      {q.mode === "text" ? "Écrite" : "Parlée"} • {ago(q.at, p.now)}
+                    </span>
                   </div>
                 </div>
-                {fresh && <span className="font-label-badge text-[10px] text-primary bg-primary/15 px-2 py-0.5 rounded-full font-extrabold uppercase tracking-wide">Nouvelle</span>}
+                {fresh && (
+                  <span className="font-label-badge text-[10px] text-primary bg-primary/15 px-2 py-0.5 rounded-full font-extrabold uppercase tracking-wide">
+                    {q.mode === "text" ? "À lire" : "Nouvelle"}
+                  </span>
+                )}
               </div>
 
               <div className="bg-surface-container-low p-2.5 rounded-xl border border-outline-variant/20 flex flex-col gap-1">
@@ -144,11 +152,16 @@ export function Questions(p: QuestionsProps) {
                   type="button"
                   disabled={!q.audio || !!playing}
                   onClick={() => p.onReplay(q)}
-                  title="Rejouer la question dans le casque"
-                  className="flex items-center justify-center gap-1 bg-surface-container hover:bg-surface-container-high text-on-surface py-2 px-2 rounded-xl text-xs font-medium border border-outline-variant/20 transition-all active:scale-95 cursor-pointer disabled:opacity-40 disabled:cursor-default"
+                  title={q.mode === "text" ? "Écouter la question dans le casque" : "Rejouer la question dans le casque"}
+                  className={`flex items-center justify-center gap-1 py-2 px-2 rounded-xl text-xs font-medium border transition-all active:scale-95 cursor-pointer disabled:opacity-40 disabled:cursor-default ${
+                    q.mode === "text" && !playing ? "bg-secondary text-on-secondary border-secondary hover:bg-secondary-fixed font-bold" : "bg-surface-container hover:bg-surface-container-high text-on-surface border-outline-variant/20"
+                  }`}
                 >
                   <Icon name="play_arrow" className="text-[16px]" />
-                  <span>Réécouter{q.audio ? ` (${mmss(q.audio.durMs)})` : ""}</span>
+                  <span>
+                    {q.mode === "text" ? "Écouter" : "Réécouter"}
+                    {q.audio ? ` (${mmss(q.audio.durMs)})` : ""}
+                  </span>
                 </button>
                 <button
                   type="button"
@@ -163,6 +176,6 @@ export function Questions(p: QuestionsProps) {
           );
         })}
       </div>
-    </div>
+    </>
   );
 }

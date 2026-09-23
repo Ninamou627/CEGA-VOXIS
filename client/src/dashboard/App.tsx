@@ -9,14 +9,16 @@
 import { useEffect, useRef, useState } from "react";
 import type { FloorState, Lang, ServerEvent, StatsPayload } from "../../../shared/protocol";
 import { SalleSocket, type ConnState } from "../lib/ws";
+import { REPORT_LABEL } from "../ui/reports";
 import { Header } from "./Header";
-import type { EventKind, Health, JournalEntry, Line, QuestionEntry, Sample, SessionInfo } from "./types";
+import type { EventKind, Health, JournalEntry, Line, QuestionEntry, ReportEntry, Sample, SessionInfo } from "./types";
 import { Checklist } from "./views/Checklist";
 import { Join } from "./views/Join";
 import { Journal } from "./views/Journal";
 import { Kpis } from "./views/Kpis";
 import { Pipeline } from "./views/Pipeline";
 import { Questions } from "./views/Questions";
+import { Reports } from "./views/Reports";
 import { Segments } from "./views/Segments";
 
 type Hello = Extract<ServerEvent, { t: "hello" }>;
@@ -39,6 +41,7 @@ export function App() {
   const [partial, setPartial] = useState("");
   const [lines, setLines] = useState<Line[]>([]);
   const [questions, setQuestions] = useState<QuestionEntry[]>([]);
+  const [reports, setReports] = useState<ReportEntry[]>([]);
   const [journal, setJournal] = useState<JournalEntry[]>([]);
   const [err, setErr] = useState<string>();
   const [now, setNow] = useState(Date.now());
@@ -152,8 +155,12 @@ export function App() {
         log("parole", e.floor.state === "question" ? `un apprenant prend la parole (${e.floor.who.slice(-4).toUpperCase()})` : "parole rendue au formateur");
         break;
       case "question":
-        setQuestions((prev) => [...prev, { n: prev.length + 1, at: Date.now(), who: e.who, srcLang: e.srcLang, srcText: e.srcText, lang: e.lang, text: e.text, delivered: e.delivered }].slice(-50));
-        log("question", e.srcText ? `« ${e.srcText} » → « ${e.text} »${e.delivered ? "" : " — formateur absent"}` : "question incomprise (vide)");
+        setQuestions((prev) => [...prev, { n: prev.length + 1, at: Date.now(), who: e.who, srcLang: e.srcLang, srcText: e.srcText, lang: e.lang, text: e.text, delivered: e.delivered, mode: e.mode }].slice(-50));
+        log("question", e.srcText ? `${e.mode === "text" ? "écrite" : "parlée"} : « ${e.srcText} » → « ${e.text} »${e.delivered ? "" : " — formateur absent"}` : "question incomprise (vide)");
+        break;
+      case "report":
+        setReports((prev) => [...prev, { n: prev.length + 1, at: e.at, who: e.who, kind: e.kind, lang: e.lang, seq: e.seq, srcText: e.srcText, text: e.text, e2eMs: e.e2eMs }].slice(-100));
+        log("signalement", `${REPORT_LABEL[e.kind].label}${e.srcText ? ` — « ${e.srcText} »` : ""}`);
         break;
       case "degraded":
         log("degrade", e.mode === "none" ? `retour au nominal — ${e.reason}` : `${e.mode} — ${e.reason}`);
@@ -227,6 +234,7 @@ export function App() {
           <div className="lg:col-span-3 flex flex-col gap-4">
             <Pipeline stats={stats} health={health} info={info} />
             <Questions questions={questions} asking={floor.state === "question"} now={now} />
+            <Reports reports={reports} now={now} />
           </div>
         </div>
 

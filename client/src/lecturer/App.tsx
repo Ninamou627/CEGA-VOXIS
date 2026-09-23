@@ -12,10 +12,11 @@ import { listMics, startMic, type MicHandle } from "../lib/mic";
 import { WebAudioPlayer } from "../lib/player";
 import { SalleSocket, type ConnState } from "../lib/ws";
 import { Header } from "./Header";
-import type { Line, QuestionItem } from "./types";
+import type { Line, QuestionItem, ReportItem } from "./types";
 import { AudioPanel, SPEECH_DB } from "./views/AudioPanel";
 import { Join } from "./views/Join";
 import { Questions } from "./views/Questions";
+import { Reports } from "./views/Reports";
 import { TranslationHub } from "./views/TranslationHub";
 import { VocalStage, WAVE_BARS } from "./views/VocalStage";
 
@@ -42,6 +43,7 @@ export function App() {
   const [lines, setLines] = useState<Line[]>([]);
   const [floor, setFloor] = useState<FloorState>({ state: "lecturer" });
   const [questions, setQuestions] = useState<QuestionItem[]>([]);
+  const [reports, setReports] = useState<ReportItem[]>([]);
   const [stats, setStats] = useState<StatsPayload>();
   const [err, setErr] = useState<string>();
   const [degraded, setDegraded] = useState<string>();
@@ -63,6 +65,7 @@ export function App() {
   const historyRef = useRef<number[]>([]);
   const speakUntil = useRef(0);
   const questionSeq = useRef(0);
+  const reportSeq = useRef(0);
   const questionsRef = useRef<QuestionItem[]>([]);
   const mutedRef = useRef(false);
   const stopTimer = useRef<number>(undefined);
@@ -220,8 +223,11 @@ export function App() {
         break;
       case "question":
         setQuestions((prev) =>
-          [...prev, { n: ++questionSeq.current, who: e.who, srcLang: e.srcLang, srcText: e.srcText, lang: e.lang, text: e.text, at: Date.now() }].slice(-30),
+          [...prev, { n: ++questionSeq.current, who: e.who, srcLang: e.srcLang, srcText: e.srcText, lang: e.lang, text: e.text, at: Date.now(), mode: e.mode }].slice(-30),
         );
+        break;
+      case "report":
+        setReports((prev) => [...prev, { n: ++reportSeq.current, at: e.at, who: e.who, kind: e.kind, lang: e.lang, srcText: e.srcText, text: e.text, e2eMs: e.e2eMs }].slice(-40));
         break;
       case "stats":
         setStats(e.stats);
@@ -248,6 +254,7 @@ export function App() {
       }
     }
     if (target) setQuestions((prev) => prev.map((q) => (q.n === target.n ? { ...q, audio } : q)));
+    if (h.autoplay === false) return; // question écrite : elle attend « Écouter »
     void player.current?.enqueue(audio.bytes, h.mime, { seq: target?.n ?? 0, tOrigin: h.tOrigin, durMs: h.durMs, text: h.text, lang: h.lang, replay: true });
   }
 
@@ -344,14 +351,17 @@ export function App() {
               />
               <TranslationHub lines={lines} partial={partial} srcLang={srcLang} tgtLang={tgtLang} stats={stats} degraded={degraded} clockOffset={clockOffset.current} />
             </div>
-            <Questions
-              questions={questions}
-              asking={asking}
-              now={now}
-              playing={playingQ}
-              onReplay={replay}
-              onArchive={(q) => setQuestions((prev) => prev.map((x) => (x.n === q.n ? { ...x, archived: true } : x)))}
-            />
+            <div className="lg:col-span-3 flex flex-col gap-4">
+              <Questions
+                questions={questions}
+                asking={asking}
+                now={now}
+                playing={playingQ}
+                onReplay={replay}
+                onArchive={(q) => setQuestions((prev) => prev.map((x) => (x.n === q.n ? { ...x, archived: true } : x)))}
+              />
+              <Reports reports={reports} now={now} />
+            </div>
           </div>
         )}
       </main>

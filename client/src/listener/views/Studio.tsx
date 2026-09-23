@@ -1,9 +1,11 @@
 /**
- * Vue « Ask Q&A » : le studio de question de la maquette (Push To Talk Studio).
- * Le micro se touche pour démarrer, se retouche pour une pause ; « Envoyer
- * maintenant » transmet, « Annuler » jette. La question part en un bloc (D8) :
- * la transcription et la traduction arrivent après l'envoi, pas pendant.
+ * Studio de question (maquette « Push To Talk Studio »). Deux façons de demander :
+ * la voix — le micro se touche pour démarrer, se retouche pour une pause, « Envoyer
+ * maintenant » transmet — ou l'écrit, pour qui ne veut pas parler devant la salle.
+ * Dans les deux cas la question part en un bloc (D8) : transcription et traduction
+ * arrivent après l'envoi, pas pendant, et le formateur peut la lire ou l'écouter.
  */
+import { useState } from "react";
 import type { Lang } from "../../../../shared/protocol";
 import { Icon } from "../../ui/Icon";
 import { LANGS } from "../../ui/langs";
@@ -32,9 +34,13 @@ export interface StudioProps {
   processedMs?: number;
   onMic: () => void;
   onSend: () => void;
+  onSendText: (text: string) => void;
   onCancel: () => void;
   onBack: () => void;
 }
+
+/** Une question écrite tient dans un message : au-delà, ce n'est plus une question. */
+const MAX_CHARS = 500;
 
 /** Périmètre du cercle r=46 de la maquette : la jauge se remplit en réduisant le dashoffset. */
 const ARC = 289.02;
@@ -72,12 +78,14 @@ function Step({ icon, fill, title, badge, tone }: { icon: string; fill?: boolean
 }
 
 export function Studio(p: StudioProps) {
+  const [draft, setDraft] = useState("");
   const recording = p.phase === "recording";
   const paused = p.phase === "paused";
   const capturing = recording || paused;
   const done = p.phase === "done";
   const understood = done && !!p.last?.srcText;
   const micDisabled = !p.supported || !p.live || p.busy || p.phase === "sending";
+  const textDisabled = !p.live || capturing || p.phase === "sending";
   // Le retour de la salle s'écrit : l'original d'abord, la traduction ensuite.
   const src = useTypewriter(understood ? p.last!.srcText : "", { start: understood });
   const tgt = useTypewriter(understood ? p.last!.text : "", { start: understood && src.done });
@@ -135,7 +143,7 @@ export function Studio(p: StudioProps) {
         </div>
         <h2 className="font-headline-lg-mobile text-headline-lg-mobile text-on-surface">Posez votre question</h2>
         <p className="font-body-transcript-lg-mobile text-body-transcript-lg-mobile text-on-surface-variant max-w-xs mx-auto">
-          Votre voix sera automatiquement traduite en <span className="text-primary font-medium">{LANGS[p.srcLang].nameFr}</span> pour le formateur.
+          Parlez ou écrivez : votre question sera traduite en <span className="text-primary font-medium">{LANGS[p.srcLang].nameFr}</span> pour le formateur.
         </p>
       </div>
 
@@ -200,6 +208,51 @@ export function Studio(p: StudioProps) {
             <span>{clock(p.maxMs)} max</span>
           </div>
         </div>
+      </div>
+
+      {/* Écrire plutôt que parler */}
+      <div className="flex flex-col gap-space-xs">
+        <div className="flex items-center gap-space-sm">
+          <div className="h-px flex-1 bg-outline-variant/30" />
+          <span className="font-label-badge text-label-badge uppercase tracking-wider text-on-surface-variant">ou écrivez votre question</span>
+          <div className="h-px flex-1 bg-outline-variant/30" />
+        </div>
+        <div className="flex items-end gap-space-xs">
+          <textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value.slice(0, MAX_CHARS))}
+            onKeyDown={(e) => {
+              // Entrée envoie ; Maj+Entrée va à la ligne.
+              if (e.key === "Enter" && !e.shiftKey && draft.trim() && !textDisabled) {
+                e.preventDefault();
+                p.onSendText(draft.trim());
+                setDraft("");
+              }
+            }}
+            rows={2}
+            disabled={textDisabled}
+            placeholder="Écrivez ici, le formateur la lira dans sa langue…"
+            aria-label="Question écrite"
+            className="flex-1 resize-none bg-surface-container border border-outline-variant/30 rounded-xl px-space-md py-space-sm font-body-md text-body-md text-on-surface placeholder:text-outline focus:outline-none focus:border-primary/60 disabled:opacity-50"
+          />
+          <button
+            type="button"
+            disabled={!draft.trim() || textDisabled}
+            onClick={() => {
+              p.onSendText(draft.trim());
+              setDraft("");
+            }}
+            aria-label="Envoyer la question écrite"
+            className="w-12 h-12 rounded-xl bg-primary text-on-primary flex items-center justify-center shadow-md transition-all active:scale-95 disabled:opacity-40 disabled:active:scale-100"
+          >
+            <Icon name="send" fill className="text-[20px]" />
+          </button>
+        </div>
+        {draft.length > MAX_CHARS - 80 && (
+          <span className="font-metric-mono-sm text-metric-mono-sm text-on-surface-variant self-end">
+            {draft.length} / {MAX_CHARS}
+          </span>
+        )}
       </div>
 
       {/* Les trois étapes */}

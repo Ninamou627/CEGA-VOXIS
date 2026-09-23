@@ -46,8 +46,9 @@ latence — est donc exercé pour de vrai, sans dépenser un centime.
 | Guide certificat DNS-01 | `docs/CERTIFICAT.md` | ✅ |
 | Salle, mutex de parole, fan-out | `server/src/room.ts`, `ws/handlers.ts` | ✅ |
 | Métriques JSONL + bout-en-bout mesuré à l'ack | `server/src/metrics.ts` | ✅ |
-| Page apprenant (maquette VOXIS : écoute, volume, transcription, PTT, vues) | `client/src/listener` | ✅ |
-| Studio de question (micro, pause, 30 s max, étapes, retour bilingue) | `client/src/listener/views/Studio.tsx` | ✅ |
+| Page apprenant (maquette VOXIS : écoute, volume, transcription, boutons flottants) | `client/src/listener` | ✅ |
+| Studio de question : micro (30 s max) **ou** question écrite, retour bilingue | `client/src/listener/views/Studio.tsx` | ✅ |
+| Signalement de qualité en deux gestes, contexte joint par le serveur (D14) | `views/ReportSheet.tsx`, `server/src/ws/handlers.ts` | ✅ |
 | Design system des interfaces (tokens Tailwind clair/sombre, polices et icônes embarquées) | `client/tailwind.config.ts`, `client/src/theme.css`, `client/src/ui` | ✅ |
 | Poste formateur (maquette Control Hub : micro et niveaux, onde réelle, pipeline, flux bilingue, questions, muet à l'Espace) | `client/src/lecturer` | ✅ |
 | Tableau de bord (QR, checklist d'avant-séance, latence et dérive sur 10 min, pipeline et santé du serveur, flux, questions, journal) | `client/src/dashboard` | ✅ |
@@ -81,9 +82,15 @@ Jakarta Sans, JetBrains Mono) et les icônes Material Symbols sont embarquées d
 build — un téléphone sur la borne de la salle n'a pas forcément Internet. Les briques
 communes (icône, logo, thème clair/sombre, langues, courbes) sont dans `client/src/ui`,
 chaque page garde son dossier (`listener`, `lecturer`, `dashboard`) avec ses vues. Les vues de la page
-apprenant (écoute, transcription, questions, canaux) sont des onglets d'une même page :
-l'audio ne s'arrête pas quand on change de vue. L'écran de salle (`/screen`) se branche
-avec le rôle `screen` : tout le texte, toutes les langues, jamais d'audio, pas de jeton.
+apprenant tient sur un écran, avec deux boutons flottants : poser une question (le
+studio s'ouvre par-dessus, micro ou clavier) et signaler un problème (feuille par le
+bas). L'écran de salle (`/screen`) se branche avec le rôle `screen` : tout le texte,
+toutes les langues, jamais d'audio, pas de jeton.
+
+Les signalements des apprenants arrivent chez le formateur et au tableau de bord, et
+sont écrits dans `metrics.jsonl` avec l'heure, la phrase, sa transcription, sa
+traduction et le décalage mesuré — c'est ce qu'on relit pour régler la segmentation,
+enrichir le glossaire ou changer de voix (D14).
 
 ## Les deux choses à faire avant de mettre un téléphone dans la salle
 

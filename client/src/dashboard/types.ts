@@ -1,4 +1,4 @@
-import type { Lang, PipelineStatus } from "../../../shared/protocol";
+import type { Lang, PipelineStatus, ReportKind } from "../../../shared/protocol";
 
 /** Réponse de GET /api/session. */
 export interface SessionInfo {
@@ -49,9 +49,24 @@ export interface QuestionEntry {
   lang: Lang;
   text: string;
   delivered: boolean;
+  /** « voice » : parlée au micro ; « text » : écrite sur le téléphone. */
+  mode: "voice" | "text";
 }
 
-export type EventKind = "parole" | "question" | "degrade" | "erreur" | "salle" | "liaison";
+/** Un signalement de qualité, enrichi par le serveur du passage visé. */
+export interface ReportEntry {
+  n: number;
+  at: number;
+  who: string;
+  kind: ReportKind;
+  lang: Lang;
+  seq?: number;
+  srcText?: string;
+  text?: string;
+  e2eMs?: number | null;
+}
+
+export type EventKind = "parole" | "question" | "signalement" | "degrade" | "erreur" | "salle" | "liaison";
 
 export interface JournalEntry {
   n: number;

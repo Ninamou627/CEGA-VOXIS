@@ -31,6 +31,9 @@ export function Questions({ questions, asking, now }: { questions: QuestionEntry
               <span>{LANGS[q.srcLang].flag}</span>
               <span>Apprenant {q.who.slice(-4).toUpperCase()}</span>
               <span>#{q.n}</span>
+              <span className="flex items-center gap-0.5" title={q.mode === "text" ? "Question écrite" : "Question parlée"}>
+                <Icon name={q.mode === "text" ? "keyboard" : "mic"} className="text-[12px]" />
+              </span>
               <span className="ml-auto">{ago(q.at, now)}</span>
               <span className={`flex items-center gap-0.5 ${q.delivered ? "text-secondary" : "text-error"}`} title={q.delivered ? "Jouée dans le casque du formateur" : "Aucun formateur connecté pour l'entendre"}>
                 <Icon name={q.delivered ? "headphones" : "headset_off"} className="text-[12px]" />

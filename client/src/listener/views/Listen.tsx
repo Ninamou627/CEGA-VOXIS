@@ -2,7 +2,7 @@
  * Vue « Listen » : l'écran d'écoute de la maquette, branché sur l'état réel.
  * Purement présentationnelle — l'état et les actions viennent de App.
  */
-import { useEffect, useRef, type PointerEvent } from "react";
+import { useEffect, useRef } from "react";
 import type { Lang } from "../../../../shared/protocol";
 import type { ConnState } from "../../lib/ws";
 import { Icon } from "../../ui/Icon";
@@ -59,8 +59,6 @@ export interface ListenProps {
   canReplay: boolean;
   onReplay: () => void;
   question: QuestionState;
-  onAskStart: (e: PointerEvent<HTMLButtonElement>) => void;
-  onAskEnd: () => void;
 }
 
 const CONN_LABEL: Record<ConnState, string> = {
@@ -112,7 +110,7 @@ export function Listen(p: ListenProps) {
   const lagging = a.queueMs > 2500;
   const linkDot = live ? "bg-secondary" : p.conn === "closed" ? "bg-error" : "bg-tertiary";
 
-  // Ligne sous le bouton question : rassurante par défaut, puis ce qu'il faut savoir.
+  // Retour sur la dernière question, là où le bouton se trouvait avant.
   const note = !q.supported
     ? { text: "Les questions exigent une connexion sécurisée (HTTPS). Voir docs/DECISIONS.md, D6.", cls: "text-error" }
     : q.busy
@@ -127,9 +125,7 @@ export function Listen(p: ListenProps) {
             : q.last.delivered
               ? { text: `Transmise au formateur : « ${q.last.srcText} » → « ${q.last.text} »`, cls: "text-secondary" }
               : { text: `Comprise : « ${q.last.srcText} » — mais aucun formateur n'est connecté pour l'entendre.`, cls: "text-tertiary" }
-          : { text: "Votre voix sera traduite et diffusée dans l'oreillette du formateur", cls: "text-on-surface-variant/80" };
-
-  const pttDisabled = !q.supported || q.busy || !live;
+          : undefined;
 
   return (
     <div className="flex flex-col w-full px-gutter-mobile gap-space-md">
@@ -342,44 +338,12 @@ export function Listen(p: ListenProps) {
         )}
       </div>
 
-      {/* Section 4 : intervention — push-to-talk */}
-      <div className="flex flex-col items-center gap-space-xs pt-space-xs pb-space-sm">
-        <button
-          type="button"
-          disabled={pttDisabled}
-          onPointerDown={p.onAskStart}
-          onPointerUp={p.onAskEnd}
-          onPointerCancel={p.onAskEnd}
-          onContextMenu={(e) => e.preventDefault()}
-          className="group relative w-full h-20 rounded-xl bg-gradient-to-r from-secondary-container via-surface-container-high to-primary-container text-on-surface flex items-center justify-between px-space-md shadow-xl active:scale-[0.98] transition-all overflow-hidden select-none touch-none disabled:opacity-50 disabled:active:scale-100"
-        >
-          <div className={`absolute inset-0 bg-secondary transition-opacity duration-200 ${q.asking ? "opacity-30" : "opacity-0"}`}></div>
-          <div className="relative z-10 flex items-center gap-space-md min-w-0">
-            <div
-              className={`w-12 h-12 rounded-full flex items-center justify-center shadow-md transition-colors ${
-                q.asking ? "bg-secondary text-on-secondary" : "bg-surface-container text-secondary group-active:text-on-secondary"
-              }`}
-            >
-              <Icon name="front_hand" className="text-[28px]" />
-            </div>
-            <div className="flex flex-col text-left min-w-0">
-              <span className={`font-headline-sm text-headline-sm font-bold tracking-tight truncate ${q.asking ? "text-on-secondary-container" : "text-on-surface"}`}>
-                {q.asking ? "TRANSMISSION EN COURS..." : "POSER UNE QUESTION"}
-              </span>
-              <span className="font-body-sm text-body-sm text-on-surface-variant truncate">
-                {q.asking ? "Relâchez pour envoyer la question" : "Maintenir pour parler au formateur"}
-              </span>
-            </div>
-          </div>
-          <div className="relative z-10 flex items-center gap-1.5 flex-shrink-0 bg-surface/50 backdrop-blur-sm px-3 py-1.5 rounded-full">
-            <Icon name="mic" className="text-secondary text-[18px]" />
-            <span className="font-metric-mono-sm text-metric-mono-sm text-on-surface font-semibold uppercase tracking-wider">PTT</span>
-          </div>
-        </button>
-        <span className={`font-body-sm text-body-sm text-center ${note.cls}`} role="status">
-          {note.text}
-        </span>
-      </div>
+      {note && (
+        <div className="flex items-start gap-space-xs px-space-xs pb-space-sm" role="status">
+          <Icon name="front_hand" className={`text-[16px] mt-px shrink-0 ${note.cls}`} />
+          <span className={`font-body-sm text-body-sm ${note.cls}`}>{note.text}</span>
+        </div>
+      )}
     </div>
   );
 }
