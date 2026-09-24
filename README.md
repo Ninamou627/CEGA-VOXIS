@@ -115,6 +115,16 @@ prochain démarrage du micro — chaque champ le dit. Les compteurs de long term
 mesuré. Deux écoutes de voix : l'échantillon ElevenLabs est gratuit, l'« essai en
 situation » synthétise une phrase et décompte une centaine de caractères du compte.
 
+La Vue d'ensemble et la Supervision montrent la chaîne en **constellation** : cinq orbes
+(microphone, audio, reconnaissance, traduction, synthèse vocale) reliées par des liaisons où
+circulent des paquets. Tout y est porté par le réel — un paquet part quand un segment passe,
+un étage s'élève quand un mot est entendu ou une traduction reçue, une liaison vers un étage
+en panne passe en pointillés rouges. En sombre, ces deux pages prennent le design fourni
+(bleu nuit, grille de points, halos) ; en clair, les mêmes animations sur la palette claire.
+Un clic sur un étage ouvre son **inspecteur** : mesures des dernières minutes, incidents,
+ce qui vient d'y passer, et ses réglages en lecture avec un lien vers Configuration.
+« Pause animation » n'arrête que l'animation — la traduction continue.
+
 ## Les deux choses à faire avant de mettre un téléphone dans la salle
 
 1. **Un vrai certificat TLS sur l'IP du LAN.** Le micro des téléphones (questions) exige

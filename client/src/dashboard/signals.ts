@@ -137,9 +137,13 @@ export interface Alert {
   detail?: string;
   /** Page de l'administration où agir. */
   to?: string;
+  /** Étage de la chaîne concerné, s'il y en a un (inspecteur de la constellation). */
+  stage?: StageId;
 }
 
 const STAGE_NAME: Record<Stage, string> = { stt: "Reconnaissance", mt: "Traduction", tts: "Synthèse vocale" };
+/** Les signalements des apprenants, rattachés à l'étage qu'ils mettent en cause. */
+const REPORT_STAGE: Partial<Record<string, StageId>> = { transcription: "stt", translation: "mt", voice: "tts" };
 
 export function computeAlerts(sig: Signals): Alert[] {
   const out: Alert[] = [];
@@ -156,46 +160,49 @@ export function computeAlerts(sig: Signals): Alert[] {
   if (mocks.length) out.push({ id: "mock", severity: "warn", title: "Fournisseur simulé en service", detail: `${mocks.join(" · ")} — la salle n'entend pas une vraie traduction.`, to: "configuration" });
 
   if (lecturer && (h?.audio.lastFrameAgoMs ?? 0) > 3000 && !pl?.muted) {
-    out.push({ id: "frames", severity: "crit", title: "Le micro du formateur n'envoie plus de son", detail: `Dernière trame reçue il y a ${delay(h!.audio.lastFrameAgoMs!)}. Onglet formateur fermé ou en veille ?`, to: "supervision" });
+    out.push({ id: "frames", severity: "crit", title: "Le micro du formateur n'envoie plus de son", detail: `Dernière trame reçue il y a ${delay(h!.audio.lastFrameAgoMs!)}. Onglet formateur fermé ou en veille ?`, to: "supervision", stage: "mic" });
   }
-  if (lecturer && h && !h.audio.sttOpen && pl?.degraded !== "stt-lost") out.push({ id: "stt-closed", severity: "crit", title: "Reconnaissance vocale fermée", detail: "Le formateur est en ligne mais le flux de reconnaissance n'est pas ouvert.", to: "supervision" });
+  if (lecturer && h && !h.audio.sttOpen && pl?.degraded !== "stt-lost") out.push({ id: "stt-closed", severity: "crit", title: "Reconnaissance vocale fermée", detail: "Le formateur est en ligne mais le flux de reconnaissance n'est pas ouvert.", to: "supervision", stage: "stt" });
 
   const threshold = sig.room?.speechThresholdDb ?? -35;
   const silence = sig.room?.silenceAlertS ?? 20;
   if (lecturer && !pl?.muted && st?.micDb != null && st.micDb < threshold && (st.micSilentS ?? 0) >= silence) {
-    out.push({ id: "silence", severity: "warn", title: `Silence au micro depuis ${span((st.micSilentS ?? 0) * 1000)}`, detail: `${st.micDb} dB reçus, seuil de parole à ${threshold} dB : mauvais micro ou niveau trop bas ?`, to: "configuration" });
+    out.push({ id: "silence", severity: "warn", title: `Silence au micro depuis ${span((st.micSilentS ?? 0) * 1000)}`, detail: `${st.micDb} dB reçus, seuil de parole à ${threshold} dB : mauvais micro ou niveau trop bas ?`, to: "configuration", stage: "audio" });
   }
 
+  // « Texte seul » vient de la traduction ou de la voix : l'erreur la plus récente dit laquelle.
+  const mtErr = sig.overview?.lastErrors.mt;
+  const ttsErr = sig.overview?.lastErrors.tts;
   switch (pl?.degraded) {
     case "text-only":
-      out.push({ id: "degraded", severity: "crit", title: "Voix indisponible : les apprenants n'ont que le texte", to: "supervision" });
+      out.push({ id: "degraded", severity: "crit", title: "Voix indisponible : les apprenants n'ont que le texte", to: "supervision", stage: (mtErr?.at ?? 0) > (ttsErr?.at ?? 0) ? "mt" : "tts" });
       break;
     case "stt-lost":
-      out.push({ id: "degraded", severity: "crit", title: "Reconnaissance vocale interrompue", detail: "Reconnexion automatique en cours.", to: "supervision" });
+      out.push({ id: "degraded", severity: "crit", title: "Reconnaissance vocale interrompue", detail: "Reconnexion automatique en cours.", to: "supervision", stage: "stt" });
       break;
     case "backup-mt":
-      out.push({ id: "degraded", severity: "warn", title: "Traduction de secours en service", detail: "Le moteur principal a échoué ; il est réessayé dans une minute.", to: "supervision" });
+      out.push({ id: "degraded", severity: "warn", title: "Traduction de secours en service", detail: "Le moteur principal a échoué ; il est réessayé dans une minute.", to: "supervision", stage: "mt" });
       break;
     case "backup-tts":
-      out.push({ id: "degraded", severity: "warn", title: "Voix de secours en service", detail: "La voix principale a échoué ; elle est réessayée dans une minute.", to: "supervision" });
+      out.push({ id: "degraded", severity: "warn", title: "Voix de secours en service", detail: "La voix principale a échoué ; elle est réessayée dans une minute.", to: "supervision", stage: "tts" });
       break;
   }
 
   const e2e = st?.e2eP50 ?? null;
   if (e2e != null && e2e > 2500) out.push({ id: "e2e", severity: e2e > 4000 ? "crit" : "warn", title: `Décalage élevé : ${delay(e2e)}`, detail: "Médiane sur la dernière minute ; la cible est 1,5 s.", to: "supervision" });
   const q = st?.queueMaxMs ?? null;
-  if (q != null && q > 5000) out.push({ id: "drift", severity: "warn", title: `Dérive : un téléphone a ${delay(q)} de retard en file`, detail: "Au-delà de 8 s, les segments sont sautés.", to: "supervision" });
+  if (q != null && q > 5000) out.push({ id: "drift", severity: "warn", title: `Dérive : un téléphone a ${delay(q)} de retard en file`, detail: "Au-delà de 8 s, les segments sont sautés.", to: "supervision", stage: "tts" });
 
   for (const stage of ["stt", "mt", "tts"] as const) {
     const e = sig.overview?.lastErrors[stage];
-    if (e && sig.now - e.at < RECENT_ERROR_MS) out.push({ id: `err-${stage}`, severity: "warn", title: `Erreurs récentes — ${STAGE_NAME[stage]} (${e.count})`, detail: e.msg, to: "supervision" });
+    if (e && sig.now - e.at < RECENT_ERROR_MS) out.push({ id: `err-${stage}`, severity: "warn", title: `Erreurs récentes — ${STAGE_NAME[stage]} (${e.count})`, detail: e.msg, to: "supervision", stage });
   }
 
   // Plusieurs apprenants qui signalent la même chose en cinq minutes : ce n'est plus un avis isolé.
   const counts = new Map<string, number>();
   for (const r of sig.reports) if (sig.now - r.at < 300_000) counts.set(r.kind, (counts.get(r.kind) ?? 0) + 1);
   for (const [kind, n] of counts) {
-    if (n >= 2) out.push({ id: `reports-${kind}`, severity: "warn", title: `${n} signalements « ${REPORT_LABEL[kind as keyof typeof REPORT_LABEL].label} » en 5 min`, to: "qualite" });
+    if (n >= 2) out.push({ id: `reports-${kind}`, severity: "warn", title: `${n} signalements « ${REPORT_LABEL[kind as keyof typeof REPORT_LABEL].label} » en 5 min`, to: "qualite", stage: REPORT_STAGE[kind] });
   }
 
   if (h && h.process.loopLagMaxMs > 100) out.push({ id: "lag", severity: "warn", title: `Serveur surchargé : ${h.process.loopLagMaxMs} ms de retard de boucle`, to: "supervision" });

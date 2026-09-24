@@ -1,22 +1,27 @@
 /**
- * Vue d'ensemble : les cinq chiffres de la salle, la chaîne en une ligne, ce qui demande
- * une action, et les quatre piliers de la qualité. Tout le reste est à un clic.
+ * Vue d'ensemble : les cinq chiffres de la salle, la chaîne en constellation, ce qui
+ * demande une action, et les quatre piliers de la qualité. Tout le reste est à un clic.
  */
 import type { Lang } from "../../../../shared/protocol";
 import { delay, pct, shortDate, span, spanParts } from "../../ui/format";
 import { Icon } from "../../ui/Icon";
 import { LANGS } from "../../ui/langs";
-import type { Alert, Signals, StageState } from "../signals";
-import { Section, Stat, StatStrip, Value, type Tone } from "../ui";
+import type { NodeView } from "../nodes";
+import type { Alert, Signals, StageId } from "../signals";
+import { Accent, Section, Stat, StatStrip, Value, type Tone } from "../ui";
 import { Alerts } from "../views/Alerts";
-import { Flow } from "../views/Flow";
+import { Constellation } from "../views/Constellation";
 import { pillars, Pillars } from "../views/Pillars";
 
 export interface OverviewProps {
   sig: Signals;
-  stages: StageState[];
-  flowing: boolean;
+  nodes: NodeView[];
+  /** Le micro reçoit de la parole en ce moment. */
+  speaking: boolean;
   alerts: Alert[];
+  paused: boolean;
+  inspected?: StageId;
+  onInspect: (id: StageId) => void;
 }
 
 const more = (href: string, label = "Détail") => (
@@ -33,7 +38,7 @@ function availabilityTone(x: number | null): Tone {
   return x == null ? "idle" : x >= 0.99 ? "ok" : x >= 0.95 ? "warn" : "crit";
 }
 
-export function Overview({ sig, stages, flowing, alerts }: OverviewProps) {
+export function Overview({ sig, nodes, speaking, alerts, paused, inspected, onInspect }: OverviewProps) {
   const { stats, health, overview: ov } = sig;
   const listeners = stats?.listeners ?? health?.listeners ?? 0;
   const byLang = Object.entries(stats?.byLang ?? {}).filter(([, n]) => (n ?? 0) > 0) as [Lang, number][];
@@ -94,8 +99,16 @@ export function Overview({ sig, stages, flowing, alerts }: OverviewProps) {
         />
       </StatStrip>
 
-      <Section title="Supervision en temps réel" hint="Du micro du formateur aux écouteurs des apprenants. Le flux avance entre deux étages quand la parole passe." right={more("#/supervision")}>
-        <Flow stages={stages} flowing={flowing} />
+      <Section
+        title={
+          <>
+            Supervision en <Accent>temps réel</Accent>
+          </>
+        }
+        hint="Du micro du formateur aux écouteurs des apprenants. Les paquets circulent quand la parole passe vraiment ; un clic sur un étage ouvre son inspecteur."
+        right={more("#/supervision")}
+      >
+        <Constellation nodes={nodes} speaking={speaking} micDb={stats?.micDb ?? null} paused={paused} inspected={inspected} onInspect={onInspect} />
       </Section>
 
       <Section title={alerts.length ? `Alertes · ${alerts.length}` : "Alertes"} hint={alerts.length ? "De la plus grave à la plus légère. Chaque alerte renvoie à la page où agir." : undefined}>

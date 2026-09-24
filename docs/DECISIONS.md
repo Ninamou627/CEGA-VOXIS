@@ -208,6 +208,28 @@ s'écrasent pas l'une l'autre.
 séparés par des filets, des listes en lignes, des sections séparées par un trait. C'est
 une page qu'on lit en diagonale pendant une séance, pas une mosaïque de boîtes.
 
+## D16 — La constellation : un design de démonstration, des données réelles
+
+**Décision.** La Vue d'ensemble et la Supervision reprennent le design « constellation »
+fourni : en sombre tel quel (bleu nuit, grille de points, halos, orbes, paquets) ; en clair,
+le design de l'administration avec les mêmes animations. Les cinq étages restent ceux de la
+supervision (microphone, audio, reconnaissance, traduction, synthèse vocale). Chaque
+mouvement correspond à un événement réel : paquets sur un segment qui passe ou pendant la
+parole, onde sur un mot entendu, une traduction reçue ou une voix produite. Tout ce que la
+maquette montrait sans mesure derrière (logits, « WebRTC », quantification, 28 pairs,
+phrases de démonstration) est retiré. L'inspecteur d'un étage lit ses réglages ; on les
+modifie sur la page Configuration, seul endroit où un réglage s'enregistre.
+
+**Pourquoi.** Une animation qui tourne quoi qu'il arrive ment à l'exploitant : il doit
+pouvoir lire un étage figé ou une liaison rouge de loin. Et un tableau de bord ouvert des
+heures ne doit pas chauffer le PC de salle : 30 images/s au plus, rien quand la page est
+cachée, en pause ou que l'appareil demande moins d'animations.
+
+**Mise en œuvre.** Le design est une portée de thème (`.cosmos`, theme.css) : en sombre elle
+redéfinit les jetons Material 3, si bien que les briques existantes suivent sans être
+réécrites ; les couleurs propres au design sont des jetons `--cz-*` qui ont une valeur par
+thème. Les autres pages et les autres interfaces ne changent pas.
+
 ## Ce que six semaines (au lieu de 48 h) remettent sur la table
 
 Dans l'ordre de valeur : tests automatisés dès le départ (fait) ; multilingue réel

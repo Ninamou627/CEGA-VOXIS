@@ -72,4 +72,8 @@ export interface Sample {
   queueMaxMs: number | null;
   listeners: number;
   micDb: number | null;
+  /** Temps médians de chaque étage (reconnaissance, traduction, synthèse), pour l'inspecteur. */
+  commitP50: number | null;
+  mtP50: number | null;
+  ttsP50: number | null;
 }

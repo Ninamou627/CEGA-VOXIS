@@ -8,7 +8,7 @@
  * d'administration (/api/admin/*, jeton de session) pour les compteurs de long terme,
  * les réglages et les voix.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { OverviewResponse, RecentReport, SaveResponse, SettingsResponse } from "../../../shared/admin";
 import type { ClientSettings, FloorState, Lang, ServerEvent, StatsPayload } from "../../../shared/protocol";
 import type { Settings } from "../../../shared/settings";
@@ -16,16 +16,20 @@ import { SalleSocket, type ConnState } from "../lib/ws";
 import { REPORT_LABEL } from "../ui/reports";
 import { AdminApi } from "./api";
 import { diffKeys, rebase } from "./draft";
+import { useMotionPause } from "./motion";
+import { lastWord, nodeViews } from "./nodes";
 import { Configuration } from "./pages/Configuration";
 import { Overview } from "./pages/Overview";
 import { Quality } from "./pages/Quality";
 import { Session } from "./pages/Session";
 import { Supervision } from "./pages/Supervision";
 import { Voices } from "./pages/Voices";
+import { pulse } from "./pulse";
 import { PAGES, Shell, type Route } from "./Shell";
-import { computeAlerts, stageStates, type Signals } from "./signals";
+import { computeAlerts, stageStates, type Signals, type StageId } from "./signals";
 import type { EventKind, Health, JournalEntry, Line, QuestionEntry, Sample, SessionInfo } from "./types";
 import { Action, Banner } from "./ui";
+import { Inspector } from "./views/Inspector";
 
 type Hello = Extract<ServerEvent, { t: "hello" }>;
 
@@ -42,15 +46,19 @@ const DEGRADED: Record<string, string> = {
   s2s: "chemin de secours S2S",
 };
 
-function readRoute(): Route {
-  const r = location.hash.replace(/^#\/?/, "");
-  return (PAGES.some((p) => p.route === r) ? r : "") as Route;
+/** « #/configuration/parole » → la page et, s'il y en a une, la section où descendre. */
+function readHash(): { route: Route; anchor?: string } {
+  const [r = "", anchor] = location.hash.replace(/^#\/?/, "").split("/");
+  return { route: (PAGES.some((p) => p.route === r) ? r : "") as Route, anchor: anchor || undefined };
 }
+
+/** Pages au design « constellation ». */
+const COSMOS: Route[] = ["", "supervision"];
 
 export function App() {
   const [token] = useState(() => new URLSearchParams(location.search).get("token") ?? "");
   const api = useMemo(() => new AdminApi(token), [token]);
-  const [route, setRoute] = useState<Route>(readRoute);
+  const [{ route, anchor }, setHash] = useState(readHash);
 
   const [conn, setConn] = useState<ConnState>("connecting");
   const [hello, setHello] = useState<Hello>();
@@ -72,6 +80,8 @@ export function App() {
   const [adminError, setAdminError] = useState<string>();
   const [wsError, setWsError] = useState<{ code: string; msg: string }>();
   const [adding, setAdding] = useState(false);
+  const [inspect, setInspect] = useState<StageId>();
+  const [motionPaused, toggleMotion] = useMotionPause();
   const [now, setNow] = useState(Date.now());
 
   const clockOffset = useRef(0);
@@ -79,6 +89,9 @@ export function App() {
   const lastListeners = useRef<number>(undefined);
   const lastLecturer = useRef<boolean>(undefined);
   const overviewTimer = useRef<number>(undefined);
+  /** Dernières stats reçues, pour les rappels du WebSocket (créés une seule fois). */
+  const statsRef = useRef<StatsPayload>(undefined);
+  const scrolledFor = useRef<string>(undefined);
 
   function log(kind: EventKind, text: string) {
     setJournal((prev) => {
@@ -88,15 +101,26 @@ export function App() {
     });
   }
 
-  // ---- routage par ancre : #/qualite, #/voix… --------------------------------------
+  // ---- routage par ancre : #/qualite, #/voix, #/configuration/parole… -----------------
   useEffect(() => {
     const on = () => {
-      setRoute(readRoute());
-      window.scrollTo({ top: 0 });
+      const next = readHash();
+      setHash(next);
+      if (!next.anchor) window.scrollTo({ top: 0 });
     };
     addEventListener("hashchange", on);
     return () => removeEventListener("hashchange", on);
   }, []);
+  // Une section demandée (#/configuration/parole) : on y descend dès qu'elle est affichée.
+  useEffect(() => {
+    if (!anchor || scrolledFor.current === location.hash) return;
+    const el = document.getElementById(anchor);
+    if (!el) return;
+    scrolledFor.current = location.hash;
+    el.scrollIntoView({ block: "start" });
+  });
+  // L'inspecteur appartient à la page qui l'a ouvert.
+  useEffect(() => setInspect(undefined), [route]);
   useEffect(() => {
     const page = PAGES.find((p) => p.route === route) ?? PAGES[0];
     document.title = `${page.title} · VOXIS`;
@@ -242,18 +266,39 @@ export function App() {
         break;
       case "src.partial":
         setPartial(e.text);
+        pulse("stt", "partial");
         break;
       case "src.commit":
         setPartial("");
         upsert(e.seq, { src: e.text, tOrigin: e.tOrigin, reason: e.reason });
+        pulse("stt", "commit");
         break;
-      case "tr.segment":
+      case "tr.segment": {
         upsert(e.seq, { tgt: e.text });
+        pulse("mt", "segment");
+        // La voix est produite un temps de synthèse plus tard : le temps médian mesuré par le serveur.
+        const tts = statsRef.current?.stages.ttsP50 ?? 500;
+        window.setTimeout(() => pulse("tts", "voice"), Math.min(3000, Math.max(150, tts)));
         break;
+      }
       case "stats":
+        statsRef.current = e.stats;
         setStats(e.stats);
         setHistory((prev) =>
-          [...prev, { t: Date.now(), e2eP50: e.stats.e2eP50, e2eP95: e.stats.e2eP95, queueMaxMs: e.stats.queueMaxMs, listeners: e.stats.listeners, micDb: e.stats.micDb }].slice(-HISTORY),
+          [
+            ...prev,
+            {
+              t: Date.now(),
+              e2eP50: e.stats.e2eP50,
+              e2eP95: e.stats.e2eP95,
+              queueMaxMs: e.stats.queueMaxMs,
+              listeners: e.stats.listeners,
+              micDb: e.stats.micDb,
+              commitP50: e.stats.stages.commitP50,
+              mtP50: e.stats.stages.mtP50,
+              ttsP50: e.stats.stages.ttsP50,
+            },
+          ].slice(-HISTORY),
         );
         if (lastListeners.current !== undefined && lastListeners.current !== e.stats.listeners) {
           const d = e.stats.listeners - lastListeners.current;
@@ -329,7 +374,11 @@ export function App() {
   const stages = stageStates(sig);
   const alerts = computeAlerts(sig);
   const threshold = room?.speechThresholdDb ?? -35;
-  const flowing = Boolean(health?.lecturer) && !stats?.pipeline.muted && stats?.micDb != null && stats.micDb > threshold;
+  const speaking = Boolean(health?.lecturer) && !stats?.pipeline.muted && stats?.micDb != null && stats.micDb > threshold;
+  const nodes = nodeViews(sig, stages, conf, lastWord(partial || lines[lines.length - 1]?.src));
+  const cosmos = COSMOS.includes(route);
+  /** L'inspecteur s'ouvre sur l'étage le plus en difficulté, sinon sur la traduction. */
+  const firstInspect = (): StageId => stages.find((x) => x.tone === "crit")?.id ?? stages.find((x) => x.tone === "warn")?.id ?? "mt";
   const srcLang: Lang = hello?.srcLang ?? info?.srcLang ?? "en";
   const tgtLang: Lang = hello?.langs[0] ?? info?.langs[0] ?? "fr";
   const reportsToday = overview ? Object.values(overview.today.reports).reduce((a, b) => a + (b ?? 0), 0) : reports.length;
@@ -358,8 +407,17 @@ export function App() {
   );
 
   const scrollTo = (id: string) => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
-  const actions =
-    route === "voix" ? (
+  const closeInspector = useCallback(() => setInspect(undefined), []);
+  const actions = cosmos ? (
+    <>
+      <Action tone="halo" icon="insights" onClick={() => setInspect(firstInspect())} title="Ouvrir l'inspecteur d'un étage">
+        Inspecteur
+      </Action>
+      <Action tone="solid" icon={motionPaused ? "play_arrow" : "pause"} onClick={toggleMotion} title="N'arrête que l'animation : la traduction continue">
+        {motionPaused ? "Reprendre l'animation" : "Pause animation"}
+      </Action>
+    </>
+  ) : route === "voix" ? (
       <Action tone="primary" icon="add" onClick={() => setAdding(true)} disabled={!conf?.options.voicesEnabled} title={conf && !conf.options.voicesEnabled ? "ElevenLabs n'est pas configuré" : undefined}>
         Ajouter une voix
       </Action>
@@ -393,11 +451,40 @@ export function App() {
       token={token}
       joinUrl={info?.joinUrl}
       actions={actions}
+      cosmos={cosmos}
     >
       {banners}
-      {route === "" && <Overview sig={sig} stages={stages} flowing={flowing} alerts={alerts} />}
+      {route === "" && <Overview sig={sig} nodes={nodes} speaking={speaking} alerts={alerts} paused={motionPaused} inspected={inspect} onInspect={setInspect} />}
       {route === "supervision" && (
-        <Supervision sig={sig} stages={stages} flowing={flowing} alerts={alerts} history={history} lines={lines} partial={partial} srcLang={srcLang} tgtLang={tgtLang} clockOffset={clockOffset.current} />
+        <Supervision
+          sig={sig}
+          nodes={nodes}
+          speaking={speaking}
+          paused={motionPaused}
+          inspected={inspect}
+          onInspect={setInspect}
+          alerts={alerts}
+          history={history}
+          lines={lines}
+          partial={partial}
+          srcLang={srcLang}
+          tgtLang={tgtLang}
+          clockOffset={clockOffset.current}
+        />
+      )}
+      {cosmos && inspect && (
+        <Inspector
+          stage={inspect}
+          nodes={nodes}
+          sig={sig}
+          conf={conf}
+          history={history}
+          lines={lines}
+          alerts={alerts}
+          clockOffset={clockOffset.current}
+          onSelect={setInspect}
+          onClose={closeInspector}
+        />
       )}
       {route === "qualite" && <Quality sig={sig} voiceName={voiceName} />}
       {route === "voix" && <Voices api={api} conf={conf} overview={overview} onSettings={applyServerSettings} adding={adding} setAdding={setAdding} />}

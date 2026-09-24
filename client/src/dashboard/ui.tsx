@@ -10,6 +10,18 @@ export type Tone = "ok" | "warn" | "crit" | "idle";
 
 export const TONE_TEXT: Record<Tone, string> = { ok: "text-secondary", warn: "text-tertiary", crit: "text-error", idle: "text-outline" };
 export const TONE_BG: Record<Tone, string> = { ok: "bg-secondary", warn: "bg-tertiary", crit: "bg-error", idle: "bg-outline" };
+/** Pastille d'état teintée (constellation, inspecteur). */
+export const TONE_PILL: Record<Tone, string> = {
+  ok: "bg-secondary/10 border-secondary/30 text-secondary",
+  warn: "bg-tertiary/10 border-tertiary/35 text-tertiary",
+  crit: "bg-error/10 border-error/40 text-error",
+  idle: "bg-on-surface/[0.04] border-on-surface/[0.08] text-outline",
+};
+
+/** Mots mis en lumière dans un titre, avec le dégradé bleu ciel → indigo → émeraude du design. */
+export function Accent({ children }: { children: ReactNode }) {
+  return <span className="cz-gradient-text">{children}</span>;
+}
 
 /** Section de page : un titre, une ligne d'explication, le contenu. Séparée par un filet, jamais encadrée. */
 export function Section({ title, hint, right, children, id }: { title: ReactNode; hint?: ReactNode; right?: ReactNode; children: ReactNode; id?: string }) {
@@ -339,20 +351,26 @@ export function Action({
   children?: ReactNode;
   onClick?: () => void;
   href?: string;
-  tone?: "default" | "primary" | "danger" | "outline";
+  /** `halo` et `solid` : les deux boutons de la constellation (inspecteur, pause). */
+  tone?: "default" | "primary" | "danger" | "outline" | "halo" | "solid";
   disabled?: boolean;
   title?: string;
   busy?: boolean;
   external?: boolean;
 }) {
-  const cls = `inline-flex items-center gap-1.5 ${children ? "px-3" : "px-1.5"} py-1.5 rounded-lg text-[13px] font-medium transition-colors whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed ${
+  const shape = tone === "halo" || tone === "solid" ? "rounded-xl text-xs font-metric-mono-sm" : "rounded-lg text-[13px] font-medium";
+  const cls = `inline-flex items-center gap-1.5 ${children ? "px-3" : "px-1.5"} py-1.5 ${shape} transition-all whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed ${
     tone === "primary"
       ? "bg-primary text-on-primary hover:bg-primary/90"
       : tone === "danger"
         ? "text-error hover:bg-error/10"
         : tone === "outline"
           ? "border border-outline-variant/50 text-on-surface hover:bg-surface-container-high"
-          : "text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high"
+          : tone === "halo"
+            ? "border border-primary/30 bg-on-surface/[0.05] text-primary hover:bg-primary/15"
+            : tone === "solid"
+              ? "bg-[rgb(var(--cz-indigo))] text-white font-semibold shadow-md shadow-[color:rgb(var(--cz-indigo)/0.3)] hover:brightness-110 active:scale-95"
+              : "text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high"
   }`;
   const inner = (
     <>
@@ -429,11 +447,8 @@ export function Empty({ icon = "inbox", children }: { icon?: string; children: R
   );
 }
 
-/**
- * Panneau latéral (ajout d'une voix) : il glisse depuis la droite par-dessus la page,
- * se ferme avec Échap ou en cliquant à côté.
- */
-export function Sheet({ title, subtitle, onClose, children }: { title: string; subtitle?: ReactNode; onClose: () => void; children: ReactNode }) {
+/** Un panneau par-dessus la page : Échap le ferme, la page derrière ne défile plus. */
+export function useModal(onClose: () => void): void {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     addEventListener("keydown", onKey);
@@ -444,6 +459,14 @@ export function Sheet({ title, subtitle, onClose, children }: { title: string; s
       document.body.style.overflow = overflow;
     };
   }, [onClose]);
+}
+
+/**
+ * Panneau latéral (ajout d'une voix) : il glisse depuis la droite par-dessus la page,
+ * se ferme avec Échap ou en cliquant à côté.
+ */
+export function Sheet({ title, subtitle, onClose, children }: { title: string; subtitle?: ReactNode; onClose: () => void; children: ReactNode }) {
+  useModal(onClose);
   return (
     <div className="fixed inset-0 z-40 flex justify-end" role="dialog" aria-modal="true" aria-label={title}>
       <button type="button" aria-label="Fermer" onClick={onClose} className="sheet-fade absolute inset-0 bg-black/40 cursor-default" />

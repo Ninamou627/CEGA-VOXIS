@@ -6,18 +6,23 @@
 import type { Lang } from "../../../../shared/protocol";
 import { ago, delay, hms } from "../../ui/format";
 import { LANGS } from "../../ui/langs";
-import type { Alert, Signals, StageState } from "../signals";
+import type { NodeView } from "../nodes";
+import type { Alert, Signals, StageId } from "../signals";
 import type { Line, Sample } from "../types";
 import { Chip, Kv, Section, type Tone } from "../ui";
 import { Alerts } from "../views/Alerts";
-import { Flow } from "../views/Flow";
+import { Constellation } from "../views/Constellation";
 import { Segments } from "../views/Segments";
 import { Trends } from "../views/Trends";
 
 export interface SupervisionProps {
   sig: Signals;
-  stages: StageState[];
-  flowing: boolean;
+  nodes: NodeView[];
+  /** Le micro reçoit de la parole en ce moment. */
+  speaking: boolean;
+  paused: boolean;
+  inspected?: StageId;
+  onInspect: (id: StageId) => void;
   alerts: Alert[];
   history: Sample[];
   lines: Line[];
@@ -53,7 +58,7 @@ export function Supervision(p: SupervisionProps) {
     <>
       <Section
         title="Chaîne de traitement"
-        hint="L'état de chaque étage, son moteur et son temps médian sur la dernière minute."
+        hint="L'état de chaque étage, son moteur et son temps médian sur la dernière minute. Un clic sur un étage ouvre son inspecteur."
         right={
           mode && (
             <span key={pl?.degraded} className="pop">
@@ -62,7 +67,7 @@ export function Supervision(p: SupervisionProps) {
           )
         }
       >
-        <Flow stages={p.stages} flowing={p.flowing} detailed />
+        <Constellation nodes={p.nodes} speaking={p.speaking} micDb={stats?.micDb ?? null} paused={p.paused} inspected={p.inspected} onInspect={p.onInspect} detailed />
         {incidents.length > 0 && (
           <div className="mt-8">
             <div className="text-[11px] font-label-badge font-bold uppercase tracking-wider text-on-surface-variant mb-1">Derniers incidents</div>

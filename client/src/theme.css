@@ -11,6 +11,7 @@
 @import "@fontsource/jetbrains-mono/latin-700.css";
 @import "@fontsource/plus-jakarta-sans/latin-600.css";
 @import "@fontsource/plus-jakarta-sans/latin-700.css";
+@import "@fontsource/plus-jakarta-sans/latin-800.css";
 @import "@material-symbols/font-400/outlined.css";
 
 @tailwind base;
@@ -165,13 +166,25 @@
   }
 }
 
-/* Administration : le flux qui avance d'un étage à l'autre quand la parole passe. */
-@keyframes flow-dash {
-  from {
-    background-position: 0 0;
-  }
+/* Constellation de l'administration : anneaux qui tournent, onde de choc d'un étage. */
+@keyframes cz-spin {
   to {
-    background-position: 24px 0;
+    transform: rotate(360deg);
+  }
+}
+@keyframes cz-spin-back {
+  to {
+    transform: rotate(-360deg);
+  }
+}
+@keyframes cz-ripple {
+  0% {
+    transform: scale(0.85);
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(1.65);
+    opacity: 0;
   }
 }
 
@@ -190,11 +203,6 @@
 }
 
 @layer components {
-  .flow-dash {
-    background-image: linear-gradient(90deg, currentColor 50%, transparent 50%);
-    background-size: 12px 2px;
-    animation: flow-dash 0.9s linear infinite;
-  }
   .sheet-up {
     animation: sheet-up 0.28s cubic-bezier(0.2, 0.8, 0.2, 1) both;
   }
@@ -224,6 +232,268 @@
   }
   .waveform-bar {
     transition: height 0.12s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+}
+
+/* ---- Constellation : Vue d'ensemble et Supervision de l'administration -----------------
+ * Le design fourni pour ces deux pages. En sombre : bleu nuit, grille de points, halos
+ * indigo / bleu ciel / émeraude, orbes et paquets qui circulent. En clair : les mêmes
+ * animations sur la palette claire, grille et halos à peine marqués. Les couleurs du
+ * design sont des jetons `--cz-*` ; en sombre, la portée `.cosmos` redéfinit aussi les
+ * jetons Material 3 : chaque brique de ces pages prend le design sans être réécrite.
+ */
+:root {
+  --cz-sky: 2 132 199;
+  --cz-indigo: 79 70 229;
+  --cz-violet: 99 102 241;
+  --cz-emerald: 5 150 105;
+  --cz-orb: 255 255 255;
+  --cz-orb-2: 238 242 255;
+  --cz-orb-shadow: 0 16px 32px -18px rgb(30 41 59 / 0.35);
+  --cz-dot: 30 41 59;
+  --cz-dot-a: 0.07;
+  --cz-line-a: 0.025;
+  --cz-glow-1: 0.08;
+  --cz-glow-2: 0.07;
+  --cz-glow-3: 0.05;
+  --cz-stars: 0;
+  /* Lueurs d'un étage (survol, parole, battement) : discrètes sur fond clair. */
+  --cz-halo-hover: 0.28;
+  --cz-halo-live: 0.2;
+  --cz-halo-active: 0.3;
+  --cz-halo-inset: 0.14;
+}
+:root.dark {
+  --cz-sky: 56 189 248;
+  --cz-indigo: 99 102 241;
+  --cz-violet: 165 180 252;
+  --cz-emerald: 52 211 153;
+  --cz-orb: 13 21 38;
+  --cz-orb-2: 17 26 48;
+  --cz-orb-shadow: 0 20px 40px -14px rgb(0 0 0 / 0.65);
+  --cz-dot: 255 255 255;
+  --cz-dot-a: 0.08;
+  --cz-line-a: 0.02;
+  --cz-glow-1: 0.16;
+  --cz-glow-2: 0.13;
+  --cz-glow-3: 0.07;
+  --cz-stars: 1;
+  --cz-halo-hover: 0.5;
+  --cz-halo-live: 0.35;
+  --cz-halo-active: 0.55;
+  --cz-halo-inset: 0.4;
+}
+/* Jetons Material 3 accordés au design : bleu nuit, texte presque blanc, accent bleu ciel. */
+.dark .cosmos {
+  --background: 11 18 32;
+  --on-background: 238 242 255;
+  --surface: 11 18 32;
+  --surface-dim: 11 18 32;
+  --surface-bright: 34 48 79;
+  --surface-container-lowest: 8 13 24;
+  --surface-container-low: 13 21 38;
+  --surface-container: 17 26 48;
+  --surface-container-high: 22 33 58;
+  --surface-container-highest: 29 42 71;
+  --surface-variant: 29 42 71;
+  --on-surface: 238 242 255;
+  --on-surface-variant: 147 160 186;
+  --outline: 107 120 148;
+  --outline-variant: 51 67 99;
+  --primary: 56 189 248;
+  --on-primary: 3 19 31;
+  --primary-container: 14 58 92;
+  --on-primary-container: 186 230 253;
+  --surface-tint: 56 189 248;
+}
+/* Le ciel derrière la page : fixe, à droite du menu, sous le contenu. */
+.cosmos-sky {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-color: rgb(var(--background));
+  background-image:
+    radial-gradient(circle at 25% 35%, rgb(var(--cz-indigo) / var(--cz-glow-1)) 0%, transparent 65%),
+    radial-gradient(circle at 75% 65%, rgb(var(--cz-sky) / var(--cz-glow-2)) 0%, transparent 65%),
+    radial-gradient(circle at 50% 50%, rgb(var(--cz-emerald) / var(--cz-glow-3)) 0%, transparent 55%),
+    radial-gradient(circle at 1px 1px, rgb(var(--cz-dot) / var(--cz-dot-a)) 1px, transparent 0),
+    linear-gradient(to right, rgb(var(--cz-dot) / var(--cz-line-a)) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(var(--cz-dot) / var(--cz-line-a)) 1px, transparent 1px);
+  background-size:
+    100% 100%,
+    100% 100%,
+    100% 100%,
+    48px 48px,
+    48px 48px,
+    48px 48px;
+}
+@media (min-width: 1024px) {
+  .cosmos-sky {
+    left: 16rem;
+  }
+}
+
+@layer components {
+  /* Anneaux et orbites. Un satellite tourne avec son anneau mais garde son texte droit. */
+  .cz-spin {
+    animation: cz-spin 18s linear infinite;
+  }
+  .cz-spin-fast {
+    animation: cz-spin 10s linear infinite;
+  }
+  .cz-spin-back {
+    animation: cz-spin-back 24s linear infinite;
+  }
+  .cz-spin-back-fast {
+    animation: cz-spin-back 12s linear infinite;
+  }
+  .cz-orbit-cw {
+    animation: cz-spin 18s linear infinite;
+  }
+  .cz-orbit-cw > * > * {
+    animation: cz-spin-back 18s linear infinite;
+  }
+  .cz-orbit-ccw {
+    animation: cz-spin-back 24s linear infinite;
+  }
+  .cz-orbit-ccw > * > * {
+    animation: cz-spin 24s linear infinite;
+  }
+
+  /* Un étage : ses couleurs suivent son état. */
+  .cz-node {
+    --n-a: var(--cz-sky);
+    --n-b: var(--cz-indigo);
+    --n-c: var(--cz-emerald);
+    transition: transform 0.45s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .cz-node[data-tone="warn"] {
+    --n-a: var(--tertiary);
+    --n-b: var(--tertiary);
+    --n-c: var(--tertiary);
+  }
+  .cz-node[data-tone="crit"] {
+    --n-a: var(--error);
+    --n-b: var(--error);
+    --n-c: var(--error);
+  }
+  .cz-node[data-tone="idle"] {
+    --n-a: var(--outline);
+    --n-b: var(--outline);
+    --n-c: var(--outline);
+  }
+  /* En veille, le ciel tourne à peine. */
+  .cz-node[data-tone="idle"] .cz-ring {
+    animation-duration: 60s;
+  }
+  .cz-node:hover,
+  .cz-node:focus-visible,
+  .cz-node[data-active] {
+    transform: translateY(-8px) scale(1.05);
+  }
+  .cz-ring-a {
+    border-color: rgb(var(--n-a) / 0.32);
+    transition: border-color 0.3s;
+  }
+  .cz-ring-b {
+    border-color: rgb(var(--n-b) / 0.28);
+  }
+  .cz-ring-c {
+    border-color: rgb(var(--n-c) / 0.38);
+  }
+  .cz-node:hover .cz-ring-a {
+    border-color: rgb(var(--n-a) / 0.65);
+  }
+  .cz-orb {
+    background: rgb(var(--cz-orb) / 0.92);
+    border: 1px solid rgb(var(--on-surface) / 0.1);
+    box-shadow: var(--cz-orb-shadow);
+    transition:
+      box-shadow 0.3s,
+      border-color 0.3s;
+  }
+  .cz-orb-core {
+    background: linear-gradient(to bottom, rgb(var(--cz-orb-2)), rgb(var(--cz-orb)));
+    border: 2px solid rgb(var(--n-b) / 0.32);
+    box-shadow: 0 24px 48px -16px rgb(var(--cz-indigo) / 0.35);
+  }
+  .cz-node:hover .cz-orb {
+    box-shadow: 0 0 28px rgb(var(--n-a) / var(--cz-halo-hover));
+  }
+  .cz-node[data-live] .cz-orb {
+    box-shadow: 0 0 22px rgb(var(--n-a) / var(--cz-halo-live));
+  }
+  .cz-node[data-active] .cz-orb {
+    border-color: rgb(var(--n-a));
+    box-shadow:
+      0 0 35px rgb(var(--n-a) / var(--cz-halo-active)),
+      inset 0 0 25px rgb(var(--n-b) / var(--cz-halo-inset));
+  }
+  .cz-node:focus-visible .cz-orb,
+  .cz-node[aria-expanded="true"] .cz-orb {
+    outline: 2px solid rgb(var(--cz-sky));
+    outline-offset: 4px;
+  }
+  .cz-node[aria-expanded="true"] .cz-orb {
+    box-shadow:
+      0 0 45px rgb(var(--cz-sky) / var(--cz-halo-active)),
+      inset 0 0 25px rgb(var(--cz-sky) / var(--cz-halo-inset));
+  }
+  .cz-icon {
+    background: rgb(var(--n-a) / 0.1);
+    border: 1px solid rgb(var(--n-a) / 0.22);
+    color: rgb(var(--n-a));
+  }
+  .cz-bar {
+    background: rgb(var(--n-a));
+    transition: height 0.15s ease;
+  }
+  .cz-bar:nth-child(even) {
+    background: rgb(var(--n-b));
+  }
+  .cz-badge {
+    background: rgb(var(--cz-orb) / 0.9);
+    border: 1px solid rgb(var(--n-b) / 0.45);
+  }
+  .cz-token {
+    background: rgb(var(--cz-orb) / 0.9);
+    border: 1px solid rgb(var(--n-a) / 0.45);
+  }
+  .cz-ripple {
+    border: 1px solid rgb(var(--n-a) / var(--cz-halo-active));
+    opacity: 0;
+  }
+  .cz-ripple.cz-go {
+    animation: cz-ripple 2.2s cubic-bezier(0, 0.2, 0.8, 1) 1;
+  }
+  .cz-inspected {
+    opacity: 0;
+    transform: translateY(4px);
+    transition:
+      opacity 0.3s,
+      transform 0.3s;
+  }
+  .cz-node[aria-expanded="true"] .cz-inspected {
+    opacity: 1;
+    transform: none;
+  }
+  .cz-node[data-active] .cz-pill {
+    box-shadow: 0 6px 18px -4px rgb(var(--n-c) / 0.45);
+  }
+  /* « Pause animation » : tout s'arrête là où il en est. */
+  .cz-paused,
+  .cz-paused * {
+    animation-play-state: paused !important;
+  }
+  .cz-gradient-text {
+    background-image: linear-gradient(90deg, rgb(var(--cz-sky)), rgb(var(--cz-violet)), rgb(var(--cz-emerald)));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  /* Barres d'historique de l'inspecteur. */
+  .cz-eq {
+    background-image: linear-gradient(to top, rgb(var(--cz-indigo)), rgb(var(--cz-sky)), rgb(var(--cz-emerald)));
   }
 }
 

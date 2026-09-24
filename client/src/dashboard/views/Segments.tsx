@@ -9,7 +9,8 @@ import { LANGS } from "../../ui/langs";
 import type { Line } from "../types";
 import { Empty } from "../ui";
 
-const REASON: Record<string, string> = {
+/** Pourquoi un segment a été coupé, en mots. */
+export const REASON: Record<string, string> = {
   punctuation: "ponctuation",
   clause: "proposition",
   maxlen: "longueur max",
