@@ -233,7 +233,7 @@ function settingsOf(id: StageId, conf: SettingsResponse): { rows: Row[]; section
       return {
         section: "voix",
         rows: [
-          ...langs.map((l) => ({ label: `Voix ${LANGS[l].nameFr}`, value: voiceName(conf, l) ?? "voix du .env" })),
+          ...langs.map((l) => ({ label: `Voix ${LANGS[l].nameFr}`, value: voiceName(conf, l) ?? "voix d'origine" })),
           { label: "Vitesse", value: `×${dec(s.voice.speed)}` },
           { label: "Ton", value: pct(s.voice.stability, 0) },
           { label: "Style", value: pct(s.voice.style, 0) },

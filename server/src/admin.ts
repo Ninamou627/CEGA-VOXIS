@@ -156,7 +156,7 @@ export function registerAdmin(app: FastifyInstance, ctx: AdminContext): void {
 
       // ---- voix -------------------------------------------------------------------
       admin.get("/voices/catalog", async (req, reply) => {
-        if (!catalog) return reply.code(409).send({ error: "ElevenLabs n'est pas configuré : ajoutez ELEVENLABS_API_KEY au .env puis relancez le serveur." });
+        if (!catalog) return reply.code(409).send({ error: "ElevenLabs n'est pas configuré sur le serveur de salle : sa clé d'API manque." });
         const force = (req.query as { refresh?: string }).refresh === "1";
         try {
           return { voices: await catalog.list(force) };

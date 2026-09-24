@@ -43,5 +43,5 @@ export const CLAUDE_MODELS: ClaudeModel[] = [
 
 /** Un identifiant hors liste (venu du .env) garde le comportement d'origine : effort et repli. */
 export function modelCaps(id: string): ClaudeModel {
-  return CLAUDE_MODELS.find((m) => m.id === id) ?? { id, label: id, effort: true, temperature: false, fallbacks: true, note: "Modèle défini dans le .env." };
+  return CLAUDE_MODELS.find((m) => m.id === id) ?? { id, label: id, effort: true, temperature: false, fallbacks: true, note: "Modèle défini à l'installation." };
 }

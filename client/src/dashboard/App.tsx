@@ -402,8 +402,8 @@ export function App() {
     <>
       {unauthorized && (
         <Banner tone="crit" icon="key_off">
-          {token ? "Jeton de session refusé." : "Lien incomplet : il manque le jeton de session."} Ouvrez l'administration avec l'adresse complète{" "}
-          <span className="font-metric-mono-sm">/dashboard?token=…</span> — le jeton est la valeur de <span className="font-metric-mono-sm">SESSION_TOKEN</span> dans le .env du serveur.
+          {token ? "Jeton de session refusé." : "Lien incomplet : il manque le jeton de session."} Ouvrez l'administration avec son adresse complète,
+          jeton compris (<span className="font-metric-mono-sm">/dashboard?token=…</span>) : il figure dans la configuration du serveur de salle.
         </Banner>
       )}
       {!unauthorized && adminError && conn === "open" && (

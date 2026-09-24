@@ -164,7 +164,7 @@ export function Voices({ api, conf, overview, onSettings, adding, setAdding }: V
     }
   }
 
-  /** `id` vide : la langue revient à la voix du .env. */
+  /** `id` vide : la langue revient à sa voix d'origine. */
   const setDefault = (lang: Lang, id: string) => {
     const defaults = { ...settings.voice.defaults };
     if (id) defaults[lang] = id;
@@ -174,7 +174,7 @@ export function Voices({ api, conf, overview, onSettings, adding, setAdding }: V
       () => api.save({ ...settings, voice: { ...settings.voice, defaults } }),
       (r) => {
         onSettings(r.settings);
-        return id ? `${nameOf(id) ?? "Voix"} est la voix ${ADJ[lang]} par défaut — dès le prochain segment.` : `La voix ${ADJ[lang]} revient à celle du .env — dès le prochain segment.`;
+        return id ? `${nameOf(id) ?? "Voix"} est la voix ${ADJ[lang]} par défaut — dès le prochain segment.` : `La voix ${ADJ[lang]} revient à sa voix d'origine — dès le prochain segment.`;
       },
     );
   };
@@ -200,11 +200,11 @@ export function Voices({ api, conf, overview, onSettings, adding, setAdding }: V
       },
     );
 
-  /** Le choix « voix du .env » : son identifiant s'il y en a un, sinon la voix principale. */
+  /** Le choix « voix d'origine » : son identifiant s'il y en a un, sinon la voix principale. */
   const envOption = (lang: Lang) => {
     const envId = conf.defaults.voice.defaults[lang];
     if (envId && settings.voices.some((v) => v.id === envId && v.lang === lang)) return null;
-    return <option value={envId ?? ""}>{envId ? `${nameOf(envId) ?? "Voix"} · voix du .env` : "Voix principale du .env"}</option>;
+    return <option value={envId ?? ""}>{envId ? `${nameOf(envId) ?? "Voix"} · voix d'origine` : "Voix principale"}</option>;
   };
 
   const trial = (id: string, lang: Lang) => player.play(`trial-${id}-${lang}`, () => api.preview(id, lang)).catch((e: Error) => setError(e.message));
@@ -242,14 +242,14 @@ export function Voices({ api, conf, overview, onSettings, adding, setAdding }: V
       {!opts.voicesEnabled ? (
         <div className="pt-8">
           <Empty icon="key_off">
-            ElevenLabs n'est pas configuré : ajoutez <span className="font-metric-mono-sm text-on-surface">ELEVENLABS_API_KEY</span> au .env puis relancez le serveur pour choisir, écouter et ajouter des voix.
+            ElevenLabs n'est pas configuré sur le serveur de salle : sans sa clé d'API, on ne peut ni choisir, ni écouter, ni ajouter de voix.
           </Empty>
         </div>
       ) : (
         !opts.elevenlabsInUse && (
           <div className="pt-8">
             <Empty icon="info">
-              La voix de séance est actuellement <span className="font-metric-mono-sm text-on-surface">{opts.tts}</span>. Les voix choisies ici serviront dès que <span className="font-metric-mono-sm text-on-surface">TTS_PROVIDER=elevenlabs</span> ; en attendant, vous pouvez déjà les écouter et les préparer.
+              La voix de séance est actuellement <span className="font-metric-mono-sm text-on-surface">{opts.tts}</span>. Les voix choisies ici serviront dès que le serveur de salle utilisera ElevenLabs ; en attendant, vous pouvez déjà les écouter et les préparer.
             </Empty>
           </div>
         )
@@ -260,7 +260,7 @@ export function Voices({ api, conf, overview, onSettings, adding, setAdding }: V
           {langs.map((lang) => {
             const id = settings.voice.defaults[lang];
             const envId = conf.defaults.voice.defaults[lang];
-            // Sans voix choisie, c'est celle du .env qui parle : on l'écoute et on la mesure.
+            // Sans voix choisie, c'est la voix d'origine qui parle : on l'écoute et on la mesure.
             const effective = id || envId;
             const choices = settings.voices.filter((v) => v.lang === lang);
             const current = choices.find((v) => v.id === effective);
@@ -293,7 +293,7 @@ export function Voices({ api, conf, overview, onSettings, adding, setAdding }: V
                   {effective && playButtons(effective, lang, current?.previewUrl ?? catalog?.find((v) => v.id === effective)?.previewUrl)}
                   {!choices.length && (
                     <span className="text-xs text-on-surface-variant">
-                      {!id ? "pas de voix dédiée : la voix principale répond aussi dans cette langue" : id === envId ? "voix du .env — ajoutez des voix pour choisir" : "ajoutez une voix pour choisir"}
+                      {!id ? "pas de voix dédiée : la voix principale répond aussi dans cette langue" : id === envId ? "voix d'origine — ajoutez des voix pour choisir" : "ajoutez une voix pour choisir"}
                     </span>
                   )}
                 </div>
@@ -331,7 +331,7 @@ export function Voices({ api, conf, overview, onSettings, adding, setAdding }: V
             {list.length === 0 ? (
               <Empty icon="voice_selection">
                 Aucune voix {ADJ[lang]} ajoutée.
-                {settings.voice.defaults[lang] ? " La salle utilise la voix définie dans le .env." : ""}
+                {settings.voice.defaults[lang] ? " La salle utilise sa voix d'origine." : ""}
               </Empty>
             ) : (
               <ul className="divide-y divide-outline-variant/15 -mt-3">
@@ -385,7 +385,7 @@ export function Voices({ api, conf, overview, onSettings, adding, setAdding }: V
                             <Action onClick={() => setConfirm(undefined)}>Garder</Action>
                           </>
                         ) : (
-                          <Action icon="delete" title={isDefault ? "Retirer (la langue revient à la voix du .env)" : "Retirer"} onClick={() => setConfirm(k)} />
+                          <Action icon="delete" title={isDefault ? "Retirer (la langue revient à sa voix d'origine)" : "Retirer"} onClick={() => setConfirm(k)} />
                         )}
                       </div>
                     </li>
@@ -410,7 +410,7 @@ export function Voices({ api, conf, overview, onSettings, adding, setAdding }: V
             ))}
           </dl>
         ) : (
-          <Empty icon="warning">Pas de voix de secours : sans ElevenLabs, les apprenants n'auraient que le texte. Ajoutez AZURE_SPEECH_KEY au .env pour en avoir une.</Empty>
+          <Empty icon="warning">Pas de voix de secours : sans ElevenLabs, les apprenants n'auraient que le texte. Une clé Azure sur le serveur de salle en fournirait une.</Empty>
         )}
       </Section>
 

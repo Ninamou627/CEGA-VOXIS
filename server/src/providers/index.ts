@@ -178,9 +178,9 @@ export function makeProviders(cfg: Config, settings: () => Settings, hooks: Fall
       id: "anthropic",
       label: "Claude",
       available: Boolean(engines.anthropic && (cfg.ANTHROPIC_API_KEY || cfg.MT_PROVIDER === "anthropic" || cfg.MT_BACKUP === "anthropic")),
-      reason: cfg.ANTHROPIC_API_KEY ? undefined : "ANTHROPIC_API_KEY absente du .env",
+      reason: cfg.ANTHROPIC_API_KEY ? undefined : "clé d'API Anthropic absente du serveur",
     },
-    { id: "deepl", label: "DeepL", available: Boolean(engines.deepl), reason: engines.deepl ? undefined : "DEEPL_API_KEY absente du .env" },
+    { id: "deepl", label: "DeepL", available: Boolean(engines.deepl), reason: engines.deepl ? undefined : "clé d'API DeepL absente du serveur" },
     { id: "mock", label: "Simulateur", available: true },
   ];
   // Le primaire du .env doit fonctionner, sinon la salle n'ouvre pas ; un primaire choisi

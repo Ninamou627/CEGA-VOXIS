@@ -126,7 +126,7 @@ export function Configuration({ conf, value, dirty, micDb, onChange, onSave, onD
   const set = <K extends "translation" | "speech" | "voice">(section: K, patch: Partial<Settings[K]>) => onChange({ ...s, [section]: { ...s[section], ...patch } });
   const changed = (k: string) => dirty.has(k);
 
-  const model: ClaudeModel = o.models.find((m) => m.id === t.model) ?? { id: t.model, label: t.model, effort: true, temperature: false, fallbacks: true, note: "Modèle défini dans le .env." };
+  const model: ClaudeModel = o.models.find((m) => m.id === t.model) ?? { id: t.model, label: t.model, effort: true, temperature: false, fallbacks: true, note: "Modèle défini à l'installation." };
   const models = o.models.some((m) => m.id === t.model) ? o.models : [...o.models, model];
   const usesClaude = t.primary === "anthropic" || t.secondary === "anthropic";
   const engine = (id: string) => o.mtEngines.find((e) => e.id === id);
@@ -404,7 +404,7 @@ export function Configuration({ conf, value, dirty, micDb, onChange, onSave, onD
                       value={id ?? envId ?? ""}
                       disabled={!choices.length}
                       onChange={(e) => {
-                        // Choix vide : la langue revient à la voix du .env (jamais un identifiant vide).
+                        // Choix vide : la langue revient à sa voix d'origine (jamais un identifiant vide).
                         const next = { ...v.defaults };
                         if (e.target.value) next[l] = e.target.value;
                         else delete next[l];
@@ -412,7 +412,7 @@ export function Configuration({ conf, value, dirty, micDb, onChange, onSave, onD
                       }}
                       className="flex-1 min-w-0 bg-surface-container-low border border-outline-variant/40 rounded-lg px-3 py-2 text-[13px] text-on-surface focus:outline-none focus:border-primary/70 disabled:opacity-60"
                     >
-                      {!listed(envId) && <option value={envId ?? ""}>{envId ? "Voix du .env" : "Voix principale du .env"}</option>}
+                      {!listed(envId) && <option value={envId ?? ""}>{envId ? "Voix d'origine" : "Voix principale"}</option>}
                       {id && id !== envId && !listed(id) && <option value={id}>{`Voix ${id.slice(0, 8)}…`}</option>}
                       {choices.map((x) => (
                         <option key={x.id} value={x.id}>
@@ -451,7 +451,7 @@ export function Configuration({ conf, value, dirty, micDb, onChange, onSave, onD
         </div>
       </Section>
 
-      <Section title="Valeurs d'origine" hint="Reprendre les valeurs du fichier .env et les réglages d'usine. Les voix ajoutées restent dans la liste.">
+      <Section title="Valeurs d'origine" hint="Reprendre les réglages d'installation du serveur de salle. Les voix ajoutées restent dans la liste.">
         {confirmReset ? (
           <div className="flex flex-wrap items-center gap-3">
             <span className="text-[13px] text-on-surface">Tous les réglages de cette page reviendront à leur valeur d'origine, tout de suite.</span>
@@ -462,7 +462,7 @@ export function Configuration({ conf, value, dirty, micDb, onChange, onSave, onD
           </div>
         ) : (
           <Action tone="outline" icon="restart_alt" onClick={() => setConfirmReset(true)}>
-            Revenir aux valeurs du .env
+            Revenir aux valeurs d'origine
           </Action>
         )}
       </Section>

@@ -25,7 +25,7 @@ export function Join(p: JoinProps) {
           <input
             value={p.token}
             onChange={(e) => p.onToken(e.target.value)}
-            placeholder="SESSION_TOKEN du .env"
+            placeholder="Jeton fourni avec la salle"
             autoComplete="off"
             className="w-full bg-surface-container border border-outline-variant/30 rounded-xl px-3 py-2.5 font-metric-mono-sm text-sm text-on-surface placeholder:text-outline focus:outline-none focus:border-secondary/60"
           />
