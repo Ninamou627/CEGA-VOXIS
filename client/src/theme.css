@@ -486,6 +486,16 @@
     background-clip: text;
     color: transparent;
   }
+  /* Animation d'entrée : la vidéo garde son format 16:9 dans n'importe quel écran, et ses
+     bords se fondent dans le fond bleu nuit (même couleur que ceux de la vidéo). */
+  .intro-video {
+    width: min(100vw, calc(100vh * 16 / 9));
+    width: min(100vw, calc(100dvh * 16 / 9));
+    aspect-ratio: 16 / 9;
+    object-fit: cover;
+    -webkit-mask-image: radial-gradient(ellipse closest-side at 50% 50%, #000 72%, transparent 100%);
+    mask-image: radial-gradient(ellipse closest-side at 50% 50%, #000 72%, transparent 100%);
+  }
   /* Barres d'historique de l'inspecteur. */
   .cz-eq {
     background-image: linear-gradient(to top, rgb(var(--cz-indigo)), rgb(var(--cz-sky)), rgb(var(--cz-emerald)));

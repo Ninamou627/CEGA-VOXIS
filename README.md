@@ -87,6 +87,13 @@ studio s'ouvre par-dessus, micro ou clavier) et signaler un problème (feuille p
 bas). L'écran de salle (`/screen`) se branche avec le rôle `screen` : tout le texte,
 toutes les langues, jamais d'audio, pas de jeton.
 
+À l'ouverture de chaque interface, l'**animation d'entrée** CEGA Voxis
+(`client/public/media/intro.mp4`, 8 s, muette) se joue une fois par onglet, par-dessus
+l'interface qui se charge dessous. « Passer » ou Échap l'interrompt ; si elle ne peut pas
+démarrer (lecture automatique refusée, fichier absent), on entre sans elle, et un onglet
+ouvert en arrière-plan la joue quand on y vient. Pour la changer, remplacer le fichier
+(H.264 ; chaque téléphone le télécharge à sa première ouverture, visez moins de 2 Mo).
+
 Les signalements des apprenants arrivent à l'administration — pas chez le formateur,
 qu'ils interrompraient pendant qu'il parle — et sont écrits dans `metrics.jsonl` avec l'heure, la phrase, sa transcription, sa
 traduction et le décalage mesuré — c'est ce qu'on relit pour régler la segmentation,
