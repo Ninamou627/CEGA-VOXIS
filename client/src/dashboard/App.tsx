@@ -13,10 +13,10 @@ import type { OverviewResponse, RecentReport, SaveResponse, SettingsResponse } f
 import type { ClientSettings, FloorState, Lang, ServerEvent, StatsPayload } from "../../../shared/protocol";
 import type { Settings } from "../../../shared/settings";
 import { SalleSocket, type ConnState } from "../lib/ws";
+import { APP_NAME } from "../ui/brand";
 import { REPORT_LABEL } from "../ui/reports";
 import { AdminApi } from "./api";
 import { diffKeys, rebase } from "./draft";
-import { useMotionPause } from "./motion";
 import { lastWord, nodeViews } from "./nodes";
 import { Configuration } from "./pages/Configuration";
 import { Overview } from "./pages/Overview";
@@ -30,6 +30,8 @@ import { computeAlerts, stageStates, type Signals, type StageId } from "./signal
 import type { EventKind, Health, JournalEntry, Line, QuestionEntry, Sample, SessionInfo } from "./types";
 import { Action, Banner } from "./ui";
 import { Inspector } from "./views/Inspector";
+import { mergeReports } from "./views/Reports";
+import { ReportToasts, ReportsSheet } from "./views/ReportsSheet";
 
 type Hello = Extract<ServerEvent, { t: "hello" }>;
 
@@ -81,7 +83,9 @@ export function App() {
   const [wsError, setWsError] = useState<{ code: string; msg: string }>();
   const [adding, setAdding] = useState(false);
   const [inspect, setInspect] = useState<StageId>();
-  const [motionPaused, toggleMotion] = useMotionPause();
+  /** Les signalements des apprenants arrivent à l'administration : une liste, et une annonce à l'arrivée. */
+  const [reportsOpen, setReportsOpen] = useState(false);
+  const [toasts, setToasts] = useState<{ id: number; report: RecentReport }[]>([]);
   const [now, setNow] = useState(Date.now());
 
   const clockOffset = useRef(0);
@@ -92,6 +96,7 @@ export function App() {
   /** Dernières stats reçues, pour les rappels du WebSocket (créés une seule fois). */
   const statsRef = useRef<StatsPayload>(undefined);
   const scrolledFor = useRef<string>(undefined);
+  const toastSeq = useRef(0);
 
   function log(kind: EventKind, text: string) {
     setJournal((prev) => {
@@ -119,11 +124,14 @@ export function App() {
     scrolledFor.current = location.hash;
     el.scrollIntoView({ block: "start" });
   });
-  // L'inspecteur appartient à la page qui l'a ouvert.
-  useEffect(() => setInspect(undefined), [route]);
+  // L'inspecteur et la liste des signalements se ferment quand on change de page.
+  useEffect(() => {
+    setInspect(undefined);
+    setReportsOpen(false);
+  }, [route]);
   useEffect(() => {
     const page = PAGES.find((p) => p.route === route) ?? PAGES[0];
-    document.title = `${page.title} · VOXIS`;
+    document.title = `${page.title} · ${APP_NAME}`;
   }, [route]);
 
   // ---- API d'administration -----------------------------------------------------------
@@ -257,7 +265,7 @@ export function App() {
         setFloor(e.floor);
         setRoom(e.settings);
         setWsError(undefined);
-        log("liaison", `connecté à la salle ${e.sessionId}`);
+        log("liaison", "connecté à la salle");
         break;
       case "settings":
         setRoom(e.settings);
@@ -314,11 +322,16 @@ export function App() {
         setQuestions((prev) => [...prev, { n: prev.length + 1, at: Date.now(), who: e.who, srcLang: e.srcLang, srcText: e.srcText, lang: e.lang, text: e.text, delivered: e.delivered, mode: e.mode }].slice(-50));
         log("question", e.srcText ? `${e.mode === "text" ? "écrite" : "parlée"} : « ${e.srcText} » → « ${e.text} »${e.delivered ? "" : " — formateur absent"}` : "question incomprise (vide)");
         break;
-      case "report":
-        setReports((prev) => [...prev, { at: e.at, who: e.who, kind: e.kind, lang: e.lang, seq: e.seq, srcText: e.srcText, text: e.text, e2eMs: e.e2eMs }].slice(-100));
+      case "report": {
+        const report: RecentReport = { at: e.at, who: e.who, kind: e.kind, lang: e.lang, seq: e.seq, srcText: e.srcText, text: e.text, e2eMs: e.e2eMs };
+        setReports((prev) => [...prev, report].slice(-100));
+        const id = ++toastSeq.current;
+        setToasts((prev) => [...prev, { id, report }].slice(-3));
+        window.setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 8000);
         log("signalement", `${REPORT_LABEL[e.kind].label}${e.srcText ? ` — « ${e.srcText} »` : ""}`);
         refreshOverviewSoon();
         break;
+      }
       case "degraded":
         log("degrade", e.mode === "none" ? `retour au nominal — ${e.reason}` : `${DEGRADED[e.mode] ?? e.mode} — ${e.reason}`);
         break;
@@ -408,13 +421,19 @@ export function App() {
 
   const scrollTo = (id: string) => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
   const closeInspector = useCallback(() => setInspect(undefined), []);
+  const closeReports = useCallback(() => setReportsOpen(false), []);
+  const openReports = () => {
+    setToasts([]);
+    setReportsOpen(true);
+  };
   const actions = cosmos ? (
     <>
       <Action tone="halo" icon="insights" onClick={() => setInspect(firstInspect())} title="Ouvrir l'inspecteur d'un étage">
         Inspecteur
       </Action>
-      <Action tone="solid" icon={motionPaused ? "play_arrow" : "pause"} onClick={toggleMotion} title="N'arrête que l'animation : la traduction continue">
-        {motionPaused ? "Reprendre l'animation" : "Pause animation"}
+      <Action tone="solid" icon="flag" onClick={() => setReportsOpen(true)} title="Les signalements des apprenants arrivent ici">
+        Signalements
+        {reportsToday > 0 && <span className="ml-0.5 min-w-[1.25rem] px-1.5 rounded-full bg-white/20 text-[11px] leading-5 text-center">{reportsToday}</span>}
       </Action>
     </>
   ) : route === "voix" ? (
@@ -443,7 +462,6 @@ export function App() {
     <Shell
       route={route}
       conn={conn}
-      session={hello?.sessionId ?? info?.sessionId}
       uptimeS={stats?.uptimeS ?? health?.uptimeS}
       alerts={{ crit: alerts.filter((a) => a.severity === "crit").length, warn: alerts.filter((a) => a.severity === "warn").length }}
       reports={reportsToday}
@@ -454,13 +472,12 @@ export function App() {
       cosmos={cosmos}
     >
       {banners}
-      {route === "" && <Overview sig={sig} nodes={nodes} speaking={speaking} alerts={alerts} paused={motionPaused} inspected={inspect} onInspect={setInspect} />}
+      {route === "" && <Overview sig={sig} nodes={nodes} speaking={speaking} alerts={alerts} inspected={inspect} onInspect={setInspect} />}
       {route === "supervision" && (
         <Supervision
           sig={sig}
           nodes={nodes}
           speaking={speaking}
-          paused={motionPaused}
           inspected={inspect}
           onInspect={setInspect}
           alerts={alerts}
@@ -486,6 +503,17 @@ export function App() {
           onClose={closeInspector}
         />
       )}
+      {reportsOpen && (
+        <ReportsSheet
+          reports={mergeReports(reports, overview?.reports)}
+          today={overview?.today.reports ?? {}}
+          all={overview?.all.reports ?? {}}
+          now={now}
+          voiceName={voiceName}
+          onClose={closeReports}
+        />
+      )}
+      {!reportsOpen && toasts.length > 0 && <ReportToasts items={toasts} onOpen={openReports} onDismiss={(id) => setToasts((prev) => prev.filter((t) => t.id !== id))} />}
       {route === "qualite" && <Quality sig={sig} voiceName={voiceName} />}
       {route === "voix" && <Voices api={api} conf={conf} overview={overview} onSettings={applyServerSettings} adding={adding} setAdding={setAdding} />}
       {route === "configuration" && (

@@ -37,7 +37,7 @@ export function Idle(p: IdleProps) {
           Scannez le code avec l'appareil photo du téléphone, ou tapez l'adresse
         </span>
         <span className="font-metric-mono-sm text-on-surface break-all" style={{ fontSize: "clamp(14px, 1.7vw, 32px)" }}>
-          {p.joinUrl?.replace(/^https?:\/\//, "") ?? "…"}
+          {p.joinUrl?.replace(/^https?:\/\//, "").replace(/\/$/, "") ?? "…"}
         </span>
       </div>
       <div className="flex items-center gap-[0.8vw]" style={{ fontSize: "clamp(12px, 1.2vw, 22px)" }}>

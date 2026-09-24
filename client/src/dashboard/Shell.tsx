@@ -9,6 +9,7 @@
  */
 import type { ReactNode } from "react";
 import type { ConnState } from "../lib/ws";
+import { APP_NAME } from "../ui/brand";
 import { hms } from "../ui/format";
 import { Icon } from "../ui/Icon";
 import { Logo } from "../ui/Logo";
@@ -36,7 +37,6 @@ export const PAGES: { route: Route; label: string; icon: string; title: string; 
 export interface ShellProps {
   route: Route;
   conn: ConnState;
-  session?: string;
   uptimeS?: number;
   alerts: { crit: number; warn: number };
   /** Signalements du jour, en pastille sur « Qualité ». */
@@ -93,7 +93,7 @@ export function Shell(p: ShellProps) {
         <div className="flex items-center gap-3 px-5 h-16 lg:h-20 shrink-0">
           <Logo className="w-9 h-9" />
           <div className="flex flex-col leading-tight">
-            <span className="font-headline-md text-[17px] font-bold tracking-tight">VOXIS</span>
+            <span className="font-headline-md text-[17px] font-bold tracking-tight">{APP_NAME}</span>
             <span className="text-[10px] font-label-badge font-bold uppercase tracking-[0.18em] text-primary">Administration</span>
           </div>
         </div>
@@ -123,7 +123,6 @@ export function Shell(p: ShellProps) {
           <div className="flex items-center gap-2 text-xs">
             <Dot tone={LINK_TONE[p.conn]} live={p.conn === "open"} />
             <span className="font-semibold">{LINK_LABEL[p.conn]}</span>
-            {p.session && <span className="font-metric-mono-sm text-on-surface-variant ml-auto">#{p.session}</span>}
           </div>
           <div className="flex items-center gap-2 text-xs text-on-surface-variant">
             <Icon name="schedule" className="text-[15px]" />

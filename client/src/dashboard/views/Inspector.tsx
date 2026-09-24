@@ -307,7 +307,9 @@ export function Inspector({ stage, nodes, sig, conf, history, lines, alerts, clo
   const idx = Math.max(0, nodes.findIndex((n) => n.stage.id === stage));
   const node = nodes[idx];
   const s = node.stage;
-  const go = (d: number) => onSelect(nodes[(idx + d + nodes.length) % nodes.length].stage.id);
+  const prev = nodes[(idx - 1 + nodes.length) % nodes.length];
+  const next = nodes[(idx + 1) % nodes.length];
+  const go = (d: number) => onSelect((d < 0 ? prev : next).stage.id);
 
   // Flèches ← → : étage précédent / suivant (sauf pendant une saisie).
   useEffect(() => {
@@ -389,7 +391,7 @@ export function Inspector({ stage, nodes, sig, conf, history, lines, alerts, clo
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 <h2 id="inspecteur-titre" className="text-sm font-bold tracking-tight uppercase font-metric-mono-sm text-on-surface">
-                  {String(idx + 1).padStart(2, "0")}. {s.label}
+                  {s.label}
                 </h2>
                 <span className={`px-2 py-0.5 rounded-full border text-[10px] font-metric-mono-sm font-semibold ${TONE_PILL[s.tone]}`}>
                   {s.status}
@@ -403,13 +405,10 @@ export function Inspector({ stage, nodes, sig, conf, history, lines, alerts, clo
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
             <div className="hidden sm:flex items-center rounded-lg border border-outline-variant/40 bg-on-surface/[0.04] p-0.5">
-              <button type="button" onClick={() => go(-1)} title="Étage précédent (←)" className="px-2 py-1 text-[11px] font-metric-mono-sm text-on-surface-variant hover:text-on-surface hover:bg-on-surface/10 rounded">
+              <button type="button" onClick={() => go(-1)} title={`Étage précédent : ${prev.stage.label} (←)`} aria-label={`Étage précédent : ${prev.stage.label}`} className="px-2 py-1 text-[11px] font-metric-mono-sm text-on-surface-variant hover:text-on-surface hover:bg-on-surface/10 rounded">
                 ←
               </button>
-              <span className="px-1 text-[10px] font-metric-mono-sm text-primary">
-                {idx + 1}/{nodes.length}
-              </span>
-              <button type="button" onClick={() => go(1)} title="Étage suivant (→)" className="px-2 py-1 text-[11px] font-metric-mono-sm text-on-surface-variant hover:text-on-surface hover:bg-on-surface/10 rounded">
+              <button type="button" onClick={() => go(1)} title={`Étage suivant : ${next.stage.label} (→)`} aria-label={`Étage suivant : ${next.stage.label}`} className="px-2 py-1 text-[11px] font-metric-mono-sm text-on-surface-variant hover:text-on-surface hover:bg-on-surface/10 rounded">
                 →
               </button>
             </div>

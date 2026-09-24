@@ -4,19 +4,17 @@
  * dont chaque chiffre est calculé — pour pouvoir le défendre devant un client.
  */
 import { useState } from "react";
-import type { DayRow, RecentReport } from "../../../../shared/admin";
+import type { DayRow } from "../../../../shared/admin";
 import { delay, pct, rate, shortDate, span } from "../../ui/format";
 import type { Signals } from "../signals";
 import { Empty, Section, Segmented } from "../ui";
 import { pillars, Pillars } from "../views/Pillars";
-import { ReportBreakdown, ReportList } from "../views/Reports";
+import { mergeReports, ReportBreakdown, ReportList } from "../views/Reports";
 
 export interface QualityProps {
   sig: Signals;
   voiceName: (id: string) => string | undefined;
 }
-
-const key = (r: RecentReport) => `${r.at}-${r.who}-${r.kind}`;
 
 function dayLabel(day: string): string {
   return new Date(`${day}T12:00:00`).toLocaleDateString("fr-FR", { weekday: "short", day: "numeric", month: "short" });
@@ -106,8 +104,7 @@ export function Quality({ sig, voiceName }: QualityProps) {
     );
   }
 
-  const seen = new Set(ov.reports.map(key));
-  const reports = [...sig.reports.filter((r) => !seen.has(key(r))), ...ov.reports].sort((a, b) => b.at - a.at);
+  const reports = mergeReports(sig.reports, ov.reports);
   const q = period === "today" ? ov.qualityToday : ov.quality;
   const stt = sig.stats?.pipeline.stt ?? sig.health?.pipeline.stt;
 

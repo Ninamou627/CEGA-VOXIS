@@ -20,7 +20,6 @@ export interface SupervisionProps {
   nodes: NodeView[];
   /** Le micro reçoit de la parole en ce moment. */
   speaking: boolean;
-  paused: boolean;
   inspected?: StageId;
   onInspect: (id: StageId) => void;
   alerts: Alert[];
@@ -67,7 +66,7 @@ export function Supervision(p: SupervisionProps) {
           )
         }
       >
-        <Constellation nodes={p.nodes} speaking={p.speaking} micDb={stats?.micDb ?? null} paused={p.paused} inspected={p.inspected} onInspect={p.onInspect} detailed />
+        <Constellation nodes={p.nodes} speaking={p.speaking} micDb={stats?.micDb ?? null} inspected={p.inspected} onInspect={p.onInspect} detailed />
         {incidents.length > 0 && (
           <div className="mt-8">
             <div className="text-[11px] font-label-badge font-bold uppercase tracking-wider text-on-surface-variant mb-1">Derniers incidents</div>

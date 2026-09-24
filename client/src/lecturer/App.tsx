@@ -12,11 +12,10 @@ import { listMics, startMic, type MicHandle } from "../lib/mic";
 import { WebAudioPlayer } from "../lib/player";
 import { SalleSocket, type ConnState } from "../lib/ws";
 import { Header } from "./Header";
-import type { Line, QuestionItem, ReportItem } from "./types";
+import type { Line, QuestionItem } from "./types";
 import { AudioPanel } from "./views/AudioPanel";
 import { Join } from "./views/Join";
 import { Questions } from "./views/Questions";
-import { Reports } from "./views/Reports";
 import { TranslationHub } from "./views/TranslationHub";
 import { VocalStage, WAVE_BARS } from "./views/VocalStage";
 
@@ -43,7 +42,6 @@ export function App() {
   const [lines, setLines] = useState<Line[]>([]);
   const [floor, setFloor] = useState<FloorState>({ state: "lecturer" });
   const [questions, setQuestions] = useState<QuestionItem[]>([]);
-  const [reports, setReports] = useState<ReportItem[]>([]);
   const [stats, setStats] = useState<StatsPayload>();
   const [err, setErr] = useState<string>();
   const [degraded, setDegraded] = useState<string>();
@@ -67,7 +65,6 @@ export function App() {
   const historyRef = useRef<number[]>([]);
   const speakUntil = useRef(0);
   const questionSeq = useRef(0);
-  const reportSeq = useRef(0);
   const questionsRef = useRef<QuestionItem[]>([]);
   const mutedRef = useRef(false);
   const gainRef = useRef(0);
@@ -231,9 +228,6 @@ export function App() {
           [...prev, { n: ++questionSeq.current, who: e.who, srcLang: e.srcLang, srcText: e.srcText, lang: e.lang, text: e.text, at: Date.now(), mode: e.mode }].slice(-30),
         );
         break;
-      case "report":
-        setReports((prev) => [...prev, { n: ++reportSeq.current, at: e.at, who: e.who, kind: e.kind, lang: e.lang, srcText: e.srcText, text: e.text, e2eMs: e.e2eMs }].slice(-40));
-        break;
       case "stats":
         setStats(e.stats);
         break;
@@ -303,7 +297,6 @@ export function App() {
       <Header
         running={running}
         conn={conn}
-        session={hello?.sessionId}
         elapsedS={running ? (now - startedAt.current) / 1000 : 0}
         micLabel={micLabel}
         muted={muted}
@@ -377,7 +370,6 @@ export function App() {
                 onReplay={replay}
                 onArchive={(q) => setQuestions((prev) => prev.map((x) => (x.n === q.n ? { ...x, archived: true } : x)))}
               />
-              <Reports reports={reports} now={now} />
             </div>
           </div>
         )}

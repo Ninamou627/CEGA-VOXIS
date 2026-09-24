@@ -480,11 +480,6 @@
   .cz-node[data-active] .cz-pill {
     box-shadow: 0 6px 18px -4px rgb(var(--n-c) / 0.45);
   }
-  /* « Pause animation » : tout s'arrête là où il en est. */
-  .cz-paused,
-  .cz-paused * {
-    animation-play-state: paused !important;
-  }
   .cz-gradient-text {
     background-image: linear-gradient(90deg, rgb(var(--cz-sky)), rgb(var(--cz-violet)), rgb(var(--cz-emerald)));
     -webkit-background-clip: text;

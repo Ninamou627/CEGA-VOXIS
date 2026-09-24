@@ -21,7 +21,6 @@ export interface ConstellationProps {
   micDb: number | null;
   /** Montre le moteur de chaque étage (page Supervision). */
   detailed?: boolean;
-  paused?: boolean;
   inspected?: StageId;
   onInspect: (id: StageId) => void;
 }
@@ -52,7 +51,7 @@ function Orbit({ items, dir, angles }: { items: { text: string; title: string }[
   // Anneau et pastilles sur la même horloge : une pastille arrivée en route garde son texte droit.
   useLayoutEffect(() => {
     const el = ref.current;
-    if (!el || el.closest(".cz-paused")) return;
+    if (!el) return;
     for (const a of el.getAnimations({ subtree: true })) a.startTime = 0;
   }, [items.length]);
   return (
@@ -71,7 +70,7 @@ function Orbit({ items, dir, angles }: { items: { text: string; title: string }[
   );
 }
 
-export function Constellation({ nodes, speaking, micDb, detailed, paused = false, inspected, onInspect }: ConstellationProps) {
+export function Constellation({ nodes, speaking, micDb, detailed, inspected, onInspect }: ConstellationProps) {
   const box = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const engine = useRef<Synapse | null>(null);
@@ -85,8 +84,8 @@ export function Constellation({ nodes, speaking, micDb, detailed, paused = false
   const reduced = useReducedMotion();
 
   // Ce que lisent les rappels (observateurs, battements, barres) sans être recréés.
-  const live = useRef({ nodes, speaking, micDb, still: paused || reduced });
-  live.current = { nodes, speaking, micDb, still: paused || reduced };
+  const live = useRef({ nodes, speaking, micDb, still: reduced });
+  live.current = { nodes, speaking, micDb, still: reduced };
 
   /** Replace les liaisons sur les orbes et leur donne l'état des deux étages qu'elles relient. */
   function relayout() {
@@ -147,10 +146,6 @@ export function Constellation({ nodes, speaking, micDb, detailed, paused = false
   }, [speaking, nodes.length]);
 
   useEffect(() => {
-    engine.current?.setPaused(paused);
-  }, [paused]);
-
-  useEffect(() => {
     engine.current?.setStill(reduced);
   }, [reduced]);
 
@@ -201,7 +196,7 @@ export function Constellation({ nodes, speaking, micDb, detailed, paused = false
   }, []);
 
   return (
-    <div ref={box} className={`relative ${paused ? "cz-paused" : ""}`}>
+    <div ref={box} className="relative">
       <canvas ref={canvas} aria-hidden="true" className="absolute inset-0 w-full h-full pointer-events-none" />
       <ol className="relative grid grid-cols-2 md:grid-cols-5 gap-x-2 gap-y-12 items-center justify-items-center py-8 md:py-12">
         {nodes.map((n, i) => {
@@ -300,9 +295,7 @@ export function Constellation({ nodes, speaking, micDb, detailed, paused = false
                 <span className="mt-4 flex flex-col items-center gap-1 max-w-full px-1 text-center">
                   <span className="flex items-center gap-1.5">
                     <Dot tone={s.tone} live={s.tone === "ok"} />
-                    <span className="text-[11px] xl:text-xs font-bold tracking-wider uppercase font-metric-mono-sm text-on-surface leading-tight">
-                      {String(i + 1).padStart(2, "0")}. {s.label}
-                    </span>
+                    <span className="text-[11px] xl:text-xs font-bold tracking-wider uppercase font-metric-mono-sm text-on-surface leading-tight">{s.label}</span>
                   </span>
                   {detailed && s.engine && (
                     <span className="text-[10px] font-metric-mono-sm text-on-surface-variant max-w-full truncate" title={s.engine}>

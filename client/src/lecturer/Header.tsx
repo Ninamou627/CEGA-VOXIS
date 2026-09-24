@@ -3,6 +3,7 @@
  * la connexion, session et chrono, micro et niveau reçu par le serveur, auditeurs,
  * thème, arrêt de la session en deux temps.
  */
+import { APP_NAME } from "../ui/brand";
 import type { Lang } from "../../../shared/protocol";
 import type { ConnState } from "../lib/ws";
 import { hms } from "../ui/format";
@@ -13,7 +14,6 @@ import { ThemeToggle } from "../ui/ThemeToggle";
 export interface HeaderProps {
   running: boolean;
   conn: ConnState;
-  session?: string;
   /** Secondes depuis le démarrage du micro. */
   elapsedS: number;
   micLabel?: string;
@@ -49,7 +49,7 @@ export function Header(p: HeaderProps) {
           </div>
           <div className="flex flex-col">
             <div className="flex items-center gap-2">
-              <span className="font-headline-md text-lg font-bold tracking-tight text-on-surface">VOXIS</span>
+              <span className="font-headline-md text-lg font-bold tracking-tight text-on-surface">{APP_NAME}</span>
               <span className="text-xs uppercase tracking-widest text-primary font-label-badge font-bold whitespace-nowrap">Live Studio</span>
               <div key={live.label} className={`pop flex items-center gap-1.5 border px-2.5 py-0.5 rounded-full text-[11px] font-label-badge font-bold ml-1 ${live.cls}`}>
                 <span className={`w-2 h-2 rounded-full ${live.dot}`}></span>
@@ -59,9 +59,9 @@ export function Header(p: HeaderProps) {
           </div>
         </div>
         <div className="hidden md:block h-7 w-px bg-outline-variant/40 mx-1"></div>
-        {/* Session et chrono */}
+        {/* Séance et chrono */}
         <div className="hidden lg:flex items-center gap-3 bg-surface-container-low border border-outline-variant/30 px-3.5 py-1.5 rounded-xl">
-          <span className="text-xs text-on-surface-variant font-medium whitespace-nowrap">{p.session ?? "Session"}</span>
+          <span className="text-xs text-on-surface-variant font-medium whitespace-nowrap">Séance</span>
           <span className="text-outline-variant">•</span>
           <div className="flex items-center gap-1.5 text-secondary font-metric-mono-sm text-xs font-semibold whitespace-nowrap" title="Durée de la session">
             <Icon name="schedule" className="text-[15px]" />

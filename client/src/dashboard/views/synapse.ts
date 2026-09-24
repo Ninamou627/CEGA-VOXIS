@@ -9,8 +9,8 @@
  *
  * Sobre à dessein, le tableau de bord reste ouvert des heures : 30 images/s au plus quand
  * des paquets circulent, 12 pour le seul scintillement, un halo pré-rendu plutôt qu'une
- * ombre recalculée, et plus aucune image quand la page est cachée, en pause, ou que
- * l'appareil demande moins d'animations (une image fixe suffit alors).
+ * ombre recalculée, et aucune image dessinée pour rien quand la page n'est pas à l'écran ;
+ * si l'appareil demande moins d'animations, une image fixe suffit.
  */
 
 export type LinkState = "ok" | "idle" | "warn" | "crit";
@@ -89,7 +89,6 @@ export class Synapse {
   private raf = 0;
   private last = 0;
   private visible = true;
-  private paused = false;
   private still = false;
 
   constructor(private readonly canvas: HTMLCanvasElement) {
@@ -158,11 +157,6 @@ export class Synapse {
     this.refresh();
   }
 
-  setPaused(p: boolean): void {
-    this.paused = p;
-    this.refresh();
-  }
-
   setStill(s: boolean): void {
     this.still = s;
     if (s) this.packets = [];
@@ -180,7 +174,7 @@ export class Synapse {
   }
 
   private animating(): boolean {
-    return this.visible && !this.paused && !this.still;
+    return this.visible && !this.still;
   }
 
   private busy(): boolean {

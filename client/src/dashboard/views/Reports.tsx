@@ -13,6 +13,14 @@ import { Empty, Meter } from "../ui";
 
 const ORDER: ReportKind[] = ["transcription", "translation", "slow", "voice", "audio"];
 
+const reportKey = (r: RecentReport) => `${r.at}-${r.who}-${r.kind}`;
+
+/** Les signalements reçus en direct et ceux que le serveur a gardés, sans doublon, du plus récent au plus ancien. */
+export function mergeReports(live: RecentReport[], saved: RecentReport[] = []): RecentReport[] {
+  const seen = new Set(saved.map(reportKey));
+  return [...live.filter((r) => !seen.has(reportKey(r))), ...saved].sort((a, b) => b.at - a.at);
+}
+
 /** Ce que chaque cause met en cause, pour savoir où agir. */
 const WHERE: Record<ReportKind, string> = {
   transcription: "reconnaissance : vocabulaire, micro",
@@ -22,18 +30,20 @@ const WHERE: Record<ReportKind, string> = {
   audio: "son : Wi-Fi, volume, téléphone",
 };
 
-export function ReportBreakdown({ today, all }: { today: Partial<Record<ReportKind, number>>; all: Partial<Record<ReportKind, number>> }) {
+/** `compact` : sans la barre de répartition, pour un panneau étroit. */
+export function ReportBreakdown({ today, all, compact }: { today: Partial<Record<ReportKind, number>>; all: Partial<Record<ReportKind, number>>; compact?: boolean }) {
   const top = Math.max(1, ...ORDER.map((k) => all[k] ?? 0));
+  const cols = compact ? "grid-cols-[minmax(0,1fr)_5.5rem_4rem]" : "grid-cols-[minmax(0,1fr)_4.5rem_4.5rem] sm:grid-cols-[minmax(0,1fr)_10rem_5.5rem_5.5rem]";
   return (
     <div className="flex flex-col">
-      <div className="grid grid-cols-[minmax(0,1fr)_4.5rem_4.5rem] sm:grid-cols-[minmax(0,1fr)_10rem_5.5rem_5.5rem] gap-x-4 pb-2 border-b border-outline-variant/20 text-[11px] font-label-badge font-bold uppercase tracking-wider text-on-surface-variant">
+      <div className={`grid ${cols} gap-x-4 pb-2 border-b border-outline-variant/20 text-[11px] font-label-badge font-bold uppercase tracking-wider text-on-surface-variant`}>
         <span>Cause</span>
-        <span className="hidden sm:block" />
+        {!compact && <span className="hidden sm:block" />}
         <span className="text-right">Aujourd'hui</span>
         <span className="text-right">Total</span>
       </div>
       {ORDER.map((k) => (
-        <div key={k} className="grid grid-cols-[minmax(0,1fr)_4.5rem_4.5rem] sm:grid-cols-[minmax(0,1fr)_10rem_5.5rem_5.5rem] gap-x-4 items-center py-3 border-b border-outline-variant/15">
+        <div key={k} className={`grid ${cols} gap-x-4 items-center py-3 border-b border-outline-variant/15`}>
           <div className="flex items-center gap-3 min-w-0">
             <Icon name={REPORT_LABEL[k].icon} className="text-[18px] text-on-surface-variant shrink-0" />
             <div className="min-w-0">
@@ -41,7 +51,7 @@ export function ReportBreakdown({ today, all }: { today: Partial<Record<ReportKi
               <div className="text-xs text-outline truncate">{WHERE[k]}</div>
             </div>
           </div>
-          <Meter value={(all[k] ?? 0) / top} tone={(all[k] ?? 0) ? "warn" : "idle"} className="hidden sm:block w-full" />
+          {!compact && <Meter value={(all[k] ?? 0) / top} tone={(all[k] ?? 0) ? "warn" : "idle"} className="hidden sm:block w-full" />}
           <span className={`font-metric-mono-sm text-sm text-right ${today[k] ? "text-tertiary font-semibold" : "text-outline"}`}>{today[k] ?? 0}</span>
           <span className="font-metric-mono-sm text-sm text-right text-on-surface">{all[k] ?? 0}</span>
         </div>

@@ -65,7 +65,7 @@ export function ReportSheet(p: ReportSheetProps) {
             </div>
             <span className="font-headline-sm text-headline-sm text-on-surface">Merci, c'est signalé</span>
             <span className="font-body-sm text-body-sm text-on-surface-variant max-w-xs">
-              Le formateur est prévenu et le passage est enregistré pour améliorer le système.
+              L'équipe qui gère la salle est prévenue, et le passage est enregistré pour améliorer le système.
             </span>
           </div>
         ) : (

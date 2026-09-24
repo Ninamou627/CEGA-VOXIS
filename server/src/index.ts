@@ -186,11 +186,11 @@ app.get("/api/session", async () => ({
   providers: { stt: providers.stt.name, mt: providers.mt.name, tts: providers.tts.name },
   /** Certificat auto-signé qui ne couvre pas l'IP courante : la checklist du tableau de bord le montre. */
   certWarning: certCoversCurrentIp() ?? null,
-  joinUrl: `${publicUrl()}/?s=${encodeURIComponent(room.sessionId)}`,
+  joinUrl: `${publicUrl()}/`,
   /** Toutes les adresses candidates, les vraies interfaces d'abord (PUBLIC_URL les remplace). */
   joinUrls: cfg.PUBLIC_URL
-    ? [{ url: `${publicUrl()}/?s=${encodeURIComponent(room.sessionId)}`, iface: "PUBLIC_URL", virtual: false }]
-    : lanIps().map((i) => ({ url: `${publicUrl(i.address)}/?s=${encodeURIComponent(room.sessionId)}`, iface: i.iface, virtual: i.virtual })),
+    ? [{ url: `${publicUrl()}/`, iface: "PUBLIC_URL", virtual: false }]
+    : lanIps().map((i) => ({ url: `${publicUrl(i.address)}/`, iface: i.iface, virtual: i.virtual })),
   tls: Boolean(tls),
 }));
 
@@ -206,7 +206,7 @@ app.log.info(
     stt: providers.stt.name,
     mt: providers.mt.name,
     tts: providers.tts.name,
-    joinUrl: `${publicUrl()}/?s=${room.sessionId}`,
+    joinUrl: `${publicUrl()}/`,
     lecturerUrl: `${publicUrl()}/lecturer?token=…`,
     dashboardUrl: `${publicUrl()}/dashboard?token=…`,
     screenUrl: `${publicUrl()}/screen`,

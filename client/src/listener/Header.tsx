@@ -1,8 +1,9 @@
 /**
  * Barre fixe du haut, sous deux formes dans les maquettes :
- *   - « brand » : marque, code de session, état de la connexion (écran d'écoute) ;
+ *   - « brand » : marque et état de la connexion (écran d'écoute) ;
  *   - « page »  : flèche retour, titre et sous-titre (studio de question).
  */
+import { APP_NAME } from "../ui/brand";
 import { Icon } from "../ui/Icon";
 import { Logo } from "../ui/Logo";
 import { ThemeToggle } from "../ui/ThemeToggle";
@@ -18,7 +19,7 @@ export interface LinkStatus {
 }
 
 export type HeaderProps =
-  | { kind: "brand"; session: string; status: LinkStatus }
+  | { kind: "brand"; status: LinkStatus }
   | { kind: "page"; title: string; subtitle: string; onBack: () => void };
 
 const BADGE: Record<LinkTone, { pill: string; dot: string }> = {
@@ -31,7 +32,7 @@ export function Header(p: HeaderProps) {
   return (
     <header className="fixed top-0 inset-x-0 z-50 bg-surface/80 backdrop-blur-xl pt-safe shadow-[0_1px_8px_rgba(25,27,35,0.10)] dark:shadow-[0_1px_8px_rgba(0,0,0,0.4)]">
       <div className="h-16 px-gutter-mobile flex items-center justify-between gap-space-sm">
-        {p.kind === "brand" ? <Brand session={p.session} status={p.status} /> : <Page title={p.title} subtitle={p.subtitle} onBack={p.onBack} />}
+        {p.kind === "brand" ? <Brand status={p.status} /> : <Page title={p.title} subtitle={p.subtitle} onBack={p.onBack} />}
         <div className="flex items-center gap-space-xs flex-shrink-0">
           <ThemeToggle variant={p.kind === "brand" ? "switch" : "round"} />
           <div className="w-8 h-8 rounded-full bg-primary flex items-center justify-center">
@@ -43,15 +44,14 @@ export function Header(p: HeaderProps) {
   );
 }
 
-function Brand({ session, status }: { session: string; status: LinkStatus }) {
+function Brand({ status }: { status: LinkStatus }) {
   const b = BADGE[status.tone];
   return (
     <div className="flex items-center gap-space-sm min-w-0 flex-1">
       <Logo className="h-8 w-8 flex-shrink-0" />
       <div className="flex flex-col min-w-0">
         <div className="flex items-center gap-space-xs">
-          <span className="font-headline-sm text-headline-sm text-on-surface truncate">VOXIS</span>
-          <span className="font-metric-mono-sm text-metric-mono-sm text-on-surface-variant/80 tracking-wider uppercase truncate">#{session}</span>
+          <span className="font-headline-sm text-headline-sm text-on-surface truncate">{APP_NAME}</span>
         </div>
         <div className="flex items-center gap-space-xs">
           <span key={status.badge} className={`pop inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full font-label-badge text-label-badge tracking-wider ${b.pill}`}>

@@ -9,7 +9,6 @@ import { ALL_LANGS, LANGS } from "../../ui/langs";
 import type { PlayerKind } from "../types";
 
 export interface JoinProps {
-  session: string;
   lang: Lang;
   onLang: (l: Lang) => void;
   playerKind: PlayerKind;
@@ -25,8 +24,7 @@ export function Join(p: JoinProps) {
         <span className="font-label-badge text-label-badge uppercase tracking-wider text-primary">REAL-TIME INTERPRETATION</span>
         <h1 className="font-headline-lg-mobile text-headline-lg-mobile text-on-surface">Rejoindre la session</h1>
         <p className="font-body-md text-body-md text-on-surface-variant">
-          Session <span className="font-metric-mono-sm text-metric-mono-sm text-on-surface uppercase">{p.session}</span>. Mettez vos écouteurs,
-          choisissez votre langue, puis appuyez sur Écouter.
+          Mettez vos écouteurs, choisissez votre langue, puis appuyez sur Écouter.
         </p>
       </div>
 

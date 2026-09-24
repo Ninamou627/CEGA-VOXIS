@@ -19,7 +19,6 @@ export interface OverviewProps {
   /** Le micro reçoit de la parole en ce moment. */
   speaking: boolean;
   alerts: Alert[];
-  paused: boolean;
   inspected?: StageId;
   onInspect: (id: StageId) => void;
 }
@@ -38,7 +37,7 @@ function availabilityTone(x: number | null): Tone {
   return x == null ? "idle" : x >= 0.99 ? "ok" : x >= 0.95 ? "warn" : "crit";
 }
 
-export function Overview({ sig, nodes, speaking, alerts, paused, inspected, onInspect }: OverviewProps) {
+export function Overview({ sig, nodes, speaking, alerts, inspected, onInspect }: OverviewProps) {
   const { stats, health, overview: ov } = sig;
   const listeners = stats?.listeners ?? health?.listeners ?? 0;
   const byLang = Object.entries(stats?.byLang ?? {}).filter(([, n]) => (n ?? 0) > 0) as [Lang, number][];
@@ -108,7 +107,7 @@ export function Overview({ sig, nodes, speaking, alerts, paused, inspected, onIn
         hint="Du micro du formateur aux écouteurs des apprenants. Les paquets circulent quand la parole passe vraiment ; un clic sur un étage ouvre son inspecteur."
         right={more("#/supervision")}
       >
-        <Constellation nodes={nodes} speaking={speaking} micDb={stats?.micDb ?? null} paused={paused} inspected={inspected} onInspect={onInspect} />
+        <Constellation nodes={nodes} speaking={speaking} micDb={stats?.micDb ?? null} inspected={inspected} onInspect={onInspect} />
       </Section>
 
       <Section title={alerts.length ? `Alertes · ${alerts.length}` : "Alertes"} hint={alerts.length ? "De la plus grave à la plus légère. Chaque alerte renvoie à la page où agir." : undefined}>

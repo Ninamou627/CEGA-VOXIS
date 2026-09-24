@@ -35,7 +35,6 @@ export interface QuestionState {
 }
 
 export interface ListenProps {
-  session: string;
   conn: ConnState;
   secure: boolean;
   playerKind: PlayerKind;

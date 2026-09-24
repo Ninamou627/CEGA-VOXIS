@@ -125,7 +125,8 @@ export type ServerEvent =
   /**
    * Signalement d'un apprenant sur la qualité, avec le contexte que le serveur a
    * retrouvé : c'est la matière première de l'amélioration du système (glossaire,
-   * segmentation, choix de voix). Envoyé au formateur et au tableau de bord.
+   * segmentation, choix de voix). Envoyé à l'administration seulement : le formateur
+   * n'est pas interrompu pendant qu'il parle.
    */
   | {
       t: "report";

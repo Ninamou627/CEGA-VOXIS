@@ -160,7 +160,8 @@ traduite et synthétisée comme l'autre, mais ne se joue pas d'elle-même dans l
 le formateur la lit, et l'écoute s'il veut. Et il a un bouton **« Signaler un
 problème »** : cinq causes (transcription, traduction, lenteur, voix, audio), un
 toucher, envoyé. Le serveur y joint l'heure, le segment visé, sa transcription, sa
-traduction et le décalage mesuré ; tout part dans `metrics.jsonl`.
+traduction et le décalage mesuré ; tout part dans `metrics.jsonl`. Le signalement va à
+l'administration seulement : le formateur, qui parle, n'a pas à le traiter en direct.
 
 **Pourquoi.** Tout le monde ne prend pas la parole devant trente personnes, et le
 téléphone est déjà dans la main. Surtout : les seuls à savoir que la traduction est
@@ -222,8 +223,9 @@ modifie sur la page Configuration, seul endroit où un réglage s'enregistre.
 
 **Pourquoi.** Une animation qui tourne quoi qu'il arrive ment à l'exploitant : il doit
 pouvoir lire un étage figé ou une liaison rouge de loin. Et un tableau de bord ouvert des
-heures ne doit pas chauffer le PC de salle : 30 images/s au plus, rien quand la page est
-cachée, en pause ou que l'appareil demande moins d'animations.
+heures ne doit pas chauffer le PC de salle : 30 images/s au plus, rien de dessiné quand la
+page n'est pas à l'écran. Les animations ne se mettent jamais en pause d'elles-mêmes ; seul
+le réglage « moins d'animations » du système de l'appareil les fige (accessibilité).
 
 **Mise en œuvre.** Le design est une portée de thème (`.cosmos`, theme.css) : en sombre elle
 redéfinit les jetons Material 3, si bien que les briques existantes suivent sans être

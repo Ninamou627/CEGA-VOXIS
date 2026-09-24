@@ -243,7 +243,8 @@ export function attachWs(wss: WebSocketServer, ctx: WsContext): void {
           text: seg?.tgt[lang],
           e2eMs: evt.e2eMs ?? null,
         };
-        room.broadcast(report, (p) => p.role === "lecturer" || p.role === "dashboard");
+        // À l'administration seulement : le formateur n'est pas interrompu pendant qu'il parle.
+        room.broadcast(report, (p) => p.role === "dashboard");
         totals.report({ ...report, voice: seg?.voices[lang] });
         // Le JSONL est la mémoire longue : c'est là qu'on relira les signalements
         // pour régler la segmentation, enrichir le glossaire ou changer de voix.

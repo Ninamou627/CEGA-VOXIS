@@ -1,4 +1,4 @@
-import type { Lang, ReportKind } from "../../../shared/protocol";
+import type { Lang } from "../../../shared/protocol";
 
 /** Un segment figé : source (src.commit) puis sa traduction (tr.segment). */
 export interface Line {
@@ -24,16 +24,4 @@ export interface QuestionItem {
   mode: "voice" | "text";
   audio?: { bytes: Uint8Array; mime: string; durMs: number };
   archived?: boolean;
-}
-
-/** Un signalement de qualité, avec le passage que le serveur a retrouvé. */
-export interface ReportItem {
-  n: number;
-  at: number;
-  who: string;
-  kind: ReportKind;
-  lang: Lang;
-  srcText?: string;
-  text?: string;
-  e2eMs?: number | null;
 }

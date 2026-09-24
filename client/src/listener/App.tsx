@@ -6,6 +6,7 @@
  * Tout ce qui touche à la dérive est ici : file mesurée, abandon des segments
  * trop vieux, « revenir au direct », réécoute des 30 dernières secondes.
  */
+import { APP_NAME } from "../ui/brand";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AudioHeader, FloorState, Lang, ReportKind, ServerEvent, StatsPayload } from "../../../shared/protocol";
 import { BIN_MS, envelope } from "../lib/envelope";
@@ -51,7 +52,7 @@ const LINK: Record<ConnState, LinkStatus> = {
 
 export function App() {
   const params = new URLSearchParams(location.search);
-  const [session] = useState(params.get("s") ?? "TRAINING-01");
+  const [session] = useState(params.get("s") ?? undefined);
   const [lang, setLang] = useState<Lang>((params.get("lang") as Lang) ?? "fr");
   // Lecteur média par défaut, partout : validé sur iPhone 13 Pro Max / iOS 26 écran
   // verrouillé, insensible au bouton silence, et il porte le playbackRate à hauteur
@@ -475,10 +476,9 @@ export function App() {
   if (phase === "join") {
     return (
       <>
-        <Header kind="brand" session={session} status={{ tone: "wait", badge: "READY", caption: "Prêt à écouter" }} />
+        <Header kind="brand" status={{ tone: "wait", badge: "READY", caption: "Prêt à écouter" }} />
         <main className="flex flex-col relative w-full pt-16 pb-8 bg-surface min-h-screen">
           <Join
-            session={session}
             lang={lang}
             onLang={setLang}
             playerKind={playerKind}
@@ -502,9 +502,9 @@ export function App() {
   return (
     <>
       {studio ? (
-        <Header kind="page" title="Poser une question" subtitle="VOXIS ACTIVE FEED" onBack={() => setSheet("none")} />
+        <Header kind="page" title="Poser une question" subtitle={`${APP_NAME} · en direct`} onBack={() => setSheet("none")} />
       ) : (
-        <Header kind="brand" session={session} status={LINK[conn]} />
+        <Header kind="brand" status={LINK[conn]} />
       )}
       <main className={`flex flex-col relative w-full pt-16 bg-surface min-h-screen gap-space-md ${studio ? "" : "pb-40"}`}>
         {(err || degraded) && (
@@ -525,7 +525,6 @@ export function App() {
 
         {!studio && (
           <Listen
-            session={session}
             conn={conn}
             secure={location.protocol === "https:"}
             playerKind={playerKind}

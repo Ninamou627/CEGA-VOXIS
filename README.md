@@ -1,4 +1,4 @@
-# Interprète de salle
+# CEGA Voxis — interprète de salle
 
 Interprétation IA quasi simultanée EN ↔ FR pour une salle de formation : le formateur
 parle dans son micro HF, les apprenants entendent une voix française dans leurs
@@ -87,8 +87,8 @@ studio s'ouvre par-dessus, micro ou clavier) et signaler un problème (feuille p
 bas). L'écran de salle (`/screen`) se branche avec le rôle `screen` : tout le texte,
 toutes les langues, jamais d'audio, pas de jeton.
 
-Les signalements des apprenants arrivent chez le formateur et au tableau de bord, et
-sont écrits dans `metrics.jsonl` avec l'heure, la phrase, sa transcription, sa
+Les signalements des apprenants arrivent à l'administration — pas chez le formateur,
+qu'ils interrompraient pendant qu'il parle — et sont écrits dans `metrics.jsonl` avec l'heure, la phrase, sa transcription, sa
 traduction et le décalage mesuré — c'est ce qu'on relit pour régler la segmentation,
 enrichir le glossaire ou changer de voix (D14).
 
@@ -123,7 +123,9 @@ en panne passe en pointillés rouges. En sombre, ces deux pages prennent le desi
 (bleu nuit, grille de points, halos) ; en clair, les mêmes animations sur la palette claire.
 Un clic sur un étage ouvre son **inspecteur** : mesures des dernières minutes, incidents,
 ce qui vient d'y passer, et ses réglages en lecture avec un lien vers Configuration.
-« Pause animation » n'arrête que l'animation — la traduction continue.
+Le bouton **Signalements** de ces deux pages ouvre la liste des signalements des
+apprenants ; un signalement qui arrive s'annonce aussi en bas à droite, sur toutes les
+pages de l'administration.
 
 ## Les deux choses à faire avant de mettre un téléphone dans la salle
 

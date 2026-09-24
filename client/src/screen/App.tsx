@@ -5,6 +5,7 @@
  * les questions des apprenants en bandeau. Rôle « screen » : tout le texte, jamais
  * d'audio, pas de jeton. Réglages (langue, source, taille, QR) mémorisés sur le PC.
  */
+import { APP_NAME } from "../ui/brand";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FloorState, Lang, ServerEvent, StatsPayload } from "../../../shared/protocol";
 import { keepWakeLockAlive, requestWakeLock } from "../lib/wakelock";
@@ -211,7 +212,6 @@ export function App() {
   }
 
   const idle = lines.every((l) => !l.tgt[lang]);
-  const session = hello?.sessionId;
   const live = conn === "open";
 
   return (
@@ -219,12 +219,11 @@ export function App() {
       {/* Marque et état, discrets en haut à gauche */}
       <div className="absolute top-[3vh] left-[3vw] z-30 flex items-center gap-[0.8vw] opacity-80" style={{ fontSize: "clamp(12px, 1.1vw, 20px)" }}>
         <Icon name="graphic_eq" className="text-secondary" style={{ fontSize: "1.6em" }} />
-        <span className="font-headline-md font-bold tracking-tight">VOXIS</span>
+        <span className="font-headline-md font-bold tracking-tight">{APP_NAME}</span>
         <span key={live ? "live" : conn} className={`pop flex items-center gap-[0.4em] font-label-badge uppercase tracking-wider ${live ? "text-secondary" : conn === "closed" ? "text-error" : "text-tertiary"}`}>
           <span className={`w-[0.55em] h-[0.55em] rounded-full ${live ? "bg-secondary animate-pulse" : conn === "closed" ? "bg-error" : "bg-tertiary animate-pulse"}`}></span>
           {live ? "Direct" : conn === "closed" ? "Hors ligne" : "Connexion"}
         </span>
-        {session && <span className="font-metric-mono-sm text-on-surface-variant">#{session}</span>}
       </div>
 
       {/* QR en coin pendant la séance */}
