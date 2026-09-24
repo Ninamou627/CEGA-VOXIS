@@ -16,6 +16,8 @@ import type { Metrics } from "../metrics";
 import type { Pipeline } from "../pipeline/pipeline";
 import type { Providers } from "../providers/types";
 import type { Participant, Room } from "../room";
+import { clientSettings, type Settings } from "../settings";
+import type { Totals } from "../totals";
 
 export interface WsContext {
   room: Room;
@@ -24,6 +26,8 @@ export interface WsContext {
   metrics: Metrics;
   config: Config;
   log: { info(o: object, msg?: string): void; warn(o: object, msg?: string): void; error(o: object, msg?: string): void };
+  settings: () => Settings;
+  totals: Totals;
 }
 
 function toBytes(data: RawData): Uint8Array {
@@ -41,15 +45,17 @@ interface RecentSegment {
   srcText: string;
   tOrigin: number;
   tgt: Partial<Record<Lang, string>>;
+  /** Voix qui a dit le segment, par langue : un signalement « voix » se compte à cette voix. */
+  voices: Partial<Record<Lang, string>>;
 }
 
 export function attachWs(wss: WebSocketServer, ctx: WsContext): void {
-  const { room, pipeline, providers, metrics, config, log } = ctx;
+  const { room, pipeline, providers, metrics, config, log, totals } = ctx;
 
   const recent = new Map<number, RecentSegment>();
   function remember(seq: number, patch: Partial<RecentSegment>) {
-    const cur = recent.get(seq) ?? { seq, srcText: "", tOrigin: Date.now(), tgt: {} };
-    recent.set(seq, { ...cur, ...patch, tgt: { ...cur.tgt, ...patch.tgt } });
+    const cur = recent.get(seq) ?? { seq, srcText: "", tOrigin: Date.now(), tgt: {}, voices: {} };
+    recent.set(seq, { ...cur, ...patch, tgt: { ...cur.tgt, ...patch.tgt }, voices: { ...cur.voices, ...patch.voices } });
     while (recent.size > RECENT_SEGMENTS) recent.delete(recent.keys().next().value!);
   }
 
@@ -57,13 +63,18 @@ export function attachWs(wss: WebSocketServer, ctx: WsContext): void {
   pipeline.on("src.partial", (e) => room.broadcast({ t: "src.partial", text: e.text }, (p) => p.role !== "listener" || p.lang === room.srcLang));
   pipeline.on("src.commit", (e) => {
     remember(e.seq, { srcText: e.text, tOrigin: e.tOrigin });
-    room.broadcast({ t: "src.commit", ...e });
+    if (e.confidence != null) totals.confidence(e.confidence);
+    room.broadcast({ t: "src.commit", seq: e.seq, text: e.text, tOrigin: e.tOrigin, reason: e.reason });
   });
   pipeline.on("tr.segment", (e) => {
     remember(e.seq, { tgt: { [e.lang]: e.text } });
+    if (e.untranslated) totals.untranslated();
+    else totals.translated();
     room.broadcast({ t: "tr.segment", ...e }, (p) => p.role !== "listener" || p.lang === e.lang);
   });
   pipeline.on("audio", (e) => {
+    remember(e.seq, { voices: { [e.lang]: e.voice } });
+    totals.spoken({ durMs: e.durMs, voice: e.voice, lang: e.lang });
     const header: AudioHeader = {
       t: "audio",
       seq: e.seq,
@@ -81,6 +92,7 @@ export function attachWs(wss: WebSocketServer, ctx: WsContext): void {
   pipeline.on("degraded", (e) => room.broadcast({ t: "degraded", ...e }));
   pipeline.on("error", (e) => {
     log.warn({ stage: e.stage, err: e.error.message }, "erreur pipeline");
+    totals.stageError(e.stage, e.error.message);
     // Le formateur et le tableau de bord doivent voir les pannes, pas seulement le journal.
     room.broadcast({ t: "error", code: `${e.stage}_error`, msg: `${e.stage.toUpperCase()} : ${e.error.message.slice(0, 200)}` }, (p) => p.role !== "listener");
   });
@@ -172,6 +184,7 @@ export function attachWs(wss: WebSocketServer, ctx: WsContext): void {
           tServer: Date.now(),
           floor: room.floor,
           pipeline: pipeline.status,
+          settings: clientSettings(ctx.settings()),
         });
         return;
       }
@@ -181,6 +194,7 @@ export function attachWs(wss: WebSocketServer, ctx: WsContext): void {
       // -- apprenant -----------------------------------------------------------
       if (evt.t === "ack") {
         const e2e = metrics.ack(me.id, evt.seq, evt.tOrigin, evt.queueMs);
+        totals.ack(e2e);
         if (e2e > 8000) log.warn({ id: me.id, e2e, queueMs: evt.queueMs }, "client très en retard");
         return;
       }
@@ -230,6 +244,7 @@ export function attachWs(wss: WebSocketServer, ctx: WsContext): void {
           e2eMs: evt.e2eMs ?? null,
         };
         room.broadcast(report, (p) => p.role === "lecturer" || p.role === "dashboard");
+        totals.report({ ...report, voice: seg?.voices[lang] });
         // Le JSONL est la mémoire longue : c'est là qu'on relira les signalements
         // pour régler la segmentation, enrichir le glossaire ou changer de voix.
         metrics.event("report", {
@@ -310,6 +325,7 @@ export function attachWs(wss: WebSocketServer, ctx: WsContext): void {
       const tts = await providers.tts.synthesize({ text, lang: room.srcLang });
 
       const delivered = room.count("lecturer") > 0;
+      totals.question();
       room.broadcast({ t: "question", who: asker.id, srcLang, srcText, lang: room.srcLang, text, delivered, mode }, (p) => p.role !== "listener" || p.id === asker.id);
       log.info({ id: asker.id, mode, srcText: srcText.slice(0, 80), delivered }, "question traitée");
       const header: AudioHeader = {

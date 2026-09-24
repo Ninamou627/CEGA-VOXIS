@@ -15,6 +15,8 @@ export interface Word {
    * Le commit verrouillé peut alors le figer sans attendre une seconde hypothèse.
    */
   isFinal?: boolean;
+  /** Confiance du moteur dans ce mot, 0 à 1, s'il la donne (qualité de la reconnaissance). */
+  confidence?: number;
 }
 
 export interface SttPartial {
@@ -56,6 +58,8 @@ export interface MtRequest {
   /** Segments précédents (source, cible) pour la continuité ; les plus récents en dernier. */
   context: { src: string; tgt: string }[];
   glossary?: Record<string, string>;
+  /** Contexte linguistique de la séance : sujet, public, registre. */
+  domain?: string;
 }
 
 export interface MtProvider {
@@ -70,12 +74,16 @@ export interface TtsRequest {
   speed?: number;
   /** true = ce segment continue le précédent (prosodie enchaînée, pas de « début de phrase »). */
   continuation?: boolean;
+  /** Impose une voix (écoute d'essai depuis l'administration) au lieu de celle par défaut. */
+  voice?: string;
 }
 
 export interface TtsResult {
   audio: Uint8Array;
   mime: string;
   durMs: number;
+  /** Voix qui a réellement parlé : la naturalité perçue se compte par voix. */
+  voice?: string;
 }
 
 export interface TtsProvider {

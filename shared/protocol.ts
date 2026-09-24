@@ -45,6 +45,12 @@ export interface StatsPayload {
   /** Bout-en-bout mesuré à la réception des ack (ms), fenêtre glissante 60 s. */
   e2eP50: number | null;
   e2eP95: number | null;
+  e2eMean: number | null;
+  /**
+   * Temps médian de chaque étage sur la même fenêtre (ms) : de la première apparition
+   * d'un mot à son commit (reconnaissance), traduction, synthèse.
+   */
+  stages: { commitP50: number | null; mtP50: number | null; ttsP50: number | null };
   /** Profondeur de file audio côté clients (ms). L'indicateur de dérive. */
   queueP50Ms: number | null;
   queueMaxMs: number | null;
@@ -57,6 +63,21 @@ export interface StatsPayload {
 }
 
 export type FloorState = { state: "lecturer" } | { state: "question"; who: string };
+
+/**
+ * Réglages de l'administration dont les clients ont besoin, poussés à la connexion
+ * (`hello`) et à chaque enregistrement (`settings`) : ils s'appliquent sans recharger.
+ */
+export interface ClientSettings {
+  /** Volume d'écoute de départ des apprenants, 0 à 100. */
+  listenerVolume: number;
+  /** Gain appliqué au micro du formateur avant l'envoi, en dB. */
+  inputGainDb: number;
+  /** Au-dessus de ce niveau (dBFS), le serveur considère qu'il reçoit de la parole. */
+  speechThresholdDb: number;
+  /** Silence du micro, formateur en ligne, au-delà duquel on alerte (s). */
+  silenceAlertS: number;
+}
 
 // ---------------------------------------------------------------------------
 // Serveur → client (JSON)
@@ -74,7 +95,10 @@ export type ServerEvent =
       tServer: number;
       floor: FloorState;
       pipeline: PipelineStatus;
+      settings: ClientSettings;
     }
+  /** Un administrateur a enregistré des réglages : les clients s'y accordent tout de suite. */
+  | { t: "settings"; settings: ClientSettings }
   /** Hypothèse STT courante, complète et révisable. Écran uniquement. */
   | { t: "src.partial"; text: string }
   /** Segment source figé. Ne sera jamais réécrit. */

@@ -7,12 +7,16 @@ import path from "node:path";
 import { X509Certificate } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { loadConfig } from "./config";
+import { registerAdmin } from "./admin";
+import { loadConfig, repoPath } from "./config";
 import { Metrics } from "./metrics";
 import { Pipeline } from "./pipeline/pipeline";
 import { lanIp, lanIps } from "./net";
 import { makeProviders } from "./providers";
 import { Room } from "./room";
+import { clientSettings, commitConfig, defaultsFrom, SettingsStore } from "./settings";
+import { Totals } from "./totals";
+import { VoiceCatalog } from "./voices/elevenlabs";
 import { attachWs, binaryFrames } from "./ws/handlers";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -48,8 +52,14 @@ const app = Fastify({
   },
 });
 
+// Réglages de l'administration (le .env en donne les valeurs de départ) et compteurs de long terme.
+const store = new SettingsStore(repoPath(cfg.SETTINGS_FILE), defaultsFrom(cfg));
+const settings = () => store.get();
+const totals = new Totals(repoPath(cfg.TOTALS_FILE));
+
 const metrics = new Metrics(cfg.METRICS_FILE);
-const providers = makeProviders(cfg, {
+metrics.speechDb = settings().speech.speechThresholdDb;
+const providers = makeProviders(cfg, settings, {
   onFallback: (stage, err) => {
     app.log.warn({ stage, err: err.message }, "primaire en échec, bascule sur le secours pour 60 s");
     pipeline.reportDegraded(stage === "mt" ? "backup-mt" : "backup-tts", err.message.slice(0, 200));
@@ -66,10 +76,40 @@ const pipeline = new Pipeline(
     srcLang: cfg.SRC_LANG,
     targetLangs: cfg.TARGET_LANGS,
     sampleRate: 16000,
-    glossary: Object.keys(cfg.MT_GLOSSARY).length ? cfg.MT_GLOSSARY : undefined,
+    tuning: () => {
+      const s = settings();
+      return { commit: commitConfig(s), contextSegments: s.translation.contextSegments, baseSpeed: s.voice.speed };
+    },
   },
   metrics,
 );
+
+// Un enregistrement dans l'administration s'applique ici, sans redémarrer la salle.
+store.on("change", ({ settings: s, changed }) => {
+  if (changed.includes("translation.primary") || changed.includes("translation.secondary")) providers.mt.rebuild();
+  if (changed.some((k) => k.startsWith("speech."))) {
+    pipeline.retune();
+    metrics.speechDb = s.speech.speechThresholdDb;
+  }
+  room.broadcast({ t: "settings", settings: clientSettings(s) });
+  metrics.event("settings", { changed });
+  app.log.info({ changed }, "réglages modifiés depuis l'administration");
+});
+
+// Disponibilité : chaque seconde de séance compte, et la part où la voix pouvait être servie.
+setInterval(() => {
+  const inSession = pipeline.isStarted;
+  const { degraded } = pipeline.status;
+  totals.tick(1000, inSession, inSession && pipeline.sttOpen && degraded !== "text-only" && degraded !== "stt-lost");
+}, 1000).unref();
+
+registerAdmin(app, {
+  cfg,
+  store,
+  totals,
+  providers,
+  catalog: cfg.ELEVENLABS_API_KEY ? new VoiceCatalog(cfg.ELEVENLABS_API_KEY) : undefined,
+});
 
 // ---- client compilé (npm run build) ------------------------------------------------
 const clientDist = path.resolve(here, "../../client/dist");
@@ -157,7 +197,7 @@ app.get("/api/session", async () => ({
 // ---- démarrage ----------------------------------------------------------------------
 await app.listen({ port: cfg.PORT, host: cfg.HOST });
 if (!wss) throw new Error("WebSocketServer non initialisé");
-attachWs(wss, { room, pipeline, providers, metrics, config: cfg, log: app.log });
+attachWs(wss, { room, pipeline, providers, metrics, config: cfg, log: app.log, settings, totals });
 
 app.log.info(
   {
@@ -181,6 +221,7 @@ for (const sig of ["SIGINT", "SIGTERM"] as const) {
   process.on(sig, async () => {
     app.log.info("arrêt…");
     await pipeline.stop().catch(() => {});
+    totals.close();
     metrics.close();
     await app.close();
     process.exit(0);

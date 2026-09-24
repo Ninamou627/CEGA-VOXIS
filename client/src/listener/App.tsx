@@ -105,6 +105,8 @@ export function App() {
   const askClock = useRef<{ accumMs: number; since: number | null }>({ accumMs: 0, since: null });
   const askSentAt = useRef(0);
   const troubleRef = useRef<string>(undefined);
+  /** L'apprenant a réglé son volume : le réglage de l'administration ne l'écrase plus. */
+  const volumeTouched = useRef(false);
   const reportTimer = useRef<number>(undefined);
 
   useEffect(() => {
@@ -224,6 +226,7 @@ export function App() {
         clockOffset.current = e.tServer - Date.now();
         helloRef.current = e;
         setHello(e);
+        applyDefaultVolume(e.settings.listenerVolume);
         setFloor(e.floor);
         setDegraded(e.pipeline.degraded === "none" ? undefined : { mode: e.pipeline.degraded, reason: "" });
         break;
@@ -250,6 +253,9 @@ export function App() {
       case "stats":
         setStats(e.stats);
         serverSpeed.current = e.stats.pipeline.speed;
+        break;
+      case "settings":
+        applyDefaultVolume(e.settings.listenerVolume);
         break;
       case "degraded":
         // Un changement de moteur (secours) ne regarde pas l'apprenant ; une voix absente, si.
@@ -342,7 +348,15 @@ export function App() {
     applyMute();
   }
 
+  /** Volume de départ choisi dans l'administration, appliqué tant que l'apprenant n'y touche pas. */
+  function applyDefaultVolume(v: number) {
+    if (volumeTouched.current) return;
+    setVolume(v);
+    player.current?.setVolume(v / 100);
+  }
+
   function changeVolume(v: number) {
+    volumeTouched.current = true;
     setVolume(v);
     player.current?.setVolume(v / 100);
     if (v === 0 && !mutedRef.current) {

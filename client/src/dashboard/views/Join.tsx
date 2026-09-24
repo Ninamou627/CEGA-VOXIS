@@ -2,71 +2,87 @@
  * Rejoindre la salle : le QR code à projeter, l'adresse, les adresses de repli,
  * les langues diffusées et l'état HTTPS (sans lui, pas de questions au micro).
  */
-import QRCode from "qrcode";
-import { useEffect, useRef } from "react";
+import { useState } from "react";
 import { Icon } from "../../ui/Icon";
 import { LANGS } from "../../ui/langs";
+import { Qr } from "../../ui/Qr";
 import type { SessionInfo } from "../types";
-import { Card } from "./Card";
+import { Action, Chip, Empty } from "../ui";
 
 export function Join({ info, error }: { info?: SessionInfo; error?: string }) {
-  const canvas = useRef<HTMLCanvasElement>(null);
-  useEffect(() => {
-    if (info && canvas.current) void QRCode.toCanvas(canvas.current, info.joinUrl, { width: 208, margin: 1, color: { dark: "#0a0e16", light: "#ffffff" } });
-  }, [info?.joinUrl]);
+  const [copied, setCopied] = useState(false);
+  if (!info) return <Empty icon={error ? "cloud_off" : "hourglass_top"}>{error ?? "Lecture de l'adresse de la salle…"}</Empty>;
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(info.joinUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    } catch {
+      /* presse-papiers refusé (HTTP) : l'adresse reste sélectionnable à la main */
+    }
+  };
 
   return (
-    <Card
-      icon="qr_code_2"
-      title="Rejoindre la salle"
-      tone="primary"
-      right={
-        info && (
-          <span className={`flex items-center gap-1 text-[10px] font-label-badge font-bold px-2 py-0.5 rounded-full border ${info.tls ? "text-secondary bg-secondary/10 border-secondary/20" : "text-error bg-error/10 border-error/30"}`}>
-            <Icon name={info.tls ? "lock" : "lock_open"} className="text-[12px]" />
-            {info.tls ? "HTTPS" : "HTTP"}
-          </span>
-        )
-      }
-    >
-      {error && <div className="bg-error-container text-on-error-container border border-error/30 rounded-xl px-3 py-2 text-xs">{error}</div>}
-      <div className="flex flex-col items-center gap-3">
-        <div className="bg-white rounded-xl p-2 shadow-md">
-          <canvas ref={canvas} className={info ? "" : "opacity-0"} width={208} height={208} />
-        </div>
-        <div className="font-metric-mono-sm text-[11px] text-on-surface text-center break-all select-all">{info?.joinUrl ?? "…"}</div>
-      </div>
-      {info && (
-        <div className="flex flex-wrap items-center gap-1.5">
-          <span className="text-[10px] font-label-badge text-on-surface-variant uppercase">Langues</span>
-          <span className="px-1.5 py-0.5 rounded bg-surface-container-highest font-metric-mono-sm text-[11px] text-on-surface-variant" title="Langue du formateur">
-            {LANGS[info.srcLang].flag} {LANGS[info.srcLang].short}
-          </span>
-          <Icon name="arrow_forward" className="text-[14px] text-primary" />
-          {info.langs.map((l) => (
-            <span key={l} className="px-1.5 py-0.5 rounded bg-primary-container font-metric-mono-sm text-[11px] text-on-primary-container">
-              {LANGS[l].flag} {LANGS[l].short}
-            </span>
-          ))}
-        </div>
-      )}
-      {info && !info.tls && (
-        <div className="bg-error-container text-on-error-container border border-error/30 rounded-xl px-3 py-2 text-xs">
-          HTTP : les questions (micro des téléphones) ne fonctionneront pas. Voir docs/CERTIFICAT.md.
-        </div>
-      )}
-      {info?.joinUrls && info.joinUrls.length > 1 && (
-        <details className="text-[11px] text-on-surface-variant">
-          <summary className="cursor-pointer">Autres adresses ({info.joinUrls.length - 1}) — si le téléphone ne joint pas celle du QR</summary>
-          <div className="flex flex-col gap-1 pt-2">
-            {info.joinUrls.slice(1).map((j) => (
-              <div key={j.url} className={`font-metric-mono-sm break-all ${j.virtual ? "opacity-60" : ""}`}>
-                {j.url} <span className="text-outline">({j.iface}{j.virtual ? ", virtuelle" : ""})</span>
-              </div>
-            ))}
+    <div className="flex flex-col sm:flex-row gap-8 items-start">
+      <Qr value={info.joinUrl} size={176} className="w-44 shrink-0" />
+      <div className="min-w-0 flex-1 flex flex-col gap-4">
+        <div>
+          <div className="text-[11px] font-label-badge font-bold uppercase tracking-wider text-on-surface-variant">Adresse des apprenants</div>
+          <div className="flex items-center gap-2 mt-1.5">
+            <span className="font-metric-mono-sm text-[15px] text-on-surface break-all select-all">{info.joinUrl}</span>
+            <Action icon={copied ? "check" : "content_copy"} onClick={copy} title={copied ? "Copiée" : "Copier l'adresse"} />
           </div>
-        </details>
-      )}
-    </Card>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-[13px]">
+          <span className="flex items-center gap-2 text-on-surface-variant">
+            Langues
+            <span className="text-on-surface font-medium" title="Langue du formateur">
+              {LANGS[info.srcLang].flag} {LANGS[info.srcLang].short}
+            </span>
+            <Icon name="arrow_forward" className="text-[14px] text-primary" />
+            {info.langs.map((l) => (
+              <span key={l} className="text-on-surface font-medium">
+                {LANGS[l].flag} {LANGS[l].short}
+              </span>
+            ))}
+          </span>
+          <span className="flex items-center gap-1.5">
+            <Chip tone={info.tls ? "ok" : "crit"}>
+              <Icon name={info.tls ? "lock" : "lock_open"} className="text-[12px]" />
+              {info.tls ? "HTTPS" : "HTTP"}
+            </Chip>
+            <span className="text-on-surface-variant">{info.tls ? "micro des téléphones disponible" : "pas de questions parlées sur les téléphones"}</span>
+          </span>
+        </div>
+
+        {info.certWarning && (
+          <p className="text-[13px] text-error leading-relaxed flex items-start gap-2">
+            <Icon name="gpp_bad" className="text-[17px] shrink-0 mt-px" />
+            {info.certWarning}
+          </p>
+        )}
+
+        {info.joinUrls && info.joinUrls.length > 1 && (
+          <details className="text-[13px] text-on-surface-variant group">
+            <summary className="cursor-pointer select-none hover:text-on-surface">
+              {info.joinUrls.length - 1} autre{info.joinUrls.length > 2 ? "s" : ""} adresse{info.joinUrls.length > 2 ? "s" : ""} — si un téléphone ne joint pas celle du QR
+            </summary>
+            <ul className="mt-2 divide-y divide-outline-variant/15">
+              {info.joinUrls.slice(1).map((j) => (
+                <li key={j.url} className={`py-1.5 flex flex-wrap gap-x-3 ${j.virtual ? "opacity-60" : ""}`}>
+                  <span className="font-metric-mono-sm text-on-surface break-all select-all">{j.url}</span>
+                  <span className="text-outline">
+                    {j.iface}
+                    {j.virtual ? " · virtuelle" : ""}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
+      </div>
+    </div>
   );
 }

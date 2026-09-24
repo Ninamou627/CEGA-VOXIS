@@ -19,7 +19,7 @@ export class DeepLMt implements MtProvider {
   readonly name: string;
   private readonly base: string;
 
-  constructor(private opts: { apiKey: string }) {
+  constructor(private opts: { apiKey: string; timeoutMs?: () => number }) {
     if (!opts.apiKey) throw new Error("DEEPL_API_KEY manquant");
     const free = opts.apiKey.trim().endsWith(":fx");
     this.base = free ? "https://api-free.deepl.com" : "https://api.deepl.com";
@@ -33,14 +33,15 @@ export class DeepLMt implements MtProvider {
       target_lang: TARGET[req.to],
       preserve_formatting: true,
     };
-    // Les deux segments précédents (source) donnent le fil, sans être retraduits.
-    if (req.context.length) body.context = req.context.map((c) => c.src).join(" ");
+    // Le contexte de séance et les segments précédents (source) donnent le fil, sans être traduits.
+    const context = [req.domain, ...req.context.map((c) => c.src)].filter(Boolean).join(" ");
+    if (context) body.context = context;
 
     const res = await fetch(`${this.base}/v2/translate`, {
       method: "POST",
       headers: { Authorization: `DeepL-Auth-Key ${this.opts.apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(8_000),
+      signal: AbortSignal.timeout(this.opts.timeoutMs?.() ?? 8_000),
     });
     if (!res.ok) throw new Error(`DeepL ${res.status} : ${(await res.text()).slice(0, 200)}`);
     const j = (await res.json()) as { translations?: { text: string }[] };

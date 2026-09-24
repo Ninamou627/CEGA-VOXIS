@@ -10,6 +10,8 @@ export interface MicHandle {
   label: string;
   deviceId: string;
   setMuted(muted: boolean): void;
+  /** Gain appliqué avant l'envoi, en dB (réglage de l'administration). */
+  setGainDb(db: number): void;
   stop(): void;
 }
 
@@ -54,11 +56,14 @@ export async function startMic(onFrame: (pcm: ArrayBuffer, level: number) => voi
   // Le paramètre de version évite qu'un navigateur garde en cache une ancienne version du worklet.
   await ctx.audioWorklet.addModule("/pcm-worklet.js?v=2");
   const source = ctx.createMediaStreamSource(stream);
+  // Gain après le contrôle automatique du navigateur : ce que le serveur reçoit, et ce que mesure le vumètre.
+  const gain = ctx.createGain();
   const node = new AudioWorkletNode(ctx, "pcm-worklet");
   // Le worklet doit être relié à la destination pour être traité ; gain 0 = pas de retour.
   const sink = ctx.createGain();
   sink.gain.value = 0;
-  source.connect(node);
+  source.connect(gain);
+  gain.connect(node);
   node.connect(sink);
   sink.connect(ctx.destination);
   await ctx.resume();
@@ -74,12 +79,16 @@ export async function startMic(onFrame: (pcm: ArrayBuffer, level: number) => voi
     sampleRate: ctx.sampleRate,
     label: track?.label || "micro par défaut",
     deviceId: settings.deviceId ?? opts.deviceId ?? "",
+    setGainDb: (db) => {
+      gain.gain.value = Math.pow(10, db / 20);
+    },
     setMuted: (m) => {
       muted = m;
     },
     stop: () => {
       node.port.onmessage = null;
       node.disconnect();
+      gain.disconnect();
       source.disconnect();
       sink.disconnect();
       for (const t of stream.getTracks()) t.stop();

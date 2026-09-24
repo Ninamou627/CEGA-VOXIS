@@ -41,6 +41,11 @@ export interface AssemblyAiOptions {
   languageGate?: boolean;
   /** Langues à écarter (par défaut : toutes celles que le pipeline diffuse). */
   gateLangs?: Lang[];
+  /**
+   * Réglages de l'administration, relus à chaque ouverture de flux : ils remplacent
+   * `mode`, `keyterms` et `prompt` au prochain démarrage du micro.
+   */
+  live?: () => { mode: NonNullable<AssemblyAiOptions["mode"]>; keyterms: string[]; prompt?: string };
 }
 
 const CLOSE_CODES: Record<number, string> = {
@@ -56,7 +61,6 @@ const FORMATTED_GRACE_MS = 400;
 const LANGUAGE_GATE_CONFIDENCE = 0.6;
 
 export class AssemblyAiStt implements SttProvider {
-  readonly name: string;
   private readonly model: string;
   private readonly restBase: string;
   private readonly wsBase: string;
@@ -67,23 +71,31 @@ export class AssemblyAiStt implements SttProvider {
     const region = opts.region ?? "eu";
     this.restBase = region === "eu" ? "https://api.eu.assemblyai.com" : "https://api.assemblyai.com";
     this.wsBase = region === "edge" ? "wss://streaming.assemblyai.com/v3/ws" : `wss://streaming.${region}.assemblyai.com/v3/ws`;
-    this.name = `assemblyai:${this.model}:${opts.mode ?? "balanced"}`;
+  }
+
+  get name(): string {
+    return `assemblyai:${this.model}:${this.tuning().mode}`;
+  }
+
+  private tuning() {
+    return this.opts.live?.() ?? { mode: this.opts.mode ?? "balanced", keyterms: this.opts.keyterms ?? [], prompt: this.opts.prompt };
   }
 
   async start(opts: { lang: Lang; sampleRate: number }, ev: SttEvents): Promise<SttStream> {
     const gate = this.opts.languageGate ?? true;
     const gateLangs = (this.opts.gateLangs ?? ["fr", "es", "pt", "ar", "en"]).filter((l) => l !== opts.lang);
 
+    const t = this.tuning();
     const params = new URLSearchParams({
       sample_rate: String(opts.sampleRate),
       encoding: "pcm_s16le",
       speech_model: this.model,
-      mode: this.opts.mode ?? "balanced",
+      mode: t.mode,
     });
     if (gate) params.set("language_detection", "true");
     else params.set("language_code", opts.lang);
-    if (this.opts.prompt) params.set("prompt", this.opts.prompt.slice(0, 1500));
-    if (this.opts.keyterms?.length) params.set("keyterms_prompt", JSON.stringify(this.opts.keyterms.slice(0, 100)));
+    if (t.prompt) params.set("prompt", t.prompt.slice(0, 1500));
+    if (t.keyterms.length) params.set("keyterms_prompt", JSON.stringify(t.keyterms.slice(0, 100)));
     if (this.opts.voiceFocus) params.set("voice_focus", this.opts.voiceFocus);
     // Anciens modèles universal-streaming : le formatage est une option séparée.
     if (!this.model.startsWith("universal-3")) params.set("format_turns", "true");
@@ -108,7 +120,13 @@ export class AssemblyAiStt implements SttProvider {
     });
 
     const toWords = (m: any): Word[] =>
-      (m.words ?? []).map((w: any) => ({ text: String(w.text), startMs: w.start, endMs: w.end, isFinal: w.word_is_final === true }));
+      (m.words ?? []).map((w: any) => ({
+        text: String(w.text),
+        startMs: w.start,
+        endMs: w.end,
+        isFinal: w.word_is_final === true,
+        confidence: typeof w.confidence === "number" ? w.confidence : undefined,
+      }));
 
     const finalize = (words: Word[]) => {
       if (graceTimer) clearTimeout(graceTimer);
@@ -207,7 +225,8 @@ export class AssemblyAiStt implements SttProvider {
       speech_models: ["universal-3-5-pro", "universal-2"],
       language_code: lang,
     };
-    if (this.opts.keyterms?.length) body.keyterms_prompt = this.opts.keyterms.slice(0, 1000);
+    const keyterms = this.tuning().keyterms;
+    if (keyterms.length) body.keyterms_prompt = keyterms.slice(0, 1000);
     const tr = await fetch(`${this.restBase}/v2/transcript`, {
       method: "POST",
       headers: { ...H, "Content-Type": "application/json" },

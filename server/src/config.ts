@@ -1,10 +1,16 @@
 import { config as loadEnv } from "dotenv";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { LangSchema } from "../../shared/protocol";
 
 // Le .env vit à la racine du dépôt, quel que soit le cwd de lancement.
 loadEnv({ path: fileURLToPath(new URL("../../.env", import.meta.url)) });
+
+/** Chemin relatif à la racine du dépôt (npm lance le serveur depuis server/). */
+export function repoPath(p: string): string {
+  return path.isAbsolute(p) ? p : path.resolve(fileURLToPath(new URL("../../", import.meta.url)), p);
+}
 
 const csvLangs = z
   .string()
@@ -26,6 +32,10 @@ const EnvSchema = z.object({
   TLS_CERT: optional,
   TLS_KEY: optional,
   METRICS_FILE: z.string().default("metrics.jsonl"),
+  /** Réglages enregistrés depuis l'administration (remplacent ceux du .env). */
+  SETTINGS_FILE: z.string().default("data/settings.json"),
+  /** Compteurs de long terme : voix traduite, disponibilité, signalements, par jour. */
+  TOTALS_FILE: z.string().default("data/totals.json"),
 
   STT_PROVIDER: z.enum(["mock", "assemblyai", "deepgram"]).default("mock"),
   MT_PROVIDER: z.enum(["mock", "anthropic", "deepl"]).default("mock"),

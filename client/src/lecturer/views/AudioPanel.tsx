@@ -8,13 +8,15 @@ import { delay } from "../../ui/format";
 import { Icon } from "../../ui/Icon";
 import { MicSelect, type MicSelectProps } from "./MicSelect";
 
-/** En deçà, le serveur considère qu'il ne reçoit pas de parole. */
-export const SPEECH_DB = -35;
 const FLOOR_DB = -60;
 
 export interface AudioPanelProps extends MicSelectProps {
   /** Niveau capté ici, 0 à 1. */
   level: number;
+  /** Au-dessus, le serveur considère qu'il reçoit de la parole (réglage de l'administration). */
+  speechDb: number;
+  /** Gain d'entrée appliqué avant l'envoi (réglage de l'administration). */
+  gainDb: number;
   serverDb: number | null;
   sampleRate?: number;
   muted: boolean;
@@ -46,7 +48,7 @@ function Tile({ label, value, tone = "" }: { label: string; value: string; tone?
 export function AudioPanel(p: AudioPanelProps) {
   const db = p.serverDb;
   const serverRatio = db == null ? 0 : (db - FLOOR_DB) / -FLOOR_DB;
-  const serverTone = db == null ? "outline" : db > -3 ? "error" : db > SPEECH_DB ? "secondary" : "tertiary";
+  const serverTone = db == null ? "outline" : db > -3 ? "error" : db > p.speechDb ? "secondary" : "tertiary";
   const pl = p.stats?.pipeline;
   return (
     <div className="lg:col-span-3 flex flex-col gap-4">
@@ -70,18 +72,21 @@ export function AudioPanel(p: AudioPanelProps) {
         {/* Niveaux : capté ici, reçu par le serveur */}
         <div className="bg-surface-container-low rounded-xl p-3 border border-outline-variant/20 flex flex-col gap-2">
           <div className="flex items-center justify-between text-xs">
-            <span className="text-on-surface-variant font-medium">Capté ici</span>
+            <span className="text-on-surface-variant font-medium">
+              Capté ici
+              {p.gainDb !== 0 && <span className="font-metric-mono-sm text-[10px] text-primary ml-1.5">gain {p.gainDb > 0 ? "+" : ""}{p.gainDb} dB</span>}
+            </span>
             <span className="font-metric-mono-sm text-secondary font-bold">{Math.round(p.level * 100)} %</span>
           </div>
           <Meter value={p.level} tone={p.muted ? "outline" : "secondary"} />
           <div className="flex items-center justify-between text-xs pt-1">
             <span className="text-on-surface-variant font-medium">Reçu par le serveur</span>
-            <span className={`font-metric-mono-sm font-bold ${db == null ? "text-outline" : db > SPEECH_DB ? "text-secondary" : "text-tertiary"}`}>{db != null ? `${db} dB` : "—"}</span>
+            <span className={`font-metric-mono-sm font-bold ${db == null ? "text-outline" : db > p.speechDb ? "text-secondary" : "text-tertiary"}`}>{db != null ? `${db} dB` : "—"}</span>
           </div>
           <Meter value={serverRatio} tone={serverTone} />
           <div className="flex justify-between text-[10px] text-outline font-metric-mono-sm">
             <span>{FLOOR_DB} dB (silence)</span>
-            <span className="text-secondary font-semibold">parole &gt; {SPEECH_DB} dB</span>
+            <span className="text-secondary font-semibold">parole &gt; {p.speechDb} dB</span>
             <span>0 dB (saturé)</span>
           </div>
         </div>

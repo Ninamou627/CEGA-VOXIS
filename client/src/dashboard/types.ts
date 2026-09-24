@@ -1,4 +1,4 @@
-import type { Lang, PipelineStatus, ReportKind } from "../../../shared/protocol";
+import type { Lang, PipelineStatus } from "../../../shared/protocol";
 
 /** Réponse de GET /api/session. */
 export interface SessionInfo {
@@ -53,26 +53,15 @@ export interface QuestionEntry {
   mode: "voice" | "text";
 }
 
-/** Un signalement de qualité, enrichi par le serveur du passage visé. */
-export interface ReportEntry {
-  n: number;
-  at: number;
-  who: string;
-  kind: ReportKind;
-  lang: Lang;
-  seq?: number;
-  srcText?: string;
-  text?: string;
-  e2eMs?: number | null;
-}
-
-export type EventKind = "parole" | "question" | "signalement" | "degrade" | "erreur" | "salle" | "liaison";
+export type EventKind = "parole" | "question" | "signalement" | "degrade" | "erreur" | "salle" | "liaison" | "reglages";
 
 export interface JournalEntry {
   n: number;
   at: number;
   kind: EventKind;
   text: string;
+  /** Le même événement répété d'affilée (reconnexions en rafale) : une ligne, un compteur. */
+  count?: number;
 }
 
 /** Un relevé de stats toutes les 2 s, gardé 10 minutes pour les courbes. */
@@ -82,4 +71,5 @@ export interface Sample {
   e2eP95: number | null;
   queueMaxMs: number | null;
   listeners: number;
+  micDb: number | null;
 }

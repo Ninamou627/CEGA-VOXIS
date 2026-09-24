@@ -11,21 +11,29 @@ import type { Providers, SttStream, Word } from "../providers/types";
 import { TypedEmitter } from "../util/emitter";
 import { CommitGate, DEFAULT_COMMIT, type CommitConfig, type Segment } from "./commit";
 
+/** Réglages de l'administration relus en cours de séance. */
+export interface PipelineTuning {
+  commit: Partial<CommitConfig>;
+  /** Segments précédents fournis au traducteur pour la continuité. */
+  contextSegments: number;
+  /** Vitesse de base de la voix ; le rattrapage de la dérive s'y multiplie. */
+  baseSpeed: number;
+}
+
 export interface PipelineConfig {
   srcLang: Lang;
   targetLangs: Lang[];
   sampleRate: number;
-  commit?: Partial<CommitConfig>;
-  glossary?: Record<string, string>;
-  /** Segments précédents fournis au traducteur pour la continuité. */
-  contextSegments?: number;
+  tuning?: () => PipelineTuning;
 }
+
+const DEFAULT_TUNING: PipelineTuning = { commit: {}, contextSegments: 2, baseSpeed: 1 };
 
 export interface PipelineEvents extends Record<string, unknown> {
   "src.partial": { text: string };
-  "src.commit": { seq: number; text: string; tOrigin: number; reason: string };
+  "src.commit": { seq: number; text: string; tOrigin: number; reason: string; confidence?: number };
   "tr.segment": { seq: number; lang: Lang; text: string; srcSeq: number; untranslated?: boolean };
-  audio: { seq: number; lang: Lang; mime: string; durMs: number; tOrigin: number; srcSeq: number; text: string; bytes: Uint8Array };
+  audio: { seq: number; lang: Lang; mime: string; durMs: number; tOrigin: number; srcSeq: number; text: string; bytes: Uint8Array; voice?: string };
   degraded: { mode: DegradedMode; reason: string };
   status: PipelineStatus;
   error: { stage: "stt" | "mt" | "tts"; error: Error };
@@ -51,7 +59,16 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     private readonly metrics: Metrics,
   ) {
     super();
-    this.gate = new CommitGate({ ...DEFAULT_COMMIT, ...cfg.commit });
+    this.gate = new CommitGate({ ...DEFAULT_COMMIT, ...this.tuning.commit });
+  }
+
+  private get tuning(): PipelineTuning {
+    return this.cfg.tuning?.() ?? DEFAULT_TUNING;
+  }
+
+  /** L'administration a changé la segmentation : prise en compte dès le prochain mot. */
+  retune(): void {
+    this.gate.configure(this.tuning.commit);
   }
 
   get status(): PipelineStatus {
@@ -196,13 +213,18 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
   private dispatch(seg: Segment) {
     const seq = ++this.seq;
     const tCommit = Date.now();
-    this.emit("src.commit", { seq, text: seg.text, tOrigin: seg.tOrigin, reason: seg.reason });
+    // Confiance moyenne du moteur de reconnaissance sur les mots du segment, s'il la donne.
+    const conf = seg.words.map((w) => w.confidence).filter((c): c is number => typeof c === "number");
+    const confidence = conf.length ? conf.reduce((a, b) => a + b, 0) / conf.length : undefined;
+    this.emit("src.commit", { seq, text: seg.text, tOrigin: seg.tOrigin, reason: seg.reason, confidence });
+    this.metrics.stage("commit", tCommit - seg.tOrigin);
     this.metrics.event("commit", {
       seq,
       tOrigin: seg.tOrigin,
       commitMs: tCommit - seg.tOrigin,
       words: seg.words.length,
       reason: seg.reason,
+      confidence: confidence != null ? Math.round(confidence * 1000) / 1000 : null,
     });
 
     for (const lang of this.cfg.targetLangs) {
@@ -231,7 +253,6 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
         from: this.cfg.srcLang,
         to: lang,
         context: ctx,
-        glossary: this.cfg.glossary,
       });
     } catch (error) {
       this.emit("error", { stage: "mt", error: error as Error });
@@ -241,24 +262,28 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
       return;
     }
     const tMt = Date.now();
+    this.metrics.stage("mt", tMt - t0);
     this.emit("tr.segment", { seq, lang, text, srcSeq: seq });
 
     ctx.push({ src: seg.text, tgt: text });
-    const keep = this.cfg.contextSegments ?? 2;
+    const keep = this.tuning.contextSegments;
     while (ctx.length > keep) ctx.shift();
     this.context.set(lang, ctx);
 
     try {
       const queueMs = this.metrics.snapshot().queueP50Ms;
-      const speed = this.speedForQueue(queueMs);
-      if (speed !== this.speed) {
-        this.speed = speed;
-        this.metrics.event("speed", { speed, queueMs });
+      const drift = this.speedForQueue(queueMs);
+      if (drift !== this.speed) {
+        this.speed = drift;
+        this.metrics.event("speed", { speed: drift, queueMs });
         this.emitStatus();
       }
+      // La vitesse choisie par l'administration, et le rattrapage de la dérive par-dessus.
+      const speed = Math.min(1.2, Math.max(0.7, this.tuning.baseSpeed * drift));
       const a = await this.providers.tts.synthesize({ text, lang, speed, continuation: true });
       const tTts = Date.now();
-      this.emit("audio", { seq, lang, mime: a.mime, durMs: a.durMs, tOrigin: seg.tOrigin, srcSeq: seq, text, bytes: a.audio });
+      this.metrics.stage("tts", tTts - tMt);
+      this.emit("audio", { seq, lang, mime: a.mime, durMs: a.durMs, tOrigin: seg.tOrigin, srcSeq: seq, text, bytes: a.audio, voice: a.voice });
       this.metrics.event("segment", {
         seq,
         lang,
@@ -269,6 +294,7 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
         durMs: a.durMs,
         chars: text.length,
         speed,
+        voice: a.voice ?? null,
         queueMs,
       });
       if (this.degraded === "text-only") this.setDegraded("none", "synthèse rétablie");

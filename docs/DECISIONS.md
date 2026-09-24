@@ -178,6 +178,36 @@ traduit), s'efface au bout de 20 s et revient toutes les 90 s tant que ça dure.
 **Ce qui ferait changer d'avis.** Des signalements en rafale sans rapport avec la
 qualité (chahut) : il faudrait alors les compter par apprenant, pas les afficher un par un.
 
+## D15 — L'administration règle la salle à chaud, et ses chiffres sont des mesures
+
+**Décision.** Les réglages de séance (moteurs de traduction, modèle, effort ou
+température, délai, contexte et glossaire ; gain, seuil de parole, segmentation,
+vocabulaire ; voix par défaut, vitesse, ton, volume) se changent dans l'administration,
+sont validés par un schéma partagé (`shared/settings.ts`), enregistrés dans
+`data/settings.json` et appliqués sans redémarrer : au segment suivant, ou au prochain
+démarrage du micro pour ce que le moteur de reconnaissance ne lit qu'à l'ouverture de
+son flux. Le `.env` garde les clés et les valeurs de départ.
+
+Les indicateurs sont définis par ce qu'on mesure vraiment : latence à l'accusé de lecture,
+confiance donnée par le moteur de reconnaissance, part des segments non signalés
+« mauvaise traduction » ou « voix peu naturelle » (voix par voix), temps de séance où la
+voix pouvait être servie. Pas de note de qualité fabriquée ; quand la mesure n'existe pas
+(simulateur), la page affiche « — » et dit pourquoi.
+
+**Pourquoi.** Changer un glossaire ou une voix ne doit pas couper une séance. Et un
+chiffre montré à un client doit pouvoir s'expliquer en une phrase.
+
+**Garde-fous.** Un paramètre que l'API refuse n'est jamais envoyé : la température n'est
+proposée que pour Claude Haiku 4.5 (Opus 5, Opus 5.5 et Sonnet 5 la refusent et se règlent
+par l'effort ; Haiku refuse l'effort). Une voix n'entre dans la salle qu'après vérification
+dans le compte ElevenLabs. Un brouillon de configuration n'envoie que les champs touchés,
+posés sur les réglages les plus récents : la page Voix et la page Configuration ne
+s'écrasent pas l'une l'autre.
+
+**Parti pris d'interface.** Pas de cartes dans l'administration : des bandeaux de chiffres
+séparés par des filets, des listes en lignes, des sections séparées par un trait. C'est
+une page qu'on lit en diagonale pendant une séance, pas une mosaïque de boîtes.
+
 ## Ce que six semaines (au lieu de 48 h) remettent sur la table
 
 Dans l'ordre de valeur : tests automatisés dès le départ (fait) ; multilingue réel

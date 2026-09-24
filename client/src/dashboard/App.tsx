@@ -1,37 +1,60 @@
 /**
- * Tableau de bord de salle : la vue de l'exploitant. QR code de connexion, latence
- * bout-en-bout, profondeur de file (dérive), état des fournisseurs et du serveur,
- * checklist d'avant-séance, flux des segments, questions, journal.
+ * Administration de la salle : vue d'ensemble, supervision en temps réel, qualité, voix,
+ * configuration globale et séance. Une page par sujet derrière un menu latéral, et pas de
+ * cartes (voir ui.tsx).
  *
- * Deux sources : le WebSocket (texte et stats toutes les 2 s) et /api/health
- * relevé toutes les 5 s pour la santé du processus.
+ * Sources : le WebSocket (texte, stats toutes les 2 s, questions, signalements, réglages
+ * poussés), /api/health relevé toutes les 5 s, /api/session pour le QR, et l'API
+ * d'administration (/api/admin/*, jeton de session) pour les compteurs de long terme,
+ * les réglages et les voix.
  */
-import { useEffect, useRef, useState } from "react";
-import type { FloorState, Lang, ServerEvent, StatsPayload } from "../../../shared/protocol";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { OverviewResponse, RecentReport, SaveResponse, SettingsResponse } from "../../../shared/admin";
+import type { ClientSettings, FloorState, Lang, ServerEvent, StatsPayload } from "../../../shared/protocol";
+import type { Settings } from "../../../shared/settings";
 import { SalleSocket, type ConnState } from "../lib/ws";
 import { REPORT_LABEL } from "../ui/reports";
-import { Header } from "./Header";
-import type { EventKind, Health, JournalEntry, Line, QuestionEntry, ReportEntry, Sample, SessionInfo } from "./types";
-import { Checklist } from "./views/Checklist";
-import { Join } from "./views/Join";
-import { Journal } from "./views/Journal";
-import { Kpis } from "./views/Kpis";
-import { Pipeline } from "./views/Pipeline";
-import { Questions } from "./views/Questions";
-import { Reports } from "./views/Reports";
-import { Segments } from "./views/Segments";
+import { AdminApi } from "./api";
+import { diffKeys, rebase } from "./draft";
+import { Configuration } from "./pages/Configuration";
+import { Overview } from "./pages/Overview";
+import { Quality } from "./pages/Quality";
+import { Session } from "./pages/Session";
+import { Supervision } from "./pages/Supervision";
+import { Voices } from "./pages/Voices";
+import { PAGES, Shell, type Route } from "./Shell";
+import { computeAlerts, stageStates, type Signals } from "./signals";
+import type { EventKind, Health, JournalEntry, Line, QuestionEntry, Sample, SessionInfo } from "./types";
+import { Action, Banner } from "./ui";
 
 type Hello = Extract<ServerEvent, { t: "hello" }>;
 
 /** Dix minutes de stats à 2 s d'intervalle. */
 const HISTORY = 300;
 const HEALTH_EVERY_MS = 5000;
+const OVERVIEW_EVERY_MS = 10_000;
+
+const DEGRADED: Record<string, string> = {
+  "text-only": "texte seul — voix indisponible",
+  "backup-mt": "traduction de secours",
+  "backup-tts": "voix de secours",
+  "stt-lost": "reconnaissance perdue",
+  s2s: "chemin de secours S2S",
+};
+
+function readRoute(): Route {
+  const r = location.hash.replace(/^#\/?/, "");
+  return (PAGES.some((p) => p.route === r) ? r : "") as Route;
+}
 
 export function App() {
-  const params = new URLSearchParams(location.search);
-  const [token] = useState(params.get("token") ?? "");
-  const [conn, setConn] = useState<ConnState>("closed");
+  const [token] = useState(() => new URLSearchParams(location.search).get("token") ?? "");
+  const api = useMemo(() => new AdminApi(token), [token]);
+  const [route, setRoute] = useState<Route>(readRoute);
+
+  const [conn, setConn] = useState<ConnState>("connecting");
   const [hello, setHello] = useState<Hello>();
+  const [room, setRoom] = useState<ClientSettings>();
   const [info, setInfo] = useState<SessionInfo>();
   const [infoError, setInfoError] = useState<string>();
   const [health, setHealth] = useState<Health>();
@@ -41,21 +64,98 @@ export function App() {
   const [partial, setPartial] = useState("");
   const [lines, setLines] = useState<Line[]>([]);
   const [questions, setQuestions] = useState<QuestionEntry[]>([]);
-  const [reports, setReports] = useState<ReportEntry[]>([]);
+  const [reports, setReports] = useState<RecentReport[]>([]);
   const [journal, setJournal] = useState<JournalEntry[]>([]);
-  const [err, setErr] = useState<string>();
+  const [overview, setOverview] = useState<OverviewResponse>();
+  const [conf, setConf] = useState<SettingsResponse>();
+  const [draft, setDraft] = useState<{ base: Settings; value: Settings }>();
+  const [adminError, setAdminError] = useState<string>();
+  const [wsError, setWsError] = useState<{ code: string; msg: string }>();
+  const [adding, setAdding] = useState(false);
   const [now, setNow] = useState(Date.now());
 
   const clockOffset = useRef(0);
   const seq = useRef(0);
   const lastListeners = useRef<number>(undefined);
   const lastLecturer = useRef<boolean>(undefined);
+  const overviewTimer = useRef<number>(undefined);
 
   function log(kind: EventKind, text: string) {
-    setJournal((prev) => [...prev, { n: ++seq.current, at: Date.now(), kind, text }].slice(-200));
+    setJournal((prev) => {
+      const last = prev[prev.length - 1];
+      if (last && last.kind === kind && last.text === text) return [...prev.slice(0, -1), { ...last, at: Date.now(), count: (last.count ?? 1) + 1 }];
+      return [...prev, { n: ++seq.current, at: Date.now(), kind, text }].slice(-300);
+    });
   }
 
-  // /api/session : le QR et les adresses ; on réessaie tant que le serveur ne répond pas.
+  // ---- routage par ancre : #/qualite, #/voix… --------------------------------------
+  useEffect(() => {
+    const on = () => {
+      setRoute(readRoute());
+      window.scrollTo({ top: 0 });
+    };
+    addEventListener("hashchange", on);
+    return () => removeEventListener("hashchange", on);
+  }, []);
+  useEffect(() => {
+    const page = PAGES.find((p) => p.route === route) ?? PAGES[0];
+    document.title = `${page.title} · VOXIS`;
+  }, [route]);
+
+  // ---- API d'administration -----------------------------------------------------------
+  const adminFailed = (e: unknown) => setAdminError((e as Error).message);
+
+  /** Nouveaux réglages du serveur : le brouillon en cours est reposé dessus, sans rien perdre. */
+  function applyServerSettings(next: Settings) {
+    setConf((c) => (c ? { ...c, settings: next } : c));
+    setDraft((d) => {
+      if (!d) return d;
+      const value = rebase(d.base, d.value, next);
+      return diffKeys(value, next).length ? { base: next, value } : undefined;
+    });
+  }
+
+  async function loadConf() {
+    try {
+      const r = await api.settings();
+      setConf(r);
+      setDraft((d) => {
+        if (!d) return d;
+        const value = rebase(d.base, d.value, r.settings);
+        return diffKeys(value, r.settings).length ? { base: r.settings, value } : undefined;
+      });
+      setAdminError(undefined);
+    } catch (e) {
+      adminFailed(e);
+    }
+  }
+
+  async function loadOverview() {
+    try {
+      setOverview(await api.overview());
+      setAdminError(undefined);
+    } catch (e) {
+      adminFailed(e);
+    }
+  }
+
+  /** Après un signalement : les compteurs sont relus une fois l'averse passée. */
+  function refreshOverviewSoon() {
+    clearTimeout(overviewTimer.current);
+    overviewTimer.current = window.setTimeout(() => void loadOverview(), 1500);
+  }
+
+  useEffect(() => {
+    void loadConf();
+    void loadOverview();
+    const id = setInterval(() => void loadOverview(), OVERVIEW_EVERY_MS);
+    return () => {
+      clearInterval(id);
+      clearTimeout(overviewTimer.current);
+    };
+  }, [api]);
+
+  // ---- /api/session : le QR et les adresses ; on réessaie tant que le serveur ne répond pas.
   useEffect(() => {
     let stop = false;
     let timer: number | undefined;
@@ -80,7 +180,7 @@ export function App() {
     };
   }, []);
 
-  // /api/health : santé du processus et présence du formateur.
+  // ---- /api/health : santé du processus et présence du formateur.
   useEffect(() => {
     let stop = false;
     const poll = async () => {
@@ -104,6 +204,7 @@ export function App() {
     };
   }, []);
 
+  // ---- WebSocket de salle -------------------------------------------------------------
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000);
     const s = new SalleSocket(
@@ -130,7 +231,14 @@ export function App() {
         clockOffset.current = e.tServer - Date.now();
         setHello(e);
         setFloor(e.floor);
+        setRoom(e.settings);
+        setWsError(undefined);
         log("liaison", `connecté à la salle ${e.sessionId}`);
+        break;
+      case "settings":
+        setRoom(e.settings);
+        void loadConf();
+        log("reglages", "réglages enregistrés depuis l'administration");
         break;
       case "src.partial":
         setPartial(e.text);
@@ -144,9 +252,12 @@ export function App() {
         break;
       case "stats":
         setStats(e.stats);
-        setHistory((prev) => [...prev, { t: Date.now(), e2eP50: e.stats.e2eP50, e2eP95: e.stats.e2eP95, queueMaxMs: e.stats.queueMaxMs, listeners: e.stats.listeners }].slice(-HISTORY));
+        setHistory((prev) =>
+          [...prev, { t: Date.now(), e2eP50: e.stats.e2eP50, e2eP95: e.stats.e2eP95, queueMaxMs: e.stats.queueMaxMs, listeners: e.stats.listeners, micDb: e.stats.micDb }].slice(-HISTORY),
+        );
         if (lastListeners.current !== undefined && lastListeners.current !== e.stats.listeners) {
-          log("salle", `${e.stats.listeners} auditeur${e.stats.listeners > 1 ? "s" : ""} (${e.stats.listeners > lastListeners.current ? "+" : ""}${e.stats.listeners - lastListeners.current})`);
+          const d = e.stats.listeners - lastListeners.current;
+          log("salle", `${e.stats.listeners} apprenant${e.stats.listeners > 1 ? "s" : ""} à l'écoute (${d > 0 ? "+" : ""}${d})`);
         }
         lastListeners.current = e.stats.listeners;
         break;
@@ -159,14 +270,15 @@ export function App() {
         log("question", e.srcText ? `${e.mode === "text" ? "écrite" : "parlée"} : « ${e.srcText} » → « ${e.text} »${e.delivered ? "" : " — formateur absent"}` : "question incomprise (vide)");
         break;
       case "report":
-        setReports((prev) => [...prev, { n: prev.length + 1, at: e.at, who: e.who, kind: e.kind, lang: e.lang, seq: e.seq, srcText: e.srcText, text: e.text, e2eMs: e.e2eMs }].slice(-100));
+        setReports((prev) => [...prev, { at: e.at, who: e.who, kind: e.kind, lang: e.lang, seq: e.seq, srcText: e.srcText, text: e.text, e2eMs: e.e2eMs }].slice(-100));
         log("signalement", `${REPORT_LABEL[e.kind].label}${e.srcText ? ` — « ${e.srcText} »` : ""}`);
+        refreshOverviewSoon();
         break;
       case "degraded":
-        log("degrade", e.mode === "none" ? `retour au nominal — ${e.reason}` : `${e.mode} — ${e.reason}`);
+        log("degrade", e.mode === "none" ? `retour au nominal — ${e.reason}` : `${DEGRADED[e.mode] ?? e.mode} — ${e.reason}`);
         break;
       case "error":
-        setErr(e.msg);
+        setWsError({ code: e.code, msg: e.msg });
         log("erreur", e.msg);
         break;
     }
@@ -180,66 +292,129 @@ export function App() {
     });
   }
 
+  // ---- brouillon de configuration -------------------------------------------------------
+  const dirty = useMemo(() => new Set(draft && conf ? diffKeys(draft.value, conf.settings) : []), [draft, conf]);
+
+  function changeDraft(value: Settings) {
+    if (!conf) return;
+    setDraft((d) => ({ base: d?.base ?? conf.settings, value }));
+  }
+
+  async function saveDraft(): Promise<SaveResponse> {
+    if (!conf) throw new Error("réglages pas encore chargés");
+    const next = draft ? rebase(draft.base, draft.value, conf.settings) : conf.settings;
+    const res = await api.save(next);
+    setConf((c) => (c ? { ...c, settings: res.settings } : c));
+    setDraft(undefined);
+    return res;
+  }
+
+  async function resetSettings(): Promise<SaveResponse> {
+    const res = await api.reset();
+    setConf((c) => (c ? { ...c, settings: res.settings } : c));
+    setDraft(undefined);
+    return res;
+  }
+
+  // Quitter la page avec des réglages non enregistrés : le navigateur demande confirmation.
+  useEffect(() => {
+    if (!dirty.size) return;
+    const warn = (e: BeforeUnloadEvent) => e.preventDefault();
+    addEventListener("beforeunload", warn);
+    return () => removeEventListener("beforeunload", warn);
+  }, [dirty.size]);
+
+  // ---- ce qu'on en déduit -------------------------------------------------------------
+  const sig: Signals = { conn, now, stats, health, info, room, overview, reports };
+  const stages = stageStates(sig);
+  const alerts = computeAlerts(sig);
+  const threshold = room?.speechThresholdDb ?? -35;
+  const flowing = Boolean(health?.lecturer) && !stats?.pipeline.muted && stats?.micDb != null && stats.micDb > threshold;
   const srcLang: Lang = hello?.srcLang ?? info?.srcLang ?? "en";
   const tgtLang: Lang = hello?.langs[0] ?? info?.langs[0] ?? "fr";
-  const degraded = stats?.pipeline.degraded && stats.pipeline.degraded !== "none" ? stats.pipeline.degraded : undefined;
-  const lecturerUrl = `/lecturer${token ? `?token=${encodeURIComponent(token)}` : ""}`;
+  const reportsToday = overview ? Object.values(overview.today.reports).reduce((a, b) => a + (b ?? 0), 0) : reports.length;
+  const voiceName = (id: string) => conf?.settings.voices.find((v) => v.id === id)?.name;
 
-  return (
+  const unauthorized = !token || adminError === "jeton de session invalide" || wsError?.code === "unauthorized";
+  const banners = (
     <>
-      <Header
-        conn={conn}
-        session={hello?.sessionId ?? info?.sessionId}
-        uptimeS={stats?.uptimeS ?? health?.uptimeS}
-        lecturer={health?.lecturer}
-        listeners={stats?.listeners ?? health?.listeners ?? 0}
-        byLang={stats?.byLang}
-        lecturerUrl={lecturerUrl}
-        joinUrl={info?.joinUrl}
-      />
-      <main className="flex-1 w-full max-w-[1780px] mx-auto p-4 md:p-6 lg:p-7 flex flex-col gap-5">
-        {(err || degraded || info?.certWarning) && (
-          <div className="flex flex-col gap-2">
-            {err && (
-              <div className="bg-error-container text-on-error-container border border-error/30 rounded-xl px-4 py-3 text-sm flex items-start justify-between gap-3" role="alert">
-                <span>{err}</span>
-                <button type="button" onClick={() => setErr(undefined)} className="text-on-error-container/80 hover:text-on-error-container text-xs font-bold shrink-0">
-                  fermer
-                </button>
-              </div>
-            )}
-            {degraded && (
-              <div className="bg-error-container text-on-error-container border border-error/30 rounded-xl px-4 py-3 text-sm" role="alert">
-                Mode dégradé : {degraded}. Le formateur en est informé ; les apprenants seulement si la voix manque.
-              </div>
-            )}
-            {info?.certWarning && (
-              <div className="bg-tertiary-container text-on-tertiary-container border border-tertiary/30 rounded-xl px-4 py-3 text-sm" role="alert">
-                {info.certWarning}
-              </div>
-            )}
-          </div>
-        )}
-
-        <Kpis stats={stats} history={history} />
-
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 w-full items-start">
-          <div className="lg:col-span-3 flex flex-col gap-4">
-            <Join info={info} error={infoError} />
-            <Checklist info={info} health={health} stats={stats} serverReachable={!!info || !!health} />
-          </div>
-          <div className="lg:col-span-6 flex flex-col gap-4">
-            <Segments lines={lines} partial={partial} srcLang={srcLang} tgtLang={tgtLang} clockOffset={clockOffset.current} />
-          </div>
-          <div className="lg:col-span-3 flex flex-col gap-4">
-            <Pipeline stats={stats} health={health} info={info} />
-            <Questions questions={questions} asking={floor.state === "question"} now={now} />
-            <Reports reports={reports} now={now} />
-          </div>
-        </div>
-
-        <Journal entries={journal} onClear={() => setJournal([])} />
-      </main>
+      {unauthorized && (
+        <Banner tone="crit" icon="key_off">
+          {token ? "Jeton de session refusé." : "Lien incomplet : il manque le jeton de session."} Ouvrez l'administration avec l'adresse complète{" "}
+          <span className="font-metric-mono-sm">/dashboard?token=…</span> — le jeton est la valeur de <span className="font-metric-mono-sm">SESSION_TOKEN</span> dans le .env du serveur.
+        </Banner>
+      )}
+      {!unauthorized && adminError && conn === "open" && (
+        <Banner tone="warn" icon="cloud_off" action={<Action icon="refresh" title="Réessayer" onClick={() => void (loadConf(), loadOverview())} />}>
+          API d'administration indisponible : {adminError}
+        </Banner>
+      )}
+      {wsError && wsError.code !== "unauthorized" && (
+        <Banner tone="warn" icon="error" action={<Action icon="close" title="Fermer" onClick={() => setWsError(undefined)} />}>
+          {wsError.msg}
+        </Banner>
+      )}
     </>
   );
+
+  const scrollTo = (id: string) => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  const actions =
+    route === "voix" ? (
+      <Action tone="primary" icon="add" onClick={() => setAdding(true)} disabled={!conf?.options.voicesEnabled} title={conf && !conf.options.voicesEnabled ? "ElevenLabs n'est pas configuré" : undefined}>
+        Ajouter une voix
+      </Action>
+    ) : route === "configuration" ? (
+      <>
+        <Action icon="translate" onClick={() => scrollTo("traduction")}>
+          Traduction
+        </Action>
+        <Action icon="mic" onClick={() => scrollTo("parole")}>
+          Parole
+        </Action>
+        <Action icon="record_voice_over" onClick={() => scrollTo("voix")}>
+          Voix
+        </Action>
+      </>
+    ) : route === "seance" ? (
+      <Action icon="cast" href="/screen" external>
+        Écran de salle
+      </Action>
+    ) : undefined;
+
+  return (
+    <Shell
+      route={route}
+      conn={conn}
+      session={hello?.sessionId ?? info?.sessionId}
+      uptimeS={stats?.uptimeS ?? health?.uptimeS}
+      alerts={{ crit: alerts.filter((a) => a.severity === "crit").length, warn: alerts.filter((a) => a.severity === "warn").length }}
+      reports={reportsToday}
+      configDirty={dirty.size > 0}
+      token={token}
+      joinUrl={info?.joinUrl}
+      actions={actions}
+    >
+      {banners}
+      {route === "" && <Overview sig={sig} stages={stages} flowing={flowing} alerts={alerts} />}
+      {route === "supervision" && (
+        <Supervision sig={sig} stages={stages} flowing={flowing} alerts={alerts} history={history} lines={lines} partial={partial} srcLang={srcLang} tgtLang={tgtLang} clockOffset={clockOffset.current} />
+      )}
+      {route === "qualite" && <Quality sig={sig} voiceName={voiceName} />}
+      {route === "voix" && <Voices api={api} conf={conf} overview={overview} onSettings={applyServerSettings} adding={adding} setAdding={setAdding} />}
+      {route === "configuration" && (
+        <Configuration
+          conf={conf}
+          value={draft?.value ?? conf?.settings}
+          dirty={dirty}
+          micDb={stats?.micDb ?? null}
+          onChange={changeDraft}
+          onSave={saveDraft}
+          onDiscard={() => setDraft(undefined)}
+          onReset={resetSettings}
+        />
+      )}
+      {route === "seance" && <Session sig={sig} infoError={infoError} floor={floor} questions={questions} journal={journal} onClearJournal={() => setJournal([])} />}
+    </Shell>
+  );
 }
+

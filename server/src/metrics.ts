@@ -15,16 +15,20 @@ function percentile(values: number[], p: number): number | null {
   return Math.round(sorted[idx]);
 }
 
-/** Seuil de « parole » : en dessous, on considère que le micro reçoit du silence. */
-export const SPEECH_DB = -35;
+export type StageName = "commit" | "mt" | "tts";
 
 export class Metrics {
   private stream?: WriteStream;
   private e2e: { t: number; ms: number }[] = [];
+  private stages: Record<StageName, { t: number; ms: number }[]> = { commit: [], mt: [], tts: [] };
+  /** Seuil de « parole » (dBFS) : en dessous, le micro reçoit du silence. Réglable dans l'administration. */
+  speechDb = -35;
   private queues = new Map<string, { t: number; ms: number }>();
   private mic: { t: number; db: number }[] = [];
   private lastSpeechAt: number | null = null;
   readonly startedAt = Date.now();
+  /** Démarrage du micro en cours : le silence se compte à partir de là, pas du lancement du serveur. */
+  private micStartedAt = this.startedAt;
 
   constructor(file?: string) {
     if (file) this.stream = createWriteStream(file, { flags: "a" });
@@ -64,12 +68,18 @@ export class Metrics {
     const now = Date.now();
     this.mic.push({ t: now, db });
     if (this.mic.length > 40) this.mic.shift();
-    if (db > SPEECH_DB) this.lastSpeechAt = now;
+    if (db > this.speechDb) this.lastSpeechAt = now;
+  }
+
+  /** Durée d'un étage pour un segment (reconnaissance jusqu'au commit, traduction, synthèse). */
+  stage(name: StageName, ms: number): void {
+    this.stages[name].push({ t: Date.now(), ms });
   }
 
   micReset(): void {
     this.mic = [];
     this.lastSpeechAt = null;
+    this.micStartedAt = Date.now();
   }
 
   snapshot() {
@@ -79,13 +89,22 @@ export class Metrics {
     const e2e = this.e2e.map((s) => s.ms);
     const queues = [...this.queues.values()].filter((q) => q.t >= cutoff).map((q) => q.ms);
     const recent = this.mic.filter((m) => m.t >= now - 2000);
+    const stage = (name: StageName) => {
+      this.stages[name] = this.stages[name].filter((s) => s.t >= cutoff);
+      return percentile(
+        this.stages[name].map((s) => s.ms),
+        50,
+      );
+    };
     return {
       e2eP50: percentile(e2e, 50),
       e2eP95: percentile(e2e, 95),
+      e2eMean: e2e.length ? Math.round(e2e.reduce((a, b) => a + b, 0) / e2e.length) : null,
+      stages: { commitP50: stage("commit"), mtP50: stage("mt"), ttsP50: stage("tts") },
       queueP50Ms: percentile(queues, 50),
       queueMaxMs: queues.length ? Math.round(Math.max(...queues)) : null,
       micDb: recent.length ? Math.round(Math.max(...recent.map((m) => m.db))) : null,
-      micSilentS: recent.length ? Math.round((now - (this.lastSpeechAt ?? this.startedAt)) / 1000) : null,
+      micSilentS: recent.length ? Math.round((now - (this.lastSpeechAt ?? this.micStartedAt)) / 1000) : null,
       uptimeS: Math.round((now - this.startedAt) / 1000),
     };
   }

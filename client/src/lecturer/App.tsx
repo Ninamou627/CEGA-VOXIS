@@ -7,13 +7,13 @@
  * divergent, le problème est réseau ; si les deux sont bas, c'est le micro.
  */
 import { useEffect, useRef, useState } from "react";
-import type { AudioHeader, FloorState, Lang, ServerEvent, StatsPayload } from "../../../shared/protocol";
+import type { AudioHeader, ClientSettings, FloorState, Lang, ServerEvent, StatsPayload } from "../../../shared/protocol";
 import { listMics, startMic, type MicHandle } from "../lib/mic";
 import { WebAudioPlayer } from "../lib/player";
 import { SalleSocket, type ConnState } from "../lib/ws";
 import { Header } from "./Header";
 import type { Line, QuestionItem, ReportItem } from "./types";
-import { AudioPanel, SPEECH_DB } from "./views/AudioPanel";
+import { AudioPanel } from "./views/AudioPanel";
 import { Join } from "./views/Join";
 import { Questions } from "./views/Questions";
 import { Reports } from "./views/Reports";
@@ -54,6 +54,8 @@ export function App() {
   const [sampleRate, setSampleRate] = useState<number>();
   const [now, setNow] = useState(Date.now());
   const [stopArmed, setStopArmed] = useState(false);
+  /** Réglages de l'administration : gain du micro, seuil de parole, alerte de silence. */
+  const [roomSettings, setRoomSettings] = useState<ClientSettings>({ listenerVolume: 100, inputGainDb: 0, speechThresholdDb: -35, silenceAlertS: 20 });
   /** Question en cours de lecture dans le casque, pour la barre de progression de sa carte. */
   const [playingQ, setPlayingQ] = useState<{ n: number; startedAt: number; durMs: number }>();
 
@@ -68,6 +70,7 @@ export function App() {
   const reportSeq = useRef(0);
   const questionsRef = useRef<QuestionItem[]>([]);
   const mutedRef = useRef(false);
+  const gainRef = useRef(0);
   const stopTimer = useRef<number>(undefined);
   const playingTimer = useRef<number>(undefined);
 
@@ -115,6 +118,7 @@ export function App() {
     );
     mic.current = m;
     m.setMuted(mutedRef.current);
+    m.setGainDb(gainRef.current);
     setMicLabel(m.label);
     setSampleRate(m.sampleRate);
     setDeviceId(m.deviceId);
@@ -206,6 +210,7 @@ export function App() {
         clockOffset.current = e.tServer - Date.now();
         setHello(e);
         setFloor(e.floor);
+        applySettings(e.settings);
         setDegraded(e.pipeline.degraded === "none" ? undefined : e.pipeline.degraded);
         break;
       case "src.partial":
@@ -231,6 +236,9 @@ export function App() {
         break;
       case "stats":
         setStats(e.stats);
+        break;
+      case "settings":
+        applySettings(e.settings);
         break;
       case "degraded":
         setDegraded(e.mode === "none" ? undefined : `${e.mode} — ${e.reason}`);
@@ -265,6 +273,13 @@ export function App() {
     void p.enqueue(q.audio.bytes, q.audio.mime, { seq: q.n, tOrigin: Date.now(), durMs: q.audio.durMs, text: q.text, lang: q.lang, replay: true });
   }
 
+  /** L'administration a changé un réglage : le gain s'applique au micro ouvert, sans le rouvrir. */
+  function applySettings(s: ClientSettings) {
+    gainRef.current = s.inputGainDb;
+    mic.current?.setGainDb(s.inputGainDb);
+    setRoomSettings(s);
+  }
+
   function upsert(seq: number, patch: Partial<Line>) {
     setLines((prev) => {
       const i = prev.findIndex((l) => l.seq === seq);
@@ -278,7 +293,7 @@ export function App() {
   const serverDb = stats?.micDb ?? null;
   const silentS = stats?.micSilentS ?? null;
   // 20 s sans parole : au-delà d'une pause normale de formateur, en deçà du doute.
-  const serverSilent = running && !muted && serverDb != null && serverDb < SPEECH_DB && (silentS ?? 0) >= 20;
+  const serverSilent = running && !muted && serverDb != null && serverDb < roomSettings.speechThresholdDb && (silentS ?? 0) >= roomSettings.silenceAlertS;
   const srcLang: Lang = hello?.srcLang ?? "en";
   const tgtLang: Lang = hello?.langs[0] ?? "fr";
   const asking = floor.state === "question";
@@ -331,6 +346,8 @@ export function App() {
               aec={aec}
               onAec={changeAec}
               level={level}
+              speechDb={roomSettings.speechThresholdDb}
+              gainDb={roomSettings.inputGainDb}
               serverDb={serverDb}
               sampleRate={sampleRate}
               muted={muted}

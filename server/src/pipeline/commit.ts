@@ -74,9 +74,14 @@ export class CommitGate {
   private firstSeen: number[] = [];
 
   constructor(
-    private readonly cfg: CommitConfig = DEFAULT_COMMIT,
+    private cfg: CommitConfig = DEFAULT_COMMIT,
     private readonly now: () => number = () => Date.now(),
   ) {}
+
+  /** Nouveaux seuils de segmentation, pris en compte dès le prochain mot. */
+  configure(cfg: Partial<CommitConfig>): void {
+    this.cfg = { ...this.cfg, ...cfg };
+  }
 
   get pendingText(): string {
     return joinWords(this.buf);

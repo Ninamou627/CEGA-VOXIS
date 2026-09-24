@@ -14,10 +14,19 @@ import type { Lang } from "../../../../shared/protocol";
 import { mp3DurationMs } from "../../util/mp3";
 import type { TtsProvider, TtsRequest, TtsResult } from "../types";
 
+/** Réglages de l'administration, relus à chaque segment. */
+export interface ElevenLabsTuning {
+  /** Voix par défaut par langue ; l'emporte sur celles du .env. */
+  defaults: Partial<Record<Lang, string>>;
+  stability: number;
+  style: number;
+}
+
 export interface ElevenLabsOptions {
   apiKey: string;
   /** Voix par défaut (langue cible principale). */
   voiceId: string;
+  tuning?: () => ElevenLabsTuning;
   /** Voix par langue, ex. { en: "…" } pour les questions vers le formateur. */
   voiceByLang?: Partial<Record<Lang, string>>;
   model?: string;
@@ -41,16 +50,21 @@ export class ElevenLabsTts implements TtsProvider {
   }
 
   async synthesize(req: TtsRequest): Promise<TtsResult> {
-    const voice = this.opts.voiceByLang?.[req.lang] ?? this.opts.voiceId;
-    const prev = req.continuation ? this.last.get(req.lang) : undefined;
+    const t = this.opts.tuning?.();
+    // `||` et non `??` : un identifiant vide ne doit jamais partir dans l'URL.
+    const voice = req.voice || t?.defaults[req.lang] || this.opts.voiceByLang?.[req.lang] || this.opts.voiceId;
+    // Une écoute d'essai (voix imposée) ne doit ni profiter ni perturber la continuité de la séance.
+    const trial = Boolean(req.voice);
+    const prev = req.continuation && !trial ? this.last.get(req.lang) : undefined;
 
     const body: Record<string, unknown> = {
       text: req.text,
       model_id: this.model,
       language_code: req.lang,
       voice_settings: {
-        stability: 0.5,
+        stability: t?.stability ?? 0.5,
         similarity_boost: 0.75,
+        style: t?.style ?? 0,
         // Levier de rattrapage de la dérive. ElevenLabs accepte 0,7 → 1,2.
         speed: Math.min(1.2, Math.max(0.7, req.speed ?? 1)),
       },
@@ -70,13 +84,15 @@ export class ElevenLabsTts implements TtsProvider {
     if (!res.ok) throw new Error(`ElevenLabs ${res.status} : ${(await res.text()).slice(0, 300)}`);
 
     const audio = new Uint8Array(await res.arrayBuffer());
-    const requestId = res.headers.get("request-id");
-    const entry = this.last.get(req.lang) ?? { text: "", ids: [] };
-    entry.text = req.text;
-    if (requestId) entry.ids = [...entry.ids, requestId].slice(-3);
-    this.last.set(req.lang, entry);
+    if (!trial) {
+      const requestId = res.headers.get("request-id");
+      const entry = this.last.get(req.lang) ?? { text: "", ids: [] };
+      entry.text = req.text;
+      if (requestId) entry.ids = [...entry.ids, requestId].slice(-3);
+      this.last.set(req.lang, entry);
+    }
 
-    return { audio, mime: "audio/mpeg", durMs: mp3DurationMs(audio) };
+    return { audio, mime: "audio/mpeg", durMs: mp3DurationMs(audio), voice };
   }
 
   /** À appeler à une vraie fin de tour (question, longue pause) : repart sur une intonation neutre. */

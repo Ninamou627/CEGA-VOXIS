@@ -51,7 +51,7 @@ latence — est donc exercé pour de vrai, sans dépenser un centime.
 | Signalement de qualité en deux gestes, contexte joint par le serveur (D14) | `views/ReportSheet.tsx`, `server/src/ws/handlers.ts` | ✅ |
 | Design system des interfaces (tokens Tailwind clair/sombre, polices et icônes embarquées) | `client/tailwind.config.ts`, `client/src/theme.css`, `client/src/ui` | ✅ |
 | Poste formateur (maquette Control Hub : micro et niveaux, onde réelle, pipeline, flux bilingue, questions, muet à l'Espace) | `client/src/lecturer` | ✅ |
-| Tableau de bord (QR, checklist d'avant-séance, latence et dérive sur 10 min, pipeline et santé du serveur, flux, questions, journal) | `client/src/dashboard` | ✅ |
+| Administration : vue d'ensemble (5 indicateurs), supervision en temps réel, qualité (4 piliers mesurés), gestion des voix ElevenLabs, configuration globale appliquée à chaud, séance (QR, checklist, questions, journal) — D15 | `client/src/dashboard`, `server/src/admin.ts`, `server/src/settings.ts`, `server/src/totals.ts` | ✅ |
 | Écran de salle pour le projecteur (QR en grand avant la séance, sous-titres géants, questions en bandeau, réglages à la souris et au clavier) | `client/src/screen` | ✅ |
 | Rejeu d'une fixture WAV dans le pipeline | `server/scripts/replay.ts` | ✅ |
 
@@ -91,6 +91,29 @@ Les signalements des apprenants arrivent chez le formateur et au tableau de bord
 sont écrits dans `metrics.jsonl` avec l'heure, la phrase, sa transcription, sa
 traduction et le décalage mesuré — c'est ce qu'on relit pour régler la segmentation,
 enrichir le glossaire ou changer de voix (D14).
+
+## L'administration
+
+`/dashboard?token=…` (le jeton est `SESSION_TOKEN` du `.env`) ouvre six pages derrière un
+menu latéral, sans cartes : des bandeaux de chiffres, des lignes, des filets.
+
+| Page | Ce qu'on y fait |
+|---|---|
+| Vue d'ensemble | Apprenants connectés, temps de traduction, latence moyenne, disponibilité, alertes ; la chaîne micro → audio → reconnaissance → traduction → voix ; les alertes ; les quatre piliers |
+| Supervision | Chaque étage avec son moteur et son temps médian, les derniers incidents, 10 min de latence et de dérive, la santé du serveur, le flux en direct |
+| Qualité | Rapidité, transcription, traduction, voix — aujourd'hui ou depuis le début, sur 14 jours ; les signalements par cause et un par un ; la définition de chaque chiffre |
+| Voix | Voix par défaut de chaque langue, voix de la salle avec leur naturalité perçue, ajout depuis le compte ElevenLabs (liste ou identifiant), écoute, secours Azure |
+| Configuration | Traduction (moteurs, modèle, effort ou température, délai, continuité, contexte, glossaire), parole (gain, seuil, silence, fin de phrase, segmentation, vocabulaire), voix (défauts, vitesse, ton, style, volume) |
+| Séance | QR et adresses, checklist d'avant-séance, questions, journal |
+
+Les réglages enregistrés vont dans `data/settings.json` et remplacent ceux du `.env`
+(les clés, elles, ne quittent jamais le `.env`). Presque tout s'applique au segment
+suivant ; la fin de phrase, le vocabulaire et la description de séance attendent le
+prochain démarrage du micro — chaque champ le dit. Les compteurs de long terme
+(temps traduit, disponibilité, qualité, signalements par voix) sont dans
+`data/totals.json`. Aucun chiffre n'est inventé : la page Qualité dit comment chacun est
+mesuré. Deux écoutes de voix : l'échantillon ElevenLabs est gratuit, l'« essai en
+situation » synthétise une phrase et décompte une centaine de caractères du compte.
 
 ## Les deux choses à faire avant de mettre un téléphone dans la salle
 

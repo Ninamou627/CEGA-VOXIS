@@ -15,6 +15,7 @@ interface DgWord {
   punctuated_word?: string;
   start: number;
   end: number;
+  confidence?: number;
 }
 
 export class DeepgramStt implements SttProvider {
@@ -55,7 +56,7 @@ export class DeepgramStt implements SttProvider {
     }, 5000);
 
     const toWords = (ws: DgWord[] | undefined): Word[] =>
-      (ws ?? []).map((w) => ({ text: w.punctuated_word ?? w.word, startMs: Math.round(w.start * 1000), endMs: Math.round(w.end * 1000) }));
+      (ws ?? []).map((w) => ({ text: w.punctuated_word ?? w.word, startMs: Math.round(w.start * 1000), endMs: Math.round(w.end * 1000), confidence: w.confidence }));
 
     ws.on("message", (raw) => {
       let m: any;

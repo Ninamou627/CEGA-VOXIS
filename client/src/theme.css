@@ -155,6 +155,25 @@
     opacity: 1;
   }
 }
+/* Panneau latéral de l'administration (ajout d'une voix). */
+@keyframes drawer-in {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: none;
+  }
+}
+
+/* Administration : le flux qui avance d'un étage à l'autre quand la parole passe. */
+@keyframes flow-dash {
+  from {
+    background-position: 0 0;
+  }
+  to {
+    background-position: 24px 0;
+  }
+}
 
 /* Bascule de thème en fondu : la classe ne vit que le temps de la transition (voir src/ui/theme.ts). */
 .theme-fade,
@@ -171,11 +190,19 @@
 }
 
 @layer components {
+  .flow-dash {
+    background-image: linear-gradient(90deg, currentColor 50%, transparent 50%);
+    background-size: 12px 2px;
+    animation: flow-dash 0.9s linear infinite;
+  }
   .sheet-up {
     animation: sheet-up 0.28s cubic-bezier(0.2, 0.8, 0.2, 1) both;
   }
   .sheet-fade {
     animation: sheet-fade 0.2s ease-out both;
+  }
+  .drawer-in {
+    animation: drawer-in 0.28s cubic-bezier(0.2, 0.8, 0.2, 1) both;
   }
   .rise-in {
     animation: rise-in 0.35s cubic-bezier(0.2, 0.8, 0.2, 1) both;

@@ -1,4 +1,6 @@
+import type { MtEngineInfo } from "../../../shared/admin";
 import type { Config } from "../config";
+import { parseGlossary, parseKeyterms, type MtEngine, type Settings } from "../settings";
 import type { MtProvider, MtRequest, Providers, TtsProvider, TtsRequest, TtsResult } from "./types";
 import { Breaker } from "./fallback";
 import { MockStt } from "./stt/mock";
@@ -19,18 +21,19 @@ export interface FallbackHooks {
 }
 
 export class FallbackTts implements TtsProvider {
-  readonly name: string;
   private breaker: Breaker;
   constructor(
     private primary: TtsProvider,
     private backup: TtsProvider,
     hooks: FallbackHooks,
   ) {
-    this.name = `${primary.name}→${backup.name}`;
     this.breaker = new Breaker(
       (e) => hooks.onFallback("tts", e),
       () => hooks.onRecover("tts"),
     );
+  }
+  get name(): string {
+    return `${this.primary.name}→${this.backup.name}`;
   }
   synthesize(req: TtsRequest): Promise<TtsResult> {
     return this.breaker.call(
@@ -41,18 +44,19 @@ export class FallbackTts implements TtsProvider {
 }
 
 export class FallbackMt implements MtProvider {
-  readonly name: string;
   private breaker: Breaker;
   constructor(
     private primary: MtProvider,
     private backup: MtProvider,
     hooks: FallbackHooks,
   ) {
-    this.name = `${primary.name}→${backup.name}`;
     this.breaker = new Breaker(
       (e) => hooks.onFallback("mt", e),
       () => hooks.onRecover("mt"),
     );
+  }
+  get name(): string {
+    return `${this.primary.name}→${this.backup.name}`;
   }
   translate(req: MtRequest): Promise<string> {
     return this.breaker.call(
@@ -62,18 +66,42 @@ export class FallbackMt implements MtProvider {
   }
 }
 
-function makeMt(kind: Config["MT_PROVIDER"], cfg: Config): MtProvider {
-  switch (kind) {
-    case "anthropic":
-      return new AnthropicMt({ apiKey: cfg.ANTHROPIC_API_KEY, model: cfg.MT_MODEL });
-    case "deepl":
-      return new DeepLMt({ apiKey: cfg.DEEPL_API_KEY ?? "" });
-    default:
-      return new MockMt();
+/**
+ * Traduction à moteurs interchangeables à chaud. Tous les moteurs configurés sont
+ * construits au démarrage ; choisir un autre primaire ou secours dans l'administration
+ * reconstruit seulement la chaîne. Le glossaire et le contexte de séance sont relus à
+ * chaque segment.
+ */
+export class SwitchableMt implements MtProvider {
+  private chain!: MtProvider;
+
+  constructor(
+    private readonly engines: Partial<Record<MtEngine, MtProvider>>,
+    private readonly hooks: FallbackHooks,
+    private readonly settings: () => Settings,
+  ) {
+    this.rebuild();
+  }
+
+  get name(): string {
+    return this.chain.name;
+  }
+
+  /** À appeler quand le primaire ou le secours change. */
+  rebuild(): void {
+    const t = this.settings().translation;
+    const primary = this.engines[t.primary] ?? this.engines.mock!;
+    const backup = t.secondary !== "none" && t.secondary !== t.primary ? this.engines[t.secondary] : undefined;
+    this.chain = backup ? new FallbackMt(primary, backup, this.hooks) : primary;
+  }
+
+  translate(req: MtRequest): Promise<string> {
+    const t = this.settings().translation;
+    return this.chain.translate({ ...req, glossary: parseGlossary(t.glossary), domain: t.domain.trim() || undefined });
   }
 }
 
-function makeTts(kind: Config["TTS_PROVIDER"], cfg: Config): TtsProvider {
+function makeTts(kind: Config["TTS_PROVIDER"], cfg: Config, settings: () => Settings): TtsProvider {
   switch (kind) {
     case "elevenlabs":
       return new ElevenLabsTts({
@@ -81,6 +109,10 @@ function makeTts(kind: Config["TTS_PROVIDER"], cfg: Config): TtsProvider {
         voiceId: cfg.ELEVENLABS_VOICE_ID ?? "",
         voiceByLang: cfg.ELEVENLABS_VOICE_ID_EN ? { en: cfg.ELEVENLABS_VOICE_ID_EN } : undefined,
         model: cfg.ELEVENLABS_MODEL,
+        tuning: () => {
+          const v = settings().voice;
+          return { defaults: v.defaults, stability: v.stability, style: v.style };
+        },
       });
     case "azure":
       return new AzureTts({
@@ -99,18 +131,25 @@ const defaultHooks: FallbackHooks = {
   onRecover: (stage) => console.info(`[${stage}] primaire rétabli`),
 };
 
-export function makeProviders(cfg: Config, hooks: FallbackHooks = defaultHooks): Providers {
+export interface RoomProviders extends Providers {
+  mt: SwitchableMt;
+  /** Moteurs de traduction proposés à l'administration. */
+  mtEngines: MtEngineInfo[];
+  /** Instance ElevenLabs (primaire ou secours) pour les écoutes d'essai, si configurée. */
+  elevenlabs?: ElevenLabsTts;
+}
+
+export function makeProviders(cfg: Config, settings: () => Settings, hooks: FallbackHooks = defaultHooks): RoomProviders {
+  const speech = () => settings().speech;
   const stt =
     cfg.STT_PROVIDER === "assemblyai"
       ? new AssemblyAiStt({
           apiKey: cfg.ASSEMBLYAI_API_KEY ?? "",
           model: cfg.ASSEMBLYAI_MODEL,
           region: cfg.ASSEMBLYAI_REGION,
-          mode: cfg.ASSEMBLYAI_MODE,
-          prompt: cfg.STT_PROMPT,
-          keyterms: cfg.STT_KEYTERMS,
           voiceFocus: cfg.ASSEMBLYAI_VOICE_FOCUS === "none" ? undefined : cfg.ASSEMBLYAI_VOICE_FOCUS,
           languageGate: cfg.ASSEMBLYAI_LANGUAGE_GATE,
+          live: () => ({ mode: speech().endpointing, keyterms: parseKeyterms(speech().keyterms), prompt: speech().prompt.trim() || undefined }),
         })
       : cfg.STT_PROVIDER === "deepgram"
         ? new DeepgramStt({ apiKey: cfg.DEEPGRAM_API_KEY ?? "" })
@@ -118,28 +157,52 @@ export function makeProviders(cfg: Config, hooks: FallbackHooks = defaultHooks):
 
   // Un primaire mal configuré doit faire échouer le démarrage ; un secours mal
   // configuré ne doit pas empêcher la salle d'ouvrir — il est juste absent, et ça se voit.
-  const tryBackup = <T>(label: string, make: () => T): T | undefined => {
+  const tryBuild = <T>(label: string, make: () => T): T | undefined => {
     try {
       return make();
     } catch (err) {
-      console.warn(`[providers] secours ${label} ignoré : ${(err as Error).message}`);
+      console.warn(`[providers] ${label} ignoré : ${(err as Error).message}`);
       return undefined;
     }
   };
 
-  let mt = makeMt(cfg.MT_PROVIDER, cfg);
-  const mtBackup = cfg.MT_BACKUP;
-  if (mtBackup !== "none" && mtBackup !== cfg.MT_PROVIDER) {
-    const backup = tryBackup(mtBackup, () => makeMt(mtBackup, cfg));
-    if (backup) mt = new FallbackMt(mt, backup, hooks);
+  // ---- traduction : tous les moteurs disponibles, choisis à chaud ----------------
+  const translation = () => settings().translation;
+  const engines: Partial<Record<MtEngine, MtProvider>> = { mock: new MockMt() };
+  // Sans clé dans le .env, le SDK peut encore trouver des identifiants (profil `ant auth`) :
+  // on tente la construction, et c'est la première traduction qui dira si ça répond.
+  engines.anthropic = tryBuild("moteur Claude", () => new AnthropicMt({ apiKey: cfg.ANTHROPIC_API_KEY, tuning: translation }));
+  if (cfg.DEEPL_API_KEY) engines.deepl = tryBuild("moteur DeepL", () => new DeepLMt({ apiKey: cfg.DEEPL_API_KEY!, timeoutMs: () => translation().timeoutMs }));
+  const mtEngines: MtEngineInfo[] = [
+    {
+      id: "anthropic",
+      label: "Claude",
+      available: Boolean(engines.anthropic && (cfg.ANTHROPIC_API_KEY || cfg.MT_PROVIDER === "anthropic" || cfg.MT_BACKUP === "anthropic")),
+      reason: cfg.ANTHROPIC_API_KEY ? undefined : "ANTHROPIC_API_KEY absente du .env",
+    },
+    { id: "deepl", label: "DeepL", available: Boolean(engines.deepl), reason: engines.deepl ? undefined : "DEEPL_API_KEY absente du .env" },
+    { id: "mock", label: "Simulateur", available: true },
+  ];
+  // Le primaire du .env doit fonctionner, sinon la salle n'ouvre pas ; un primaire choisi
+  // plus tard dans l'administration dont la clé a disparu retombe sur le simulateur, et ça se voit.
+  const primary = settings().translation.primary;
+  if (!engines[primary]) {
+    if (primary === cfg.MT_PROVIDER) throw new Error(`moteur de traduction « ${primary} » indisponible (clé manquante ?)`);
+    console.warn(`[providers] moteur de traduction « ${primary} » indisponible : simulateur en attendant`);
   }
+  const mt = new SwitchableMt(engines, hooks, settings);
 
-  let tts = makeTts(cfg.TTS_PROVIDER, cfg);
+  // ---- voix -----------------------------------------------------------------------
+  let tts = makeTts(cfg.TTS_PROVIDER, cfg, settings);
+  let elevenlabs = tts instanceof ElevenLabsTts ? tts : undefined;
   const ttsBackup = cfg.TTS_BACKUP;
   if (ttsBackup !== "none" && ttsBackup !== cfg.TTS_PROVIDER) {
-    const backup = tryBackup(ttsBackup, () => makeTts(ttsBackup, cfg));
-    if (backup) tts = new FallbackTts(tts, backup, hooks);
+    const backup = tryBuild(`secours ${ttsBackup}`, () => makeTts(ttsBackup, cfg, settings));
+    if (backup) {
+      if (backup instanceof ElevenLabsTts) elevenlabs = backup;
+      tts = new FallbackTts(tts, backup, hooks);
+    }
   }
 
-  return { stt, mt, tts };
+  return { stt, mt, tts, mtEngines, elevenlabs };
 }

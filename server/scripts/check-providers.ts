@@ -10,11 +10,14 @@
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { loadConfig } from "../src/config";
+import { loadConfig, repoPath } from "../src/config";
 import { makeProviders } from "../src/providers";
+import { defaultsFrom, SettingsStore } from "../src/settings";
 
 const cfg = loadConfig();
-const p = makeProviders(cfg, {
+// Mêmes réglages que la salle : ceux enregistrés dans l'administration, sinon ceux du .env.
+const store = new SettingsStore(repoPath(cfg.SETTINGS_FILE), defaultsFrom(cfg));
+const p = makeProviders(cfg, () => store.get(), {
   onFallback: (stage, e) => console.warn(`  ⚠ ${stage.toUpperCase()} primaire en échec, secours utilisé :`, e.message.slice(0, 160)),
   onRecover: (stage) => console.info(`  ↩ ${stage.toUpperCase()} primaire rétabli`),
 });
