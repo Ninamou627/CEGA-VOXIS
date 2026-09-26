@@ -44,7 +44,36 @@ export interface Player {
    * Web Audio, `playbackRate` transposerait la voix.
    */
   setRate(rate: number): void;
+  /**
+   * Haut-parleur ou casque de sortie (`""` = celui du système). Un formateur branche un
+   * casque fermé et laisse la salle sur les haut-parleurs : il doit pouvoir dire où va le
+   * retour. Sans effet là où le navigateur ne sait pas choisir (voir `canChooseOutput`).
+   */
+  setOutputDevice(deviceId: string): Promise<void>;
   destroy(): void;
+}
+
+/**
+ * Tous les navigateurs ne savent pas choisir la sortie (Safari, iOS) : on ne l'impose jamais.
+ * Les deux lecteurs passent par des chemins différents — un élément `<audio>` d'un côté,
+ * le contexte Web Audio de l'autre — et il suffit que l'un des deux sache le faire.
+ */
+export function canChooseOutput(): boolean {
+  const byElement = typeof HTMLMediaElement !== "undefined" && "setSinkId" in HTMLMediaElement.prototype;
+  const byContext = typeof AudioContext !== "undefined" && "setSinkId" in AudioContext.prototype;
+  return byElement || byContext;
+}
+
+type WithSink = { setSinkId(id: string): Promise<void> };
+
+/** Dirige un élément audio vers une sortie ; un échec ne doit jamais couper le son. */
+async function routeTo(el: HTMLMediaElement, deviceId: string): Promise<void> {
+  if (!canChooseOutput()) return;
+  try {
+    await (el as unknown as WithSink).setSinkId(deviceId);
+  } catch (err) {
+    console.warn(`[audio] sortie « ${deviceId || "système"} » refusée : ${(err as Error).message}`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -156,6 +185,17 @@ export class WebAudioPlayer implements Player {
     /* volontairement inerte : voir l'interface */
   }
 
+  /** Web Audio sait choisir sa sortie depuis Chrome 110 ; ailleurs, on laisse le système. */
+  async setOutputDevice(deviceId: string): Promise<void> {
+    const ctx = this.ctx as (AudioContext & Partial<WithSink>) | undefined;
+    if (!ctx?.setSinkId) return;
+    try {
+      await ctx.setSinkId(deviceId);
+    } catch (err) {
+      console.warn(`[audio] sortie « ${deviceId || "système"} » refusée : ${(err as Error).message}`);
+    }
+  }
+
   destroy(): void {
     this.flush();
     void this.ctx?.close();
@@ -197,6 +237,13 @@ export class ElementPlayer implements Player {
   private muted = false;
   private volume = 1;
   private rate = 1;
+  private sinkId = "";
+
+  /** Les deux éléments alternent : la sortie choisie s'applique aux deux. */
+  async setOutputDevice(deviceId: string): Promise<void> {
+    this.sinkId = deviceId;
+    await Promise.all(this.els.map((el) => routeTo(el, deviceId)));
+  }
 
   get queueMs(): number {
     let ms = this.queue.reduce((a, q) => a + q.meta.durMs, 0);

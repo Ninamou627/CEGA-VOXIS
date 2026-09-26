@@ -11,7 +11,19 @@ qu'un navigateur ne sait pas faire.
 | Micro autorisé | à chaque profil, parfois redemandé | accordé d'office, au domaine de la salle |
 | Onglet perdu au milieu d'une séance | possible | la fenêtre est à elle seule |
 | Navigation ailleurs | possible | verrouillée sur la salle |
-| Raccourcis, notifications, sortie audio | limités | natifs (étape 3) |
+| Couper le micro sans revenir à la fenêtre | impossible | `Ctrl+Shift+M`, depuis n'importe où |
+
+Deux des apports de l'étape 3 — le **choix de la sortie audio** et la **notification à
+l'arrivée d'une question** — sont écrits dans le client partagé, pas ici : un formateur sur
+navigateur en profite de la même façon. Seul le raccourci **global** relève de la coquille,
+parce qu'un navigateur ne sait pas l'offrir.
+
+## Le pont vers la page
+
+Un seul objet est exposé, et il ne va que dans un sens : `window.voxis.onShortcut(nom)`.
+La coquille annonce qu'un raccourci a été pressé ; rien ne permet à la page d'agir sur la
+machine. Le client s'y abonne s'il existe (`client/src/lib/desktop.ts`) et fonctionne sans
+lui dans un navigateur.
 
 L'apprenant reste sur le Web : rien à installer pour scanner un QR code.
 
@@ -56,10 +68,10 @@ ne l'envoie pas hors de vue : la position est alors laissée au système.
 
 ## Reste à faire
 
-- **Étape 3** — choix de la sortie audio (à ajouter dans le client partagé, pour que le Web
-  en profite aussi), raccourci de coupure micro, notification à l'arrivée d'une question.
 - **Étape 4** — `CEGA_VOXIS_Setup.exe` par electron-builder, mise à jour automatique, page de
   téléchargement sur le serveur. Penser à inclure `static/` dans les fichiers empaquetés.
+- **Étape 5** — PWA de la page apprenant (manifeste, icônes, service worker *réseau d'abord*
+  pour ne jamais servir une version périmée).
 
 ## Signature du code
 

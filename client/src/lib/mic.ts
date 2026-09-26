@@ -17,9 +17,18 @@ export interface MicHandle {
 
 /** Micros disponibles. Les libellés ne sont visibles qu'après une première autorisation. */
 export async function listMics(): Promise<MediaDeviceInfo[]> {
+  return listDevices("audioinput");
+}
+
+/** Sorties disponibles : casque du formateur, haut-parleurs de la salle, interface USB. */
+export async function listOutputs(): Promise<MediaDeviceInfo[]> {
+  return listDevices("audiooutput");
+}
+
+async function listDevices(kind: MediaDeviceKind): Promise<MediaDeviceInfo[]> {
   if (!navigator.mediaDevices?.enumerateDevices) return [];
   const all = await navigator.mediaDevices.enumerateDevices();
-  return all.filter((d) => d.kind === "audioinput");
+  return all.filter((d) => d.kind === kind);
 }
 
 function rms(pcm: ArrayBuffer): number {

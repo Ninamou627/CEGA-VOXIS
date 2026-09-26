@@ -18,7 +18,8 @@ export function Join(p: JoinProps) {
       </div>
 
       <div className="bg-surface-container-lowest border border-outline-variant/25 rounded-2xl p-5 shadow-xl flex flex-col gap-4">
-        <MicSelect mics={p.mics} deviceId={p.deviceId} onDevice={p.onDevice} aec={p.aec} onAec={p.onAec} />
+        {/* Tous les réglages de périphériques passent d'un bloc : en ajouter un ne touche plus cette vue. */}
+        <MicSelect {...p} />
         <button
           type="button"
           onClick={p.onStart}

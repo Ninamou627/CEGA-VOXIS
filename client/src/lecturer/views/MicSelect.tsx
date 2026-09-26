@@ -1,4 +1,5 @@
-/** Choix du micro et annulation d'écho : à l'entrée, puis en séance dans le panneau audio. */
+/** Choix des périphériques et annulation d'écho : à l'entrée, puis en séance dans le panneau audio. */
+import { canChooseOutput } from "../../lib/player";
 import { Icon } from "../../ui/Icon";
 
 export interface MicSelectProps {
@@ -7,29 +8,53 @@ export interface MicSelectProps {
   onDevice: (id: string) => void;
   aec: boolean;
   onAec: (on: boolean) => void;
+  /** Sorties audio. Absentes là où le navigateur ne sait pas en choisir (Safari, iOS). */
+  outputs?: MediaDeviceInfo[];
+  outputId?: string;
+  onOutput?: (id: string) => void;
+}
+
+/** Un `<select>` de périphérique : même habillage pour l'entrée et la sortie. */
+function DeviceSelect(p: { label: string; value: string; onChange: (id: string) => void; devices: MediaDeviceInfo[]; fallback: string }) {
+  return (
+    <label className="flex flex-col gap-1">
+      <span className="text-[11px] text-on-surface-variant font-medium">{p.label}</span>
+      <div className="relative">
+        <select
+          value={p.value}
+          onChange={(e) => p.onChange(e.target.value)}
+          className="w-full appearance-none bg-surface-container border border-outline-variant/30 rounded-xl pl-3 pr-9 py-2 text-xs text-on-surface focus:outline-none focus:border-secondary/60"
+        >
+          <option value="">Par défaut du système</option>
+          {p.devices.map((d, i) => (
+            <option key={d.deviceId || i} value={d.deviceId}>
+              {d.label || `${p.fallback} ${i + 1} (autorisez le micro pour voir le nom)`}
+            </option>
+          ))}
+        </select>
+        <Icon name="expand_more" className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[18px] text-on-surface-variant pointer-events-none" />
+      </div>
+    </label>
+  );
 }
 
 export function MicSelect(p: MicSelectProps) {
+  // Le choix de la sortie n'apparaît que là où il a un effet — sinon il mentirait.
+  const withOutput = Boolean(p.onOutput) && canChooseOutput();
+
   return (
     <div className="flex flex-col gap-2">
-      <label className="flex flex-col gap-1">
-        <span className="text-[11px] text-on-surface-variant font-medium">Micro</span>
-        <div className="relative">
-          <select
-            value={p.deviceId}
-            onChange={(e) => p.onDevice(e.target.value)}
-            className="w-full appearance-none bg-surface-container border border-outline-variant/30 rounded-xl pl-3 pr-9 py-2 text-xs text-on-surface focus:outline-none focus:border-secondary/60"
-          >
-            <option value="">Par défaut du système</option>
-            {p.mics.map((m, i) => (
-              <option key={m.deviceId || i} value={m.deviceId}>
-                {m.label || `Micro ${i + 1} (autorisez le micro pour voir le nom)`}
-              </option>
-            ))}
-          </select>
-          <Icon name="expand_more" className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[18px] text-on-surface-variant pointer-events-none" />
-        </div>
-      </label>
+      <DeviceSelect label="Micro" value={p.deviceId} onChange={p.onDevice} devices={p.mics} fallback="Micro" />
+
+      {withOutput && (
+        <DeviceSelect
+          label="Sortie (votre casque)"
+          value={p.outputId ?? ""}
+          onChange={p.onOutput!}
+          devices={p.outputs ?? []}
+          fallback="Sortie"
+        />
+      )}
       <div className="grid grid-cols-2 gap-2">
         <button
           type="button"

@@ -8,7 +8,9 @@
  */
 import { useEffect, useRef, useState } from "react";
 import type { AudioHeader, ClientSettings, FloorState, Lang, ServerEvent, StatsPayload } from "../../../shared/protocol";
-import { listMics, startMic, type MicHandle } from "../lib/mic";
+import { desktop } from "../lib/desktop";
+import { listMics, listOutputs, startMic, type MicHandle } from "../lib/mic";
+import { askToNotify, notifyIfUnseen } from "../lib/notify";
 import { WebAudioPlayer } from "../lib/player";
 import { SalleSocket, type ConnState } from "../lib/ws";
 import { Header } from "./Header";
@@ -60,6 +62,9 @@ export function App() {
   const [mics, setMics] = useState<MediaDeviceInfo[]>([]);
   const [deviceId, setDeviceId] = useState<string>(localStorage.getItem("salle.mic") ?? "");
   const [aec, setAec] = useState<boolean>(localStorage.getItem("salle.aec") !== "off");
+  /** Sortie du retour audio : le casque du formateur, pas les haut-parleurs de la salle. */
+  const [outputs, setOutputs] = useState<MediaDeviceInfo[]>([]);
+  const [outputId, setOutputId] = useState<string>(localStorage.getItem("salle.sortie") ?? "");
   const [micLabel, setMicLabel] = useState<string>();
   const [sampleRate, setSampleRate] = useState<number>();
   const [now, setNow] = useState(Date.now());
@@ -96,6 +101,7 @@ export function App() {
 
   useEffect(() => {
     void listMics().then(setMics);
+    void listOutputs().then(setOutputs);
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => {
       clearInterval(id);
@@ -115,6 +121,15 @@ export function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
+  }, [running]);
+
+  // Application de bureau : le même « muet », mais depuis n'importe où — le formateur n'a
+  // pas à revenir sur la fenêtre pour tousser ou répondre à quelqu'un dans la salle.
+  useEffect(() => {
+    if (!running) return;
+    return desktop()?.onShortcut((name) => {
+      if (name === "toggle-mute") toggleMute();
+    });
   }, [running]);
 
   async function openMic(id: string, echoCancellation = aec) {
@@ -139,8 +154,16 @@ export function App() {
     setSampleRate(m.sampleRate);
     setDeviceId(m.deviceId);
     localStorage.setItem("salle.mic", m.deviceId);
-    // Après l'autorisation, les libellés des micros deviennent visibles.
+    // Après l'autorisation, les libellés des périphériques deviennent visibles.
     setMics(await listMics());
+    setOutputs(await listOutputs());
+  }
+
+  /** Dirige le retour audio vers un autre casque, en séance comme avant de commencer. */
+  function changeOutput(id: string) {
+    setOutputId(id);
+    localStorage.setItem("salle.sortie", id);
+    void player.current?.setOutputDevice(id);
   }
 
   async function start() {
@@ -155,6 +178,9 @@ export function App() {
         playingTimer.current = window.setTimeout(() => setPlayingQ(undefined), meta.durMs + 150);
       };
       player.current = p;
+      void p.setOutputDevice(outputId);
+      // Dans le geste de démarrage : c'est le seul moment où un navigateur accepte de demander.
+      void askToNotify();
 
       await openMic(deviceId);
 
@@ -246,6 +272,8 @@ export function App() {
         setQuestions((prev) =>
           [...prev, { n: ++questionSeq.current, who: e.who, srcLang: e.srcLang, srcText: e.srcText, lang: e.lang, text: e.text, at: Date.now(), mode: e.mode }].slice(-30),
         );
+        // Le formateur a pu passer à ses diapositives : on le prévient hors de la page.
+        notifyIfUnseen("Question d'un apprenant", e.srcText || e.text || "Une question vient d'arriver.");
         break;
       case "stats":
         setStats(e.stats);
@@ -381,7 +409,17 @@ export function App() {
         )}
 
         {!running ? (
-          <Join mics={mics} deviceId={deviceId} onDevice={changeDevice} aec={aec} onAec={changeAec} onStart={() => void start()} />
+          <Join
+            mics={mics}
+            deviceId={deviceId}
+            onDevice={changeDevice}
+            aec={aec}
+            onAec={changeAec}
+            outputs={outputs}
+            outputId={outputId}
+            onOutput={changeOutput}
+            onStart={() => void start()}
+          />
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 w-full items-start">
             <AudioPanel
@@ -390,6 +428,9 @@ export function App() {
               onDevice={changeDevice}
               aec={aec}
               onAec={changeAec}
+              outputs={outputs}
+              outputId={outputId}
+              onOutput={changeOutput}
               level={level}
               speechDb={roomSettings.speechThresholdDb}
               gainDb={roomSettings.inputGainDb}

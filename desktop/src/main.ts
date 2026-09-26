@@ -10,7 +10,7 @@
  *
  *   VOXIS_URL=https://localhost:8787 npm run dev -w desktop   (serveur de développement)
  */
-import { app, BrowserWindow, Menu, net, session, shell } from "electron";
+import { app, BrowserWindow, globalShortcut, Menu, net, session, shell } from "electron";
 import path from "node:path";
 import { loadWindowState, trackWindowState } from "./window-state";
 
@@ -135,6 +135,7 @@ function createWindow(): BrowserWindow {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      preload: path.join(__dirname, "preload.js"),
     },
   });
 
@@ -182,6 +183,24 @@ function createWindow(): BrowserWindow {
 function go(win: BrowserWindow, url: string) {
   target = url;
   void win.loadURL(url);
+}
+
+// ---- raccourcis globaux --------------------------------------------------------------
+/**
+ * Couper le micro sans revenir à la fenêtre : un formateur qui tousse, répond à quelqu'un
+ * dans la salle ou cherche un document ne doit pas chercher un bouton. C'est précisément ce
+ * qu'un navigateur ne sait pas faire.
+ */
+const SHORTCUTS: Record<string, string> = { "CommandOrControl+Shift+M": "toggle-mute" };
+
+function registerShortcuts(win: BrowserWindow) {
+  for (const [combo, name] of Object.entries(SHORTCUTS)) {
+    const ok = globalShortcut.register(combo, () => {
+      if (!win.isDestroyed()) win.webContents.send("voxis:shortcut", name);
+    });
+    // Une autre application peut déjà détenir la combinaison : on le dit, sans échouer.
+    if (!ok) console.warn(`[voxis] raccourci « ${combo} » indisponible, déjà pris par une autre application`);
+  }
 }
 
 function buildMenu(win: BrowserWindow) {
@@ -253,12 +272,17 @@ if (!app.requestSingleInstanceLock()) {
 
   void app.whenReady().then(() => {
     configurePermissions();
-    buildMenu(createWindow());
+    const win = createWindow();
+    buildMenu(win);
+    registerShortcuts(win);
 
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) buildMenu(createWindow());
     });
   });
+
+  // Les raccourcis globaux sont détenus par le système : on les rend en partant.
+  app.on("will-quit", () => globalShortcut.unregisterAll());
 
   app.on("window-all-closed", () => app.quit());
 }

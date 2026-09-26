@@ -67,7 +67,7 @@ export function AudioPanel(p: AudioPanelProps) {
           </span>
         </div>
 
-        <MicSelect mics={p.mics} deviceId={p.deviceId} onDevice={p.onDevice} aec={p.aec} onAec={p.onAec} />
+        <MicSelect {...p} />
 
         {/* Niveaux : capté ici, reçu par le serveur */}
         <div className="bg-surface-container-low rounded-xl p-3 border border-outline-variant/20 flex flex-col gap-2">
