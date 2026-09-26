@@ -13,19 +13,24 @@
     "check": "tsx scripts/check-providers.ts",
     "voices": "tsx scripts/voices.ts",
     "load": "tsx scripts/load.ts",
-    "cert:dev": "tsx scripts/dev-cert.ts"
+    "cert:dev": "tsx scripts/dev-cert.ts",
+    "cert:domain": "tsx scripts/domain-cert.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.125.0",
+    "@fastify/cookie": "^11.1.2",
     "@fastify/static": "^8.0.0",
     "@salle/shared": "*",
+    "acme-client": "^5.4.0",
     "dotenv": "^16.4.5",
     "fastify": "^5.0.0",
+    "pg": "^8.23.0",
     "ws": "^8.18.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@types/pg": "^8.23.1",
     "@types/ws": "^8.5.12",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0",

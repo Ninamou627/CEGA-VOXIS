@@ -20,7 +20,11 @@
     "check": "npm run check -w server --",
     "voices": "npm run voices -w server --",
     "load": "npm run load -w server --",
-    "cert:dev": "npm run cert:dev -w server --"
+    "cert:dev": "npm run cert:dev -w server --",
+    "cert:domain": "npm run cert:domain -w server --",
+    "db:up": "docker compose up -d --wait db",
+    "db:down": "docker compose stop db",
+    "db:reset": "docker compose down -v db"
   },
   "devDependencies": {
     "concurrently": "^9.1.0"

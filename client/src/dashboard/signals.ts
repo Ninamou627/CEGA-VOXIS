@@ -153,7 +153,7 @@ export function computeAlerts(sig: Signals): Alert[] {
   const lecturer = Boolean(h?.lecturer);
 
   if (sig.conn !== "open") out.push({ id: "conn", severity: "crit", title: "Liaison perdue avec le serveur de salle", detail: "Les chiffres de cette page ne sont plus à jour ; reconnexion automatique en cours." });
-  if (sig.info?.certWarning) out.push({ id: "cert", severity: "crit", title: "Certificat invalide pour l'adresse du PC", detail: sig.info.certWarning, to: "seance" });
+  if (sig.info?.certWarning) out.push({ id: "cert", severity: "crit", title: "Adresse de la salle refusée aux téléphones", detail: sig.info.certWarning, to: "seance" });
   else if (sig.info && !sig.info.tls) out.push({ id: "http", severity: "warn", title: "Salle en HTTP : pas de micro sur les téléphones", detail: "Les questions parlées exigent HTTPS. Voir docs/CERTIFICAT.md.", to: "seance" });
 
   const mocks = pl ? [pl.stt, pl.mt, pl.tts].filter((n) => n.includes("mock")) : [];

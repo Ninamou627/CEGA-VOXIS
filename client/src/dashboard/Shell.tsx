@@ -8,6 +8,7 @@
  * design en sombre (voir theme.css). Le menu, lui, ne change pas d'une page à l'autre.
  */
 import type { ReactNode } from "react";
+import type { AccountView } from "../lib/auth";
 import type { ConnState } from "../lib/ws";
 import { APP_NAME } from "../ui/brand";
 import { hms } from "../ui/format";
@@ -43,7 +44,9 @@ export interface ShellProps {
   reports: number;
   /** Des réglages attendent d'être enregistrés. */
   configDirty?: boolean;
-  token: string;
+  /** Compte connecté : son nom s'affiche, et « Se déconnecter » ferme sa session. */
+  account: AccountView;
+  onLogout: () => void;
   joinUrl?: string;
   /** Actions à droite de l'en-tête de la page. */
   actions?: ReactNode;
@@ -57,7 +60,8 @@ const LINK_LABEL: Record<ConnState, string> = { open: "En direct", connecting: "
 
 export function Shell(p: ShellProps) {
   const page = PAGES.find((x) => x.route === p.route) ?? PAGES[0];
-  const lecturerUrl = `/lecturer${p.token ? `?token=${encodeURIComponent(p.token)}` : ""}`;
+  // Plus de jeton dans l'adresse : le poste formateur reconnaît la même session (D17).
+  const lecturerUrl = "/lecturer";
   const badge = (route: Route) => {
     if ((route === "" || route === "supervision") && p.alerts.crit + p.alerts.warn > 0) {
       return (
@@ -145,6 +149,21 @@ export function Shell(p: ShellProps) {
           <div className="flex items-center justify-between text-xs text-on-surface-variant">
             <span>Thème</span>
             <ThemeToggle variant="square" />
+          </div>
+          <div className="flex items-center gap-2 text-xs -mx-2 px-2">
+            <Icon name="account_circle" className="text-[17px] text-on-surface-variant" />
+            <span className="font-semibold text-on-surface truncate" title={p.account.username}>
+              {p.account.username}
+            </span>
+            <button
+              type="button"
+              onClick={p.onLogout}
+              title="Se déconnecter"
+              className="ml-auto flex items-center gap-1 px-2 py-1 rounded-md text-on-surface-variant hover:text-on-surface hover:bg-surface-container-low"
+            >
+              <Icon name="logout" className="text-[16px]" />
+              <span>Quitter</span>
+            </button>
           </div>
         </div>
       </aside>

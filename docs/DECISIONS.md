@@ -22,6 +22,9 @@ secours (fournisseur différent, architecture différente).
 
 ## D2 — Serveur local en salle, IA dans le cloud
 
+> **Révisée par D17** : le serveur est hébergé sur Internet. Cette décision reste celle de
+> la boîte de salle (Horizon 2), pour une salle dont on maîtrise le réseau.
+
 **Décision.** Un PC en Ethernet sur une borne Wi-Fi dédiée porte le pipeline et le
 WebSocket. Les appels IA partent vers le cloud, une fois par langue cible.
 
@@ -71,6 +74,10 @@ sur 1 500) — on règle la segmentation avant de changer de moteur.
 Implémentation : `server/src/pipeline/commit.ts`, tests dans `commit.test.ts`.
 
 ## D6 — HTTPS partout, certificat Let's Encrypt en DNS-01
+
+> **Révisée par D17** : un serveur hébergé a une IP publique fixe, donc un enregistrement A
+> qui ne bouge pas et un certificat par challenge HTTP-01. Le DNS-01 et le suivi d'IP
+> (`server/src/domain.ts`) restent la réponse pour la boîte de salle et le développement local.
 
 **Décision.** Un domaine que nous possédons, un enregistrement A public vers l'IP
 privée du PC de salle, un certificat obtenu par challenge DNS-01. Valide hors ligne
@@ -231,6 +238,44 @@ le réglage « moins d'animations » du système de l'appareil les fige (accessi
 redéfinit les jetons Material 3, si bien que les briques existantes suivent sans être
 réécrites ; les couleurs propres au design sont des jetons `--cz-*` qui ont une valeur par
 thème. Les autres pages et les autres interfaces ne changent pas.
+
+## D17 — Serveur hébergé, application de bureau cliente, une seule plateforme
+
+**Décision.** Le serveur est hébergé sur Internet, joignable sur `institutcega.fr`, et sert
+les mêmes pages aux apprenants, au formateur et à l'administration. La version Windows est
+une coque de bureau qui charge ces mêmes pages (Administration et Formateur) : un client de
+plus, pas une seconde plateforme à maintenir. Les apprenants restent sur le Web, par QR code.
+Révise D2 (serveur local en salle) et la partie « IP privée » de D6.
+
+**Pourquoi.** Trois contraintes du terrain, par ordre de poids. (1) On ne peut pas apporter
+sa borne Wi-Fi en salle d'hôtel, et un Wi-Fi d'hôtel isole presque toujours les appareils
+entre eux : un serveur posé dans la salle serait *injoignable* par les téléphones, certificat
+ou pas. (2) Des auditeurs suivent la formation à distance ; un serveur local n'a aucune
+adresse depuis l'extérieur, et on ne gère pas le routeur de l'hôtel. (3) Un navigateur et une
+application de bureau ont besoin du même point de rendez-vous fixe.
+
+Effet de bord favorable : en salle, les apprenants peuvent utiliser leurs propres données
+mobiles (64 kbit/s chacun), ce qui contourne à la fois le portail captif et le débit partagé
+de l'hôtel. En hôtel, c'est plus robuste que l'architecture locale.
+
+**Ce qu'on perd.** Le fan-out local (un appel TTS pour N auditeurs sur le LAN) et
+l'indépendance vis-à-vis de l'Internet du lieu. La liaison critique devient la montée du
+formateur : 256 kbit/s en continu (PCM 16 bits, 16 kHz). Un partage de connexion 4G sur son
+poste sert d'assurance. La latence ajoutée par l'hébergement (10 à 30 ms sur ~1500 ms) n'est
+pas un critère.
+
+**Ce que ça rend obligatoire, avant toute mise en ligne.** Une authentification. Aujourd'hui
+`role: "listener"` ne présente aucun jeton (`ws/handlers.ts`) : exposé sur Internet, quiconque
+connaît l'adresse pourrait écouter la formation, écrire au formateur et à l'écran de salle, et
+*prendre la parole* (`takeFloor`, transcrite puis prononcée au formateur). Il faut des comptes
+pour l'administration et les formateurs — à la place du jeton dans l'URL, qui devient un écran
+de connexion dans l'application de bureau — et un code de séance à durée limitée pour les
+apprenants. C'est ce qui fait entrer une base de données : PostgreSQL plutôt que SQLite, parce
+que l'hébergeur n'est pas tranché et que les disques des hébergements managés sont éphémères.
+
+**Ce qui ferait changer d'avis.** Une salle dont on maîtrise le réseau (notre propre borne,
+aucun auditeur à distance) : la boîte de salle de l'Horizon 2 redevient la meilleure réponse,
+et `server/src/domain.ts` en porte déjà le certificat automatique.
 
 ## Ce que six semaines (au lieu de 48 h) remettent sur la table
 

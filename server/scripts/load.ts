@@ -14,11 +14,15 @@
 import WebSocket from "ws";
 import { decodeFrame } from "../../shared/framing";
 import type { AudioHeader } from "../../shared/protocol";
+import { adminCookie, originOf, roomCode } from "./session";
 
 const N = Number(process.argv[2] ?? 30);
 const SECONDS = Number(process.argv[3] ?? 60);
 const URL = process.argv[4] ?? "ws://localhost:8787/ws";
-const HEALTH = URL.replace(/^ws/, "http").replace(/\/ws$/, "/api/health");
+const ORIGIN = originOf(URL);
+const HEALTH = `${ORIGIN}/api/health`;
+// Les apprenants simulés présentent un vrai code de séance (D17), comme de vrais téléphones.
+const CODE = await roomCode(ORIGIN, await adminCookie(ORIGIN));
 const MAX_QUEUE_MS = 8000;
 
 interface Client {
@@ -55,7 +59,7 @@ function connect(c: Client, attempt = 0) {
   ws.binaryType = "nodebuffer";
   ws.on("open", () => {
     c.connected = true;
-    ws.send(JSON.stringify({ t: "join", role: "listener", lang: "fr", ua: `load-${c.id}` }));
+    ws.send(JSON.stringify({ t: "join", role: "listener", lang: "fr", code: CODE, ua: `load-${c.id}` }));
     if (fullAt === null && clients.every((x) => x.connected)) fullAt = Date.now();
   });
   ws.on("message", (raw, isBinary) => {

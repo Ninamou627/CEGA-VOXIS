@@ -1,18 +1,18 @@
 /**
- * Appels à l'API d'administration. Le jeton de session voyage en en-tête ; une erreur du
+ * Appels à l'API d'administration. Le cookie de session voyage tout seul ; une erreur du
  * serveur remonte avec son message, pour être affichée telle quelle.
  */
 import type { CatalogVoice, OverviewResponse, SaveResponse, SettingsResponse } from "../../../shared/admin";
+import type { CurrentCodeResponse, RoomCodeResponse } from "../../../shared/auth";
 import type { Lang } from "../../../shared/protocol";
 import type { Settings } from "../../../shared/settings";
 
 export class AdminApi {
-  constructor(private readonly token: string) {}
-
+  // Aucun jeton : le cookie de session (D17) voyage tout seul avec chaque requête.
   private async call<T>(path: string, init: RequestInit = {}): Promise<T> {
     const res = await fetch(`/api/admin${path}`, {
       ...init,
-      headers: { "x-salle-token": this.token, ...(init.body ? { "content-type": "application/json" } : {}), ...init.headers },
+      headers: { ...(init.body ? { "content-type": "application/json" } : {}), ...init.headers },
     });
     if (!res.ok) {
       const body = (await res.json().catch(() => ({}))) as { error?: string };
@@ -37,6 +37,16 @@ export class AdminApi {
     return this.call("/overview");
   }
 
+  /** Code de séance courant (D17). `undefined` quand aucun n'est ouvert ou qu'il a expiré. */
+  async code(): Promise<RoomCodeResponse | undefined> {
+    return (await this.call<CurrentCodeResponse>("/code")).current ?? undefined;
+  }
+
+  /** Nouveau code : l'ancien QR code ne vaut plus rien. */
+  rotateCode(hours?: number): Promise<RoomCodeResponse> {
+    return this.call("/code", { method: "POST", body: JSON.stringify(hours ? { hours } : {}) });
+  }
+
   catalog(refresh = false): Promise<{ voices: CatalogVoice[] }> {
     return this.call(`/voices/catalog${refresh ? "?refresh=1" : ""}`);
   }
@@ -53,7 +63,7 @@ export class AdminApi {
   async preview(id: string, lang: Lang): Promise<Blob> {
     const res = await fetch("/api/admin/voices/preview", {
       method: "POST",
-      headers: { "x-salle-token": this.token, "content-type": "application/json" },
+      headers: { "content-type": "application/json" },
       body: JSON.stringify({ id, lang }),
     });
     if (!res.ok) {

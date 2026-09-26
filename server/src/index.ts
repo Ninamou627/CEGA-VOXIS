@@ -1,17 +1,22 @@
 import Fastify from "fastify";
+import fastifyCookie from "@fastify/cookie";
 import fastifyStatic from "@fastify/static";
 import { WebSocketServer } from "ws";
 import http from "node:http";
 import https from "node:https";
 import path from "node:path";
-import { X509Certificate } from "node:crypto";
+import { randomBytes, X509Certificate } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { registerAdmin } from "./admin";
+import { Auth } from "./auth";
+import { registerAuth } from "./auth-api";
 import { loadConfig, repoPath } from "./config";
+import { Db } from "./db";
+import { domainOf, HostingerDns, keepDomain } from "./domain";
 import { Metrics } from "./metrics";
 import { Pipeline } from "./pipeline/pipeline";
-import { lanIp, lanIps } from "./net";
+import { lanIp, lanIps, origin } from "./net";
 import { makeProviders } from "./providers";
 import { Room } from "./room";
 import { clientSettings, commitConfig, defaultsFrom, SettingsStore } from "./settings";
@@ -25,10 +30,16 @@ const cfg = loadConfig();
 // Chemins relatifs à la racine du dépôt (npm lance le serveur depuis server/).
 const fromRoot = (p: string) => (path.isAbsolute(p) ? p : path.resolve(here, "../..", p));
 const tls = cfg.TLS_CERT && cfg.TLS_KEY ? { cert: readFileSync(fromRoot(cfg.TLS_CERT)), key: readFileSync(fromRoot(cfg.TLS_KEY)) } : undefined;
+/** PUBLIC_URL sur un nom de domaine : certificat Let's Encrypt et DNS tenus par domain.ts. */
+const domain = domainOf(cfg.PUBLIC_URL);
+let domainWarning: (() => string | undefined) | undefined;
 
-/** Un certificat auto-signé ne vaut que pour les IP qu'il liste : on prévient si l'IP a changé. */
-function certCoversCurrentIp(): string | undefined {
-  if (!tls || cfg.PUBLIC_URL) return undefined;
+/** Ce qui ferait refuser la connexion aux téléphones : la checklist du tableau de bord le montre. */
+function certWarning(): string | undefined {
+  if (!tls) return undefined;
+  if (domain) return domainWarning?.();
+  // Un certificat auto-signé ne vaut que pour les IP qu'il liste : on prévient si l'IP a changé.
+  if (cfg.PUBLIC_URL) return undefined;
   const ip = lanIp();
   if (!ip) return undefined;
   try {
@@ -45,6 +56,9 @@ function certCoversCurrentIp(): string | undefined {
 let wss: WebSocketServer | undefined;
 const app = Fastify({
   logger: { level: cfg.LOG_LEVEL },
+  // Derrière un reverse proxy : sans cela, req.ip est celle du proxy et le frein sur les
+  // essais de mot de passe s'appliquerait à tout le monde d'un coup.
+  trustProxy: cfg.TRUST_PROXY,
   serverFactory: (handler) => {
     const server = tls ? https.createServer(tls, handler) : http.createServer(handler);
     wss = new WebSocketServer({ server, path: "/ws", maxPayload: 8 * 1024 * 1024 });
@@ -103,12 +117,45 @@ setInterval(() => {
   totals.tick(1000, inSession, inSession && pipeline.sttOpen && degraded !== "text-only" && degraded !== "stt-lost");
 }, 1000).unref();
 
+// ---- authentification (D17) ---------------------------------------------------------
+// Comptes et code de séance vivent en base : ils doivent survivre à un redémarrage, et un
+// hébergement managé n'a pas de disque durable.
+await app.register(fastifyCookie);
+const db = new Db(cfg.DATABASE_URL);
+try {
+  await db.migrate((msg) => app.log.info(msg));
+} catch (err) {
+  app.log.error(
+    `base de données injoignable ou migration en échec : ${(err as Error).message}\n` +
+      `En développement, démarrez-la : npm run db:up — sinon vérifiez DATABASE_URL.`,
+  );
+  process.exit(1);
+}
+const auth = new Auth(db, { sessionHours: cfg.SESSION_HOURS, codeHours: cfg.CODE_HOURS });
+{
+  // Sans mot de passe fourni, on en tire un au hasard et on l'affiche une seule fois :
+  // rien en clair dans la configuration, et de quoi se connecter la première fois.
+  const generated = cfg.ADMIN_PASSWORD ? undefined : randomBytes(9).toString("base64url");
+  if (await auth.seedAdmin(cfg.ADMIN_USER, cfg.ADMIN_PASSWORD ?? generated!)) {
+    app.log.warn(
+      `compte d'administration créé au premier démarrage :\n` +
+        `  identifiant  : ${cfg.ADMIN_USER}\n` +
+        (generated ? `  mot de passe : ${generated}\n  À noter maintenant : il ne sera plus affiché.\n` : `  mot de passe : celui de la configuration.\n`),
+    );
+  }
+}
+// Les sessions de connexion périmées ne servent plus à rien.
+setInterval(() => void auth.purgeExpired().catch(() => {}), 6 * 3_600_000).unref();
+registerAuth(app, { auth, tls: Boolean(tls), log: app.log });
+
 registerAdmin(app, {
   cfg,
   store,
   totals,
   providers,
   catalog: cfg.ELEVENLABS_API_KEY ? new VoiceCatalog(cfg.ELEVENLABS_API_KEY) : undefined,
+  auth,
+  publicUrl,
 });
 
 // ---- client compilé (npm run build) ------------------------------------------------
@@ -127,7 +174,7 @@ if (existsSync(clientDist)) {
 // ---- API ---------------------------------------------------------------------------
 function publicUrl(ip = lanIp()): string {
   if (cfg.PUBLIC_URL) return cfg.PUBLIC_URL.replace(/\/$/, "");
-  return `${tls ? "https" : "http"}://${ip ?? "localhost"}:${cfg.PORT}`;
+  return origin(Boolean(tls), ip ?? "localhost", cfg.PORT);
 }
 
 // ---- santé du processus : CPU depuis le dernier appel, mémoire, retard de la boucle ----
@@ -184,8 +231,7 @@ app.get("/api/session", async () => ({
   srcLang: room.srcLang,
   langs: room.langs,
   providers: { stt: providers.stt.name, mt: providers.mt.name, tts: providers.tts.name },
-  /** Certificat auto-signé qui ne couvre pas l'IP courante : la checklist du tableau de bord le montre. */
-  certWarning: certCoversCurrentIp() ?? null,
+  certWarning: certWarning() ?? null,
   joinUrl: `${publicUrl()}/`,
   /** Toutes les adresses candidates, les vraies interfaces d'abord (PUBLIC_URL les remplace). */
   joinUrls: cfg.PUBLIC_URL
@@ -197,7 +243,7 @@ app.get("/api/session", async () => ({
 // ---- démarrage ----------------------------------------------------------------------
 await app.listen({ port: cfg.PORT, host: cfg.HOST });
 if (!wss) throw new Error("WebSocketServer non initialisé");
-attachWs(wss, { room, pipeline, providers, metrics, config: cfg, log: app.log, settings, totals });
+attachWs(wss, { room, pipeline, providers, metrics, config: cfg, log: app.log, settings, totals, auth });
 
 app.log.info(
   {
@@ -214,8 +260,18 @@ app.log.info(
   },
   "salle ouverte",
 );
-const certWarning = certCoversCurrentIp();
-if (certWarning) app.log.warn(certWarning);
+if (tls && domain) {
+  domainWarning = keepDomain({
+    domain,
+    api: cfg.HOSTINGER_API_TOKEN ? new HostingerDns(cfg.HOSTINGER_API_TOKEN) : undefined,
+    tls,
+    files: { cert: fromRoot(cfg.TLS_CERT!), key: fromRoot(cfg.TLS_KEY!), account: repoPath("certs/letsencrypt-account.pem") },
+    reload: () => (app.server as unknown as https.Server).setSecureContext(tls),
+    log: app.log,
+  });
+}
+const startWarning = certWarning();
+if (startWarning) app.log.warn(startWarning);
 
 for (const sig of ["SIGINT", "SIGTERM"] as const) {
   process.on(sig, async () => {
@@ -224,6 +280,7 @@ for (const sig of ["SIGINT", "SIGTERM"] as const) {
     totals.close();
     metrics.close();
     await app.close();
+    await db.close();
     process.exit(0);
   });
 }

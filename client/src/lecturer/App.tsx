@@ -12,6 +12,8 @@ import { listMics, startMic, type MicHandle } from "../lib/mic";
 import { WebAudioPlayer } from "../lib/player";
 import { SalleSocket, type ConnState } from "../lib/ws";
 import { Header } from "./Header";
+import { Login } from "../ui/Login";
+import { whoami, type AccountView } from "../lib/auth";
 import type { Line, QuestionItem } from "./types";
 import { AudioPanel } from "./views/AudioPanel";
 import { Join } from "./views/Join";
@@ -30,7 +32,9 @@ const STOP_ARM_MS = 4000;
 
 export function App() {
   const params = new URLSearchParams(location.search);
-  const [token, setToken] = useState(params.get("token") ?? "");
+  /** Compte connecté (D17) : undefined = on ne sait pas encore, null = il faut se connecter. */
+  const [account, setAccount] = useState<AccountView | null | undefined>();
+  const [loginNotice, setLoginNotice] = useState<string>();
   const [running, setRunning] = useState(false);
   const [conn, setConn] = useState<ConnState>("closed");
   const [hello, setHello] = useState<Hello>();
@@ -74,6 +78,13 @@ export function App() {
   useEffect(() => {
     questionsRef.current = questions;
   }, [questions]);
+
+  // Qui est connecté ? Le cookie répond sans rien demander au formateur.
+  useEffect(() => {
+    void whoami()
+      .then(setAccount)
+      .catch(() => setAccount(null));
+  }, []);
 
   useEffect(() => {
     void listMics().then(setMics);
@@ -140,7 +151,7 @@ export function App() {
       await openMic(deviceId);
 
       const s = new SalleSocket(
-        { t: "join", role: "lecturer", token, sampleRate: mic.current!.sampleRate, ua: navigator.userAgent.slice(0, 200) },
+        { t: "join", role: "lecturer", sampleRate: mic.current!.sampleRate, ua: navigator.userAgent.slice(0, 200) },
         { onState: setConn, onEvent: handleEvent, onAudio: handleAudio },
       );
       sock.current = s;
@@ -239,6 +250,11 @@ export function App() {
         break;
       case "error":
         setErr(e.msg);
+        // Session expirée pendant la séance : on redemande la connexion.
+        if (e.code === "unauthorized") {
+          setLoginNotice("Votre session a expiré. Reconnectez-vous pour reprendre la séance.");
+          setAccount(null);
+        }
         break;
     }
   }
@@ -292,6 +308,10 @@ export function App() {
   const tgtLang: Lang = hello?.langs[0] ?? "fr";
   const asking = floor.state === "question";
 
+  // Tant qu'on ne sait pas : rien, pour ne pas faire clignoter l'écran de connexion.
+  if (account === undefined) return <div className="min-h-dvh bg-surface" />;
+  if (account === null) return <Login surface="Poste formateur" notice={loginNotice} onDone={setAccount} />;
+
   return (
     <>
       <Header
@@ -329,7 +349,7 @@ export function App() {
         )}
 
         {!running ? (
-          <Join token={token} onToken={setToken} mics={mics} deviceId={deviceId} onDevice={changeDevice} aec={aec} onAec={changeAec} onStart={() => void start()} />
+          <Join mics={mics} deviceId={deviceId} onDevice={changeDevice} aec={aec} onAec={changeAec} onStart={() => void start()} />
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 w-full items-start">
             <AudioPanel

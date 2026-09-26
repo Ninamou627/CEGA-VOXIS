@@ -14,6 +14,7 @@ import { QuestionRecorder } from "../lib/mic";
 import { ElementPlayer, WebAudioPlayer, type Player, type SegmentMeta } from "../lib/player";
 import { keepWakeLockAlive, requestWakeLock } from "../lib/wakelock";
 import { SalleSocket, type ConnState } from "../lib/ws";
+import { CodeGate } from "../ui/CodeGate";
 import { ALL_LANGS } from "../ui/langs";
 import { Header, type LinkStatus } from "./Header";
 import type { Line, PlayerKind, QuestionOutcome } from "./types";
@@ -53,6 +54,10 @@ const LINK: Record<ConnState, LinkStatus> = {
 export function App() {
   const params = new URLSearchParams(location.search);
   const [session] = useState(params.get("s") ?? undefined);
+  /** Code de séance (D17) : le QR code le porte ; sinon on le demande. */
+  const [code, setCode] = useState(params.get("c") ?? "");
+  const [gate, setGate] = useState(!params.get("c"));
+  const [gateError, setGateError] = useState<string>();
   const [lang, setLang] = useState<Lang>((params.get("lang") as Lang) ?? "fr");
   // Lecteur média par défaut, partout : validé sur iPhone 13 Pro Max / iOS 26 écran
   // verrouillé, insensible au bouton silence, et il porte le playbackRate à hauteur
@@ -178,7 +183,7 @@ export function App() {
   /** Ouvre le WebSocket de salle ; un ancien socket qu'on ferme ne parle plus à l'écran. */
   function connect(l: Lang) {
     const s: SalleSocket = new SalleSocket(
-      { t: "join", role: "listener", session, lang: l, ua: navigator.userAgent.slice(0, 200) },
+      { t: "join", role: "listener", session, lang: l, code, ua: navigator.userAgent.slice(0, 200) },
       {
         onState: (st) => sock.current === s && setConn(st),
         onEvent: (e) => sock.current === s && handleEvent(e),
@@ -266,6 +271,12 @@ export function App() {
         setErr(e.msg);
         if (e.code === "floor_busy") askDiscard();
         if (e.code === "question_failed") setAsk("failed");
+        // Code refusé ou expiré : on le redemande plutôt que de laisser une page muette.
+        if (e.code === "bad_code" || e.code === "too_many") {
+          setGateError(e.msg);
+          setGate(true);
+          setPhase("join");
+        }
         break;
     }
   }
@@ -472,6 +483,20 @@ export function App() {
   }
 
   // ---------------------------------------------------------------------------
+
+  if (gate) {
+    return (
+      <CodeGate
+        surface="Apprenant"
+        error={gateError}
+        onCode={(c) => {
+          setCode(c);
+          setGateError(undefined);
+          setGate(false);
+        }}
+      />
+    );
+  }
 
   if (phase === "join") {
     return (

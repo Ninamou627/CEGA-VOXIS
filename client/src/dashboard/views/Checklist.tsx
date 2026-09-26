@@ -67,7 +67,7 @@ export function Checklist(p: ChecklistProps) {
   const auto: Auto[] = [
     { id: "server", label: "Serveur de salle joignable", state: p.serverReachable ? "ok" : "fail", detail: p.serverReachable ? undefined : "vérifier qu'il tourne, et sur le bon schéma HTTP/HTTPS" },
     { id: "tls", label: "HTTPS actif (questions au micro)", state: !p.info ? "wait" : p.info.tls ? "ok" : "fail", detail: p.info && !p.info.tls ? "les téléphones n'auront pas de micro" : undefined },
-    { id: "cert", label: "Certificat valable pour l'IP du PC", state: !p.info ? "wait" : p.info.certWarning ? "fail" : "ok", detail: p.info?.certWarning ?? undefined },
+    { id: "cert", label: "Certificat et adresse de la salle", state: !p.info ? "wait" : p.info.certWarning ? "fail" : "ok", detail: p.info?.certWarning ?? undefined },
     { id: "providers", label: "Fournisseurs réels (pas de simulateur)", state: !providers ? "wait" : mock ? "warn" : "ok", detail: mock ? `${providers!.stt} · ${providers!.mt} · ${providers!.tts}` : undefined },
     { id: "lecturer", label: "Formateur connecté, micro ouvert", state: !p.health ? "wait" : p.health.lecturer ? "ok" : "fail" },
     {

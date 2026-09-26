@@ -2,6 +2,7 @@
  * Séance : rejoindre la salle (QR, adresses), vérifier avant de commencer, suivre les
  * questions des apprenants et le journal de ce qui s'est passé.
  */
+import type { RoomCodeResponse } from "../../../../shared/auth";
 import type { FloorState } from "../../../../shared/protocol";
 import type { Signals } from "../signals";
 import type { JournalEntry, QuestionEntry } from "../types";
@@ -18,13 +19,16 @@ export interface SessionProps {
   questions: QuestionEntry[];
   journal: JournalEntry[];
   onClearJournal: () => void;
+  code?: RoomCodeResponse;
+  onRotateCode: () => void;
+  rotatingCode?: boolean;
 }
 
-export function Session({ sig, infoError, floor, questions, journal, onClearJournal }: SessionProps) {
+export function Session({ sig, infoError, floor, questions, journal, onClearJournal, code, onRotateCode, rotatingCode }: SessionProps) {
   return (
     <>
       <Section title="Rejoindre la salle" hint="À projeter ou à afficher à l'entrée : les apprenants scannent le QR code, choisissent leur langue et écoutent.">
-        <Join info={sig.info} error={infoError} />
+        <Join info={sig.info} error={infoError} code={code} onRotate={onRotateCode} rotating={rotatingCode} />
       </Section>
 
       <Section title="Avant la séance" hint="Ce qui se vérifie tout seul l'est en direct ; le reste se coche à la main et reste coché sur cet appareil.">

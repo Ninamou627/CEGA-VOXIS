@@ -10,6 +10,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { FloorState, Lang, ServerEvent, StatsPayload } from "../../../shared/protocol";
 import { keepWakeLockAlive, requestWakeLock } from "../lib/wakelock";
 import { SalleSocket, type ConnState } from "../lib/ws";
+import { CodeGate } from "../ui/CodeGate";
 import { Icon } from "../ui/Icon";
 import { LANGS } from "../ui/langs";
 import { Qr } from "../ui/Qr";
@@ -44,7 +45,11 @@ export function App() {
   });
   const [conn, setConn] = useState<ConnState>("closed");
   const [hello, setHello] = useState<Hello>();
-  const [joinUrl, setJoinUrl] = useState<string>();
+  /** Code de séance (D17) : celui du QR, ou dicté par le formateur devant l'écran. */
+  const [code, setCode] = useState(params.get("c") ?? "");
+  const [gate, setGate] = useState(!params.get("c"));
+  const [gateError, setGateError] = useState<string>();
+  const [baseUrl, setBaseUrl] = useState<string>();
   const [lines, setLines] = useState<Line[]>([]);
   const [partial, setPartial] = useState("");
   const [floor, setFloor] = useState<FloorState>({ state: "lecturer" });
@@ -72,7 +77,7 @@ export function App() {
     const session = async () => {
       try {
         const r = await fetch("/api/session");
-        if (r.ok) setJoinUrl(((await r.json()) as { joinUrl: string }).joinUrl);
+        if (r.ok) setBaseUrl(((await r.json()) as { joinUrl: string }).joinUrl);
         else throw new Error();
       } catch {
         if (!stop) window.setTimeout(session, 5000);
@@ -95,8 +100,12 @@ export function App() {
     };
   }, []);
 
+  // Le QR projeté porte le code : un apprenant qui le scanne entre sans rien saisir.
+  const joinUrl = baseUrl && code ? `${baseUrl.replace(/\/$/, "")}/?c=${code}` : undefined;
+
   useEffect(() => {
-    const s = new SalleSocket({ t: "join", role: "screen" }, { onState: setConn, onAudio: () => {}, onEvent: handleEvent });
+    if (gate) return;
+    const s = new SalleSocket({ t: "join", role: "screen", code }, { onState: setConn, onAudio: () => {}, onEvent: handleEvent });
     s.connect();
     void requestWakeLock(); // le PC de projection ne doit pas éteindre son écran
     const stopWake = keepWakeLockAlive();
@@ -104,7 +113,8 @@ export function App() {
       s.close();
       stopWake();
     };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- handleEvent est stable ici
+  }, [gate, code]);
 
   // La barre de réglages et le curseur ne vivent que quelques secondes après un geste.
   useEffect(() => {
@@ -175,6 +185,13 @@ export function App() {
         setFloor(e.floor);
         setDegraded(e.pipeline.degraded === "text-only" ? "Voix indisponible : la traduction continue à l'écrit" : undefined);
         break;
+      case "error":
+        // Code refusé ou expiré : le formateur en saisit un autre devant l'écran.
+        if (e.code === "bad_code" || e.code === "too_many") {
+          setGateError(e.msg);
+          setGate(true);
+        }
+        break;
       case "src.partial":
         setPartial(e.text);
         break;
@@ -209,6 +226,20 @@ export function App() {
         setDegraded(e.mode === "text-only" ? "Voix indisponible : la traduction continue à l'écrit" : undefined);
         break;
     }
+  }
+
+  if (gate) {
+    return (
+      <CodeGate
+        surface="Écran de salle"
+        error={gateError}
+        onCode={(c) => {
+          setCode(c);
+          setGateError(undefined);
+          setGate(false);
+        }}
+      />
+    );
   }
 
   const idle = lines.every((l) => !l.tgt[lang]);

@@ -1,10 +1,8 @@
-/** Entrée du poste formateur : jeton de session, micro, puis « Démarrer le micro ». */
+/** Entrée du poste formateur, une fois connecté : micro, puis « Démarrer le micro ». */
 import { Icon } from "../../ui/Icon";
 import { MicSelect, type MicSelectProps } from "./MicSelect";
 
 export interface JoinProps extends MicSelectProps {
-  token: string;
-  onToken: (t: string) => void;
   onStart: () => void;
 }
 
@@ -20,20 +18,9 @@ export function Join(p: JoinProps) {
       </div>
 
       <div className="bg-surface-container-lowest border border-outline-variant/25 rounded-2xl p-5 shadow-xl flex flex-col gap-4">
-        <label className="flex flex-col gap-1">
-          <span className="text-[11px] text-on-surface-variant font-medium">Jeton de session</span>
-          <input
-            value={p.token}
-            onChange={(e) => p.onToken(e.target.value)}
-            placeholder="Jeton fourni avec la salle"
-            autoComplete="off"
-            className="w-full bg-surface-container border border-outline-variant/30 rounded-xl px-3 py-2.5 font-metric-mono-sm text-sm text-on-surface placeholder:text-outline focus:outline-none focus:border-secondary/60"
-          />
-        </label>
         <MicSelect mics={p.mics} deviceId={p.deviceId} onDevice={p.onDevice} aec={p.aec} onAec={p.onAec} />
         <button
           type="button"
-          disabled={!p.token}
           onClick={p.onStart}
           className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-secondary text-on-secondary hover:bg-secondary-fixed font-headline-sm text-sm font-bold shadow-md transition-all active:scale-[0.98] disabled:opacity-50 disabled:active:scale-100"
         >

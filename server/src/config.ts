@@ -25,12 +25,30 @@ const EnvSchema = z.object({
   HOST: z.string().default("0.0.0.0"),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).default("info"),
   SESSION_ID: z.string().default("TRAINING-01"),
-  SESSION_TOKEN: z.string().default("change-me"),
+
+  // ---- authentification (D17) ----
+  /** Base des comptes, des sessions de connexion et du code de séance. `npm run db:up` en développement. */
+  DATABASE_URL: z.string().default("postgres://voxis:voxis-dev@127.0.0.1:5432/voxis"),
+  /** Compte d'administration créé au tout premier démarrage, et lui seul. */
+  ADMIN_USER: z.string().trim().toLowerCase().default("admin"),
+  /** Vide au premier démarrage : le serveur en tire un au hasard et l'affiche une fois. */
+  ADMIN_PASSWORD: optional,
+  /** Durée d'une session de connexion : une journée de formation sans se reconnecter. */
+  SESSION_HOURS: z.coerce.number().int().min(1).max(168).default(12),
+  /** Durée par défaut d'un code de séance. */
+  CODE_HOURS: z.coerce.number().int().min(1).max(72).default(12),
+  /** Derrière un reverse proxy (Caddy, nginx) : sans cela, toutes les requêtes ont son adresse. */
+  TRUST_PROXY: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
   SRC_LANG: LangSchema.default("en"),
   TARGET_LANGS: csvLangs,
   PUBLIC_URL: optional,
   TLS_CERT: optional,
   TLS_KEY: optional,
+  /** API DNS Hostinger : le nom de PUBLIC_URL suit l'IP du PC, le certificat se renouvelle seul. */
+  HOSTINGER_API_TOKEN: optional,
   METRICS_FILE: z.string().default("metrics.jsonl"),
   /** Réglages enregistrés depuis l'administration (remplacent ceux du .env). */
   SETTINGS_FILE: z.string().default("data/settings.json"),

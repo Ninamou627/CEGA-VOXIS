@@ -1,7 +1,10 @@
 /**
  * Rejoue un fichier WAV dans le pipeline comme s'il sortait du micro du formateur.
  *
- *   npm run replay -- ../fixtures/formateur-10min.wav [ws://localhost:8787/ws] [token]
+ *   npm run replay -- ../fixtures/formateur-10min.wav [ws://localhost:8787/ws]
+ *
+ * Se connecte comme le vrai poste formateur, avec le compte d'administration de la
+ * configuration (ADMIN_USER / ADMIN_PASSWORD).
  *
  * C'est l'outil de mesure : la même fixture, rejouée à l'identique, permet de
  * comparer deux moteurs ou deux réglages de segmentation sur des chiffres, pas à
@@ -10,10 +13,11 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import WebSocket from "ws";
+import { adminCookie, originOf } from "./session";
 
-const [, , file, url = "ws://localhost:8787/ws", token = process.env.SESSION_TOKEN ?? "change-me"] = process.argv;
+const [, , file, url = "ws://localhost:8787/ws"] = process.argv;
 if (!file) {
-  console.error("usage: replay <fichier.wav> [url ws] [token]");
+  console.error("usage: replay <fichier.wav> [url ws]");
   process.exit(1);
 }
 
@@ -52,9 +56,10 @@ const FRAME_MS = 100;
 const frameBytes = (sampleRate * 2 * FRAME_MS) / 1000;
 console.log(`fixture : ${(data.length / (sampleRate * 2)).toFixed(1)} s à ${sampleRate} Hz — ${Math.ceil(data.length / frameBytes)} trames`);
 
-const ws = new WebSocket(url, { rejectUnauthorized: false });
+const cookie = await adminCookie(originOf(url));
+const ws = new WebSocket(url, { rejectUnauthorized: false, headers: { cookie } });
 ws.on("open", () => {
-  ws.send(JSON.stringify({ t: "join", role: "lecturer", token, sampleRate, ua: "replay" }));
+  ws.send(JSON.stringify({ t: "join", role: "lecturer", sampleRate, ua: "replay" }));
   let pos = 0;
   // Une trame par tick, jamais de rattrapage : les STT temps réel refusent l'audio
   // envoyé plus vite que le réel (AssemblyAI ferme avec le code 3007). Si le timer

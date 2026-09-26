@@ -12,7 +12,8 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { lanIps } from "../src/net";
+import { loadConfig } from "../src/config";
+import { lanIps, origin } from "../src/net";
 
 const root = process.env.INIT_CWD ?? process.cwd();
 const dir = path.resolve(root, "certs");
@@ -48,9 +49,9 @@ console.log(`Certificat auto-signé écrit (valable 365 jours) pour : ${ips.join
 console.log("À mettre dans .env, puis redémarrer le serveur :\n");
 console.log(`TLS_CERT=${path.relative(root, cert).replace(/\\/g, "/")}`);
 console.log(`TLS_KEY=${path.relative(root, key).replace(/\\/g, "/")}`);
-console.log(`PUBLIC_URL=https://${ips[0]}:8787`);
+console.log(`PUBLIC_URL=${origin(true, ips[0], loadConfig().PORT)}`);
 console.log(`
-Ensuite : npm run build, npm start, et sur le téléphone https://${ips[0]}:8787/
+Ensuite : npm run build, npm start, et sur le téléphone ${origin(true, ips[0], loadConfig().PORT)}/
   → avertissement « connexion non privée » : Détails → Visiter le site (une seule fois).
   → si le micro reste refusé sur iPhone, installez le certificat : envoyez-vous certs/dev-cert.pem,
     ouvrez-le sur le téléphone, Réglages → Général → VPN et gestion de l'appareil → Installer,

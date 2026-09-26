@@ -34,3 +34,9 @@ export function lanIps(): LanIp[] {
 export function lanIp(): string | undefined {
   return lanIps()[0]?.address;
 }
+
+/** Début d'URL, sans le port quand c'est celui du schéma (443 en HTTPS, 80 en HTTP). */
+export function origin(tls: boolean, host: string, port: number): string {
+  const scheme = tls ? "https" : "http";
+  return port === (tls ? 443 : 80) ? `${scheme}://${host}` : `${scheme}://${host}:${port}`;
+}

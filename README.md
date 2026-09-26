@@ -101,7 +101,7 @@ enrichir le glossaire ou changer de voix (D14).
 
 ## L'administration
 
-`/dashboard?token=…` (le jeton est `SESSION_TOKEN` du `.env`) ouvre six pages derrière un
+`/dashboard` demande un compte d'administration (D17), puis ouvre six pages derrière un
 menu latéral, sans cartes : des bandeaux de chiffres, des lignes, des filets.
 
 | Page | Ce qu'on y fait |
@@ -136,11 +136,13 @@ pages de l'administration.
 
 ## Les deux choses à faire avant de mettre un téléphone dans la salle
 
-1. **Un vrai certificat TLS sur l'IP du LAN.** Le micro des téléphones (questions) exige
-   HTTPS, et une page HTTPS ne peut ouvrir qu'un WebSocket WSS. Domaine → enregistrement A
-   vers l'IP privée du PC → Let's Encrypt par challenge DNS-01 → `TLS_CERT` / `TLS_KEY`
-   dans `.env`. En développement, `VITE_HTTPS=1 npm run dev:client` donne un certificat
-   auto-signé (avertissement sur le téléphone, mais ça fonctionne).
+1. **Un vrai certificat TLS.** Le micro des téléphones (questions) exige HTTPS, et une
+   page HTTPS ne peut ouvrir qu'un WebSocket WSS. `institutcega.fr` → enregistrement A
+   vers l'IP privée du PC → Let's Encrypt par challenge DNS-01 : `npm run cert:domain`.
+   Les téléphones ouvrent `https://institutcega.fr` (port 443).
+   Avec `HOSTINGER_API_TOKEN`, le serveur fait suivre le nom à l'IP du PC et renouvelle le
+   certificat seul. Voir `docs/CERTIFICAT.md`. En développement, `npm run cert:dev` donne
+   un certificat auto-signé (avertissement sur le téléphone, mais ça fonctionne).
 2. ~~Le test écran verrouillé sur un iPhone réel~~ — **fait** (iPhone 13 Pro Max, iOS 26) :
    le lecteur média continue écran verrouillé et ignore le bouton silence ; Web Audio est
    muet sur iPhone. Le lecteur média est le défaut. Voir `docs/DECISIONS.md`, D3.

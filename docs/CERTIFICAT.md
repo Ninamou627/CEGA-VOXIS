@@ -1,93 +1,116 @@
-# Certificat TLS sur l'IP du LAN
+# Certificat TLS de la salle
 
 Pourquoi c'est bloquant : le micro des téléphones (`getUserMedia`, pour les questions)
 exige un contexte sécurisé, et une page HTTPS ne peut ouvrir qu'un WebSocket WSS. Sur
 une adresse de LAN, qui n'est pas `localhost`, cela veut dire un **vrai certificat**.
 Installer une autorité maison sur trente téléphones n'est pas praticable.
 
-La solution : un domaine que nous possédons, un enregistrement A public qui pointe vers
-l'IP **privée** du PC de salle, un certificat Let's Encrypt obtenu par challenge
-**DNS-01** (jamais HTTP-01 : le serveur n'est pas joignable depuis Internet). Le
-certificat est ensuite valide **hors ligne**, dans la salle, pendant 90 jours.
+La solution : un nom de domaine réservé au projet, **`institutcega.fr`**, dont
+l'enregistrement A public pointe vers l'IP **privée** du PC de salle, et un certificat
+Let's Encrypt obtenu par challenge **DNS-01** (jamais HTTP-01 : le serveur n'est pas
+joignable depuis Internet). Let's Encrypt ne certifie jamais une IP privée ; il certifie
+un nom. Le certificat reste donc valable quand le PC change de réseau, et **hors ligne**,
+pendant 90 jours. Les téléphones ouvrent `https://institutcega.fr` : port 443, pas de
+numéro dans l'adresse.
 
-## 1. IP fixe pour le PC de salle
+Le DNS de `institutcega.fr` est chez **Hostinger**. Avec un jeton de leur API, tout se tient
+seul : le serveur fait suivre le nom à l'IP du PC et renouvelle le certificat
+(`server/src/domain.ts`).
 
-Sur la borne Wi-Fi / le routeur de salle, réservez une IP pour l'adresse MAC de la carte
-Ethernet du PC — par exemple `192.168.50.10`. Notez-la : elle va dans le DNS.
+## Mise en place (une fois)
 
-## 2. Enregistrement DNS
+1. **Jeton API Hostinger** : [hPanel → Profil → API](https://hpanel.hostinger.com/profile/api)
+   → générer un jeton. Dans `.env` :
 
-Dans la zone du domaine (OVH, Gandi, Cloudflare, Infomaniak…) :
+   ```
+   HOSTINGER_API_TOKEN=…
+   ```
 
-```
-salle.mondomaine.fr.   A   192.168.50.10
-```
+   Ce jeton donne la main sur tout le compte Hostinger : il reste dans `.env` (ignoré par
+   git), sur le PC de salle seulement.
 
-Oui, un DNS public peut pointer vers une IP privée. C'est légal et courant.
+2. **Répétition**, sur l'environnement de test de Let's Encrypt (rien n'est enregistré) :
 
-**Piège n° 1 — la « protection contre le DNS rebinding ».** Certains routeurs (Fritz!Box,
-OpenWrt/dnsmasq, pfSense, quelques box opérateur) refusent de transmettre une réponse
-DNS publique contenant une IP privée. Symptôme : le téléphone « ne trouve pas le site ».
-Parade : ajouter le domaine à la liste blanche du routeur (Fritz!Box → *Réseau
-domestique → Paramètres réseau → Exceptions DNS rebind*), ou faire résoudre le nom par
-le DNS local de la borne.
+   ```bash
+   npm run cert:domain -- institutcega.fr --staging
+   ```
 
-## 3. Obtenir le certificat (DNS-01, validation manuelle)
+3. **Le vrai certificat** :
 
-La méthode qui marche avec n'importe quel hébergeur DNS, sans API :
+   ```bash
+   npm run cert:domain -- institutcega.fr
+   ```
 
-```bash
-certbot certonly --manual --preferred-challenges dns -d salle.mondomaine.fr
-```
+   Le script pointe `institutcega.fr` vers l'IP du PC (à la place de la page de parking
+   Hostinger), pose le TXT `_acme-challenge`, attend qu'il soit visible sur les serveurs
+   DNS de Hostinger, obtient le certificat dans `certs/`, retire le TXT, et affiche les
+   lignes à mettre dans `.env` :
 
-Certbot affiche une valeur à mettre dans un enregistrement TXT :
+   ```
+   PORT=443
+   PUBLIC_URL=https://institutcega.fr
+   TLS_CERT=certs/institutcega.fr.pem
+   TLS_KEY=certs/institutcega.fr-key.pem
+   ```
 
-```
-_acme-challenge.salle.mondomaine.fr.   TXT   "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-```
+4. **Redémarrer le serveur** (`npm run dev` redémarre aussi Vite, qui lit le port dans
+   `.env`), puis depuis un téléphone sur le Wi-Fi de la salle :
+   `https://institutcega.fr/api/health` — cadenas normal, aucun avertissement. Ensuite la
+   page apprenant, puis *Maintenir pour poser une question* : le navigateur doit demander
+   l'accès au micro.
 
-Créez-le, attendez la propagation (vérifiez avec `nslookup -type=TXT _acme-challenge.salle.mondomaine.fr`),
-puis validez dans certbot. Les fichiers arrivent dans :
+**Port 443 sous Windows** : aucun droit administrateur n'est nécessaire. Le pare-feu doit
+laisser entrer Node : la règle « Node.js JavaScript Runtime », créée au premier lancement,
+vaut pour tous les ports, mais seulement pour le profil réseau accepté ce jour-là (Public
+ou Privé). Un logiciel qui occupe déjà le 443 (IIS, partage de VM de VMware) empêche le
+serveur de démarrer : le journal le dit (`EADDRINUSE`).
 
-```
-/etc/letsencrypt/live/salle.mondomaine.fr/fullchain.pem
-/etc/letsencrypt/live/salle.mondomaine.fr/privkey.pem
-```
+## Ensuite, rien à faire
 
-Sous Windows, [win-acme](https://www.win-acme.com/) (`wacs.exe`, validation « manuelle DNS »)
-fait la même chose ; ou `acme.sh` dans Git Bash.
+- **Le PC change de réseau** : au démarrage, puis chaque minute, le serveur compare l'IP
+  du PC à l'enregistrement A et le corrige (TTL de 2 min). Il retire aussi tout
+  enregistrement AAAA du nom : un téléphone en IPv6 le préférerait à l'IP du PC. Juste
+  après un changement, les caches DNS peuvent mettre quelques minutes à suivre : le
+  tableau de bord le dit.
+- **Le certificat** se renouvelle seul 30 jours avant l'échéance et se recharge sans
+  redémarrer. S'il reste moins de 14 jours, le tableau de bord passe au rouge :
+  `npm run cert:domain` montre l'erreur.
+- **Un seul PC porte le jeton.** Deux serveurs avec le même nom et le même jeton se
+  disputeraient l'enregistrement A. Pour un second PC, un sous-domaine
+  (`npm run cert:domain -- dev.institutcega.fr`).
 
-**Renouvellement.** 90 jours. En manuel, refaire l'opération (5 min). Pour l'automatiser,
-`acme.sh` ou le plugin certbot de votre hébergeur DNS (`certbot-dns-ovh`,
-`certbot-dns-cloudflare`, …) qui pose le TXT tout seul.
+Le tableau de bord (checklist *Certificat et adresse de la salle*) signale tout ce qui
+empêcherait un téléphone d'entrer : certificat qui ne couvre pas le nom ou qui expire,
+nom qui pointe ailleurs que sur le PC, nom que le DNS du réseau ne résout pas.
 
-## 4. Configurer le serveur
+## Sans jeton API
 
-Dans `.env` :
+Même commande : `npm run cert:domain -- institutcega.fr`. Le script affiche
+l'enregistrement TXT à créer dans hPanel (*Domaines → institutcega.fr → DNS / Serveurs de
+noms*), attend qu'il soit visible, puis obtient le certificat. L'enregistrement A
+(`@` → IP du PC) se crée et se corrige aussi à la main, à chaque changement de réseau,
+et le renouvellement est à refaire avant l'échéance (tous les 60 jours, 5 minutes).
 
-```
-TLS_CERT=/etc/letsencrypt/live/salle.mondomaine.fr/fullchain.pem
-TLS_KEY=/etc/letsencrypt/live/salle.mondomaine.fr/privkey.pem
-PUBLIC_URL=https://salle.mondomaine.fr:8787
-```
+## Pannes
 
-Le serveur passe en HTTPS + WSS automatiquement, et le QR code du tableau de bord
-encode `PUBLIC_URL`. Pour un port 443 sans le `:8787` dans l'URL : `PORT=443` (droits
-administrateur requis sous Linux, ou `setcap 'cap_net_bind_service=+ep' $(which node)`).
+**« ne se résout pas sur ce réseau » — la protection contre le DNS rebinding.** Certains
+routeurs et pare-feu (Fritz!Box, OpenWrt/dnsmasq, pfSense, quelques box opérateur, DNS
+filtrants d'entreprise) refusent une réponse DNS publique qui contient une IP privée.
+Symptôme : le téléphone « ne trouve pas le site ». Parade : ajouter `institutcega.fr` à la
+liste blanche (Fritz!Box → *Réseau domestique → Paramètres réseau → Exceptions DNS
+rebind*), ou faire résoudre le nom par le DNS local de la borne. Test rapide depuis le PC :
+`nslookup institutcega.fr` doit répondre l'IP du PC.
 
-## 5. Vérifier
-
-Depuis un téléphone sur le Wi-Fi de salle, ouvrir `https://salle.mondomaine.fr:8787/api/health` :
-le cadenas doit être vert, sans avertissement. Ensuite la page apprenant, puis
-*Maintenir pour poser une question* — le navigateur doit demander l'accès au micro.
-
-Le tableau de bord affiche un bandeau rouge tant que le serveur est en HTTP.
+**Réseau de salle sans Internet.** Le certificat reste valable hors ligne, mais les
+téléphones doivent résoudre le nom : il faut alors une entrée DNS locale sur la borne
+(`institutcega.fr` → IP du PC).
 
 ## En développement, sans domaine
 
 ```bash
-VITE_HTTPS=1 npm run dev:client
+npm run cert:dev
 ```
 
-Vite génère un certificat auto-signé : le téléphone affiche un avertissement, on
-l'accepte, et le micro fonctionne. Suffisant pour développer, inutilisable en salle.
+Certificat auto-signé pour les IP actuelles du PC : le téléphone affiche un avertissement,
+on l'accepte, et le micro fonctionne. À refaire à chaque changement de réseau (le tableau
+de bord le signale). Suffisant pour développer, inutilisable en salle.

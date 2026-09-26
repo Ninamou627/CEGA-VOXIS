@@ -1,0 +1,29 @@
+# PostgreSQL de développement : comptes, sessions de connexion, code de séance.
+#
+#   npm run db:up     démarre la base (la première fois, elle se crée)
+#   npm run db:down   arrête la base ; les données restent dans le volume
+#   npm run db:reset  efface tout et repart à zéro
+#
+# Le mot de passe ci-dessous ne vaut que pour cette base locale, qui n'écoute que sur
+# la machine. En production, DATABASE_URL vient de l'hébergeur et n'est jamais ici.
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: voxis-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: voxis
+      POSTGRES_PASSWORD: voxis-dev
+      POSTGRES_DB: voxis
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - voxis-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U voxis -d voxis"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+volumes:
+  voxis-db:

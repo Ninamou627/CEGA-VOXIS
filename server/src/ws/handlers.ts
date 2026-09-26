@@ -10,7 +10,8 @@
 import { randomUUID } from "node:crypto";
 import type { RawData, WebSocket, WebSocketServer } from "ws";
 import { encodeFrame } from "../../../shared/framing";
-import { ClientEventSchema, PROTOCOL_VERSION, type AudioHeader, type Lang, type ServerEvent } from "../../../shared/protocol";
+import { ClientEventSchema, PROTOCOL_VERSION, type AudioHeader, type JoinEvent, type Lang, type ServerEvent } from "../../../shared/protocol";
+import { COOKIE_NAME, cookieValue, type Auth } from "../auth";
 import type { Config } from "../config";
 import type { Metrics } from "../metrics";
 import type { Pipeline } from "../pipeline/pipeline";
@@ -19,12 +20,16 @@ import type { Participant, Room } from "../room";
 import { clientSettings, type Settings } from "../settings";
 import type { Totals } from "../totals";
 
+/** `WebSocket.OPEN` : l'import de `ws` ne porte que les types. */
+const WS_OPEN = 1;
+
 export interface WsContext {
   room: Room;
   pipeline: Pipeline;
   providers: Providers;
   metrics: Metrics;
   config: Config;
+  auth: Auth;
   log: { info(o: object, msg?: string): void; warn(o: object, msg?: string): void; error(o: object, msg?: string): void };
   settings: () => Settings;
   totals: Totals;
@@ -50,7 +55,7 @@ interface RecentSegment {
 }
 
 export function attachWs(wss: WebSocketServer, ctx: WsContext): void {
-  const { room, pipeline, providers, metrics, config, log, totals } = ctx;
+  const { room, pipeline, providers, metrics, config, log, totals, auth } = ctx;
 
   const recent = new Map<number, RecentSegment>();
   function remember(seq: number, patch: Partial<RecentSegment>) {
@@ -111,6 +116,8 @@ export function attachWs(wss: WebSocketServer, ctx: WsContext): void {
   wss.on("connection", (ws: WebSocket, req) => {
     const id = randomUUID().slice(0, 8);
     let me: Participant | undefined;
+    /** Une admission est en cours : elle interroge la base, donc elle prend un instant. */
+    let joining = false;
     let questionAudio: Uint8Array[] = [];
     let questionMime = "audio/webm";
     const remote = req.socket.remoteAddress;
@@ -140,51 +147,15 @@ export function attachWs(wss: WebSocketServer, ctx: WsContext): void {
       const evt = r.data;
 
       // -- join --------------------------------------------------------------
+      // L'admission vérifie un compte (formateur, administration) ou le code de séance
+      // (apprenant, écran de salle) : elle interroge la base, donc elle est asynchrone.
+      // `joining` écarte un second join pendant la vérification, et ce qui arriverait
+      // entre-temps est ignoré — comme avant tout join.
       if (evt.t === "join") {
-        if (me) return sendErr("already_joined", "déjà connecté");
-        if ((evt.role === "lecturer" || evt.role === "dashboard") && evt.token !== config.SESSION_TOKEN) {
-          sendErr("unauthorized", "jeton invalide");
-          return ws.close(4401, "unauthorized");
-        }
-        if (evt.session && evt.session !== room.sessionId) {
-          sendErr("bad_session", `session inconnue : ${evt.session}`);
-          return ws.close(4404, "bad_session");
-        }
-        if (evt.role === "lecturer" && room.count("lecturer") > 0) {
-          sendErr("lecturer_exists", "un formateur est déjà connecté");
-          return ws.close(4409, "lecturer_exists");
-        }
-        const lang: Lang = evt.role === "listener" ? (evt.lang ?? room.langs[0]) : room.srcLang;
-        if (evt.role === "listener" && !room.langs.includes(lang)) return sendErr("bad_lang", `langue non diffusée : ${lang}`);
-
-        me = { id, role: evt.role, lang, ws, ua: evt.ua, joinedAt: Date.now() };
-        room.add(me);
-        log.info({ id, role: evt.role, lang, remote }, "participant connecté");
-        metrics.event("join", { id, role: evt.role, lang, ua: evt.ua });
-
-        if (evt.role === "lecturer") {
-          const sampleRate = evt.sampleRate ?? 16000;
-          pipeline
-            .start()
-            .then(() => log.info({ sampleRate }, "pipeline démarré"))
-            .catch((err: Error) => {
-              log.error({ err: err.message }, "démarrage du pipeline impossible");
-              sendErr("pipeline_start", err.message);
-            });
-        }
-
-        room.send(me, {
-          t: "hello",
-          v: PROTOCOL_VERSION,
-          sessionId: room.sessionId,
-          role: me.role,
-          participantId: me.id,
-          langs: room.langs,
-          srcLang: room.srcLang,
-          tServer: Date.now(),
-          floor: room.floor,
-          pipeline: pipeline.status,
-          settings: clientSettings(ctx.settings()),
+        if (me || joining) return sendErr("already_joined", "déjà connecté");
+        joining = true;
+        void admit(evt).finally(() => {
+          joining = false;
         });
         return;
       }
@@ -270,6 +241,94 @@ export function attachWs(wss: WebSocketServer, ctx: WsContext): void {
         return;
       }
     });
+
+    /**
+     * Les deux portes de D17. Formateur et administration : un compte connecté, dont le
+     * cookie voyage avec la poignée de main WebSocket. Apprenant et écran de salle : le code
+     * de séance, court et à durée limitée.
+     */
+    async function admit(evt: JoinEvent): Promise<void> {
+      try {
+        if (evt.role === "lecturer" || evt.role === "dashboard") {
+          const account = await auth.accountOf(cookieValue(req.headers.cookie, COOKIE_NAME));
+          // Le tableau de bord règle la salle : administration seulement. Un compte de
+          // formateur ouvre la page Formateur, pas les réglages.
+          if (!account || (evt.role === "dashboard" && account.role !== "admin")) {
+            sendErr("unauthorized", account ? "réservé à l'administration" : "connexion requise");
+            ws.close(4401, "unauthorized");
+            return;
+          }
+        } else {
+          const from = remote ?? "inconnu";
+          if (!auth.codes.allow(from)) {
+            sendErr("too_many", "trop d'essais. Réessayez dans quelques minutes.");
+            ws.close(4429, "too_many");
+            return;
+          }
+          if (!(await auth.checkRoomCode(evt.code))) {
+            auth.codes.fail(from);
+            log.warn({ id, remote, role: evt.role }, "code de séance refusé");
+            sendErr("bad_code", evt.code ? "code de séance invalide ou expiré" : "code de séance requis");
+            ws.close(4403, "bad_code");
+            return;
+          }
+          auth.codes.succeed(from);
+        }
+      } catch (err) {
+        log.error({ id, err: (err as Error).message }, "vérification de l'admission impossible");
+        sendErr("server_error", "vérification impossible");
+        ws.close(1011, "server_error");
+        return;
+      }
+
+      // Le client a pu partir pendant la vérification.
+      if (me || ws.readyState !== WS_OPEN) return;
+
+      // Plus aucune attente à partir d'ici : le contrôle du formateur unique et l'entrée dans
+      // la salle tiennent dans le même tour de boucle, donc sans course entre deux connexions.
+      if (evt.session && evt.session !== room.sessionId) {
+        sendErr("bad_session", `session inconnue : ${evt.session}`);
+        ws.close(4404, "bad_session");
+        return;
+      }
+      if (evt.role === "lecturer" && room.count("lecturer") > 0) {
+        sendErr("lecturer_exists", "un formateur est déjà connecté");
+        ws.close(4409, "lecturer_exists");
+        return;
+      }
+      const lang: Lang = evt.role === "listener" ? (evt.lang ?? room.langs[0]) : room.srcLang;
+      if (evt.role === "listener" && !room.langs.includes(lang)) return sendErr("bad_lang", `langue non diffusée : ${lang}`);
+
+      me = { id, role: evt.role, lang, ws, ua: evt.ua, joinedAt: Date.now() };
+      room.add(me);
+      log.info({ id, role: evt.role, lang, remote }, "participant connecté");
+      metrics.event("join", { id, role: evt.role, lang, ua: evt.ua });
+
+      if (evt.role === "lecturer") {
+        const sampleRate = evt.sampleRate ?? 16000;
+        pipeline
+          .start()
+          .then(() => log.info({ sampleRate }, "pipeline démarré"))
+          .catch((err: Error) => {
+            log.error({ err: err.message }, "démarrage du pipeline impossible");
+            sendErr("pipeline_start", err.message);
+          });
+      }
+
+      room.send(me, {
+        t: "hello",
+        v: PROTOCOL_VERSION,
+        sessionId: room.sessionId,
+        role: me.role,
+        participantId: me.id,
+        langs: room.langs,
+        srcLang: room.srcLang,
+        tServer: Date.now(),
+        floor: room.floor,
+        pipeline: pipeline.status,
+        settings: clientSettings(ctx.settings()),
+      });
+    }
 
     ws.on("close", () => {
       if (!me) return;

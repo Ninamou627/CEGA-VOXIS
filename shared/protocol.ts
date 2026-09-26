@@ -171,7 +171,12 @@ export const ClientEventSchema = z.discriminatedUnion("t", [
     role: RoleSchema,
     session: z.string().max(64).optional(),
     lang: LangSchema.optional(),
-    token: z.string().max(200).optional(),
+    /**
+     * Apprenant et écran de salle : le code de séance (D17). Le formateur et
+     * l'administration ne présentent rien ici — leur cookie de session voyage avec la
+     * poignée de main WebSocket.
+     */
+    code: z.string().trim().max(32).optional(),
     ua: z.string().max(300).optional(),
     /** Formateur : fréquence d'échantillonnage réelle du micro (PCM 16 bits mono). */
     sampleRate: z.number().int().min(8000).max(48000).optional(),

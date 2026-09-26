@@ -1,20 +1,29 @@
 /**
- * API de l'administration (tableau de bord). Toutes les routes exigent le jeton de
- * session, en en-tête `x-salle-token` ou en paramètre `?token=`.
+ * API de l'administration (tableau de bord). Toutes les routes exigent un compte
+ * d'administration connecté (cookie de session, voir `auth.ts` et D17).
  *
- *   GET    /api/admin/settings          réglages, valeurs du .env, options possibles
+ *   GET    /api/admin/settings          réglages, valeurs d'installation, options possibles
  *   PUT    /api/admin/settings          enregistrer (validé) ; dit ce qui s'applique quand
- *   POST   /api/admin/settings/reset    revenir aux valeurs du .env (les voix ajoutées restent)
+ *   POST   /api/admin/settings/reset    revenir aux valeurs d'installation (les voix restent)
  *   GET    /api/admin/overview          compteurs de long terme, qualité, voix, incidents
  *   GET    /api/admin/voices/catalog    voix du compte ElevenLabs
  *   POST   /api/admin/voices            ajouter une voix { id, lang }
  *   DELETE /api/admin/voices/:id        retirer une voix (?lang=)
  *   POST   /api/admin/voices/preview    écoute d'essai { id, lang, text? } → audio/mpeg
+ *   GET    /api/admin/code              code de séance courant (null avant la séance) et QR
+ *   POST   /api/admin/code              nouveau code { hours? } — l'ancien QR ne vaut plus rien
+ *   GET    /api/admin/accounts          comptes
+ *   POST   /api/admin/accounts          créer { username, password, role }
+ *   POST   /api/admin/accounts/:id/password   changer un mot de passe { password }
+ *   DELETE /api/admin/accounts/:id      supprimer (jamais le dernier administrateur)
  */
 import type { FastifyInstance } from "fastify";
 import { z, ZodError } from "zod";
 import type { OverviewResponse, Quality, SaveResponse, SettingsResponse, VoiceStats } from "../../shared/admin";
+import { CreateAccountSchema, PasswordSchema, RotateCodeSchema, type AccountView, type CurrentCodeResponse, type RoomCodeResponse } from "../../shared/auth";
 import { LangSchema, type Lang } from "../../shared/protocol";
+import type { Auth } from "./auth";
+import { requireAccount } from "./auth-api";
 import type { Config } from "./config";
 import type { RoomProviders } from "./providers";
 import { CLAUDE_MODELS } from "./providers/mt/claude-models";
@@ -29,6 +38,9 @@ export interface AdminContext {
   totals: Totals;
   providers: RoomProviders;
   catalog?: VoiceCatalog;
+  auth: Auth;
+  /** Adresse publique de la salle, pour composer le lien du QR code. */
+  publicUrl: () => string;
 }
 
 /** Phrase d'essai dans la langue de la voix : on juge une voix sur ce qu'elle dira en séance. */
@@ -63,7 +75,7 @@ function formatZod(err: ZodError): string {
 }
 
 export function registerAdmin(app: FastifyInstance, ctx: AdminContext): void {
-  const { cfg, store, totals, providers, catalog } = ctx;
+  const { cfg, store, totals, providers, catalog, auth } = ctx;
   // Écoutes d'essai : l'instance de la salle si ElevenLabs y sert, sinon une instance à part —
   // on peut choisir ses voix avant de basculer la voix de séance sur ElevenLabs.
   const previewer =
@@ -72,10 +84,10 @@ export function registerAdmin(app: FastifyInstance, ctx: AdminContext): void {
 
   void app.register(
     async (admin) => {
+      // L'administration est réservée au rôle « admin » : un compte de formateur ouvre la
+      // page Formateur, pas les réglages de la salle.
       admin.addHook("preHandler", async (req, reply) => {
-        const q = req.query as { token?: string } | undefined;
-        const token = (req.headers["x-salle-token"] as string | undefined) ?? q?.token;
-        if (token !== cfg.SESSION_TOKEN) return reply.code(401).send({ error: "jeton de session invalide" });
+        req.account = await requireAccount(auth, req, reply, true);
       });
 
       // ---- réglages -------------------------------------------------------------
@@ -227,6 +239,64 @@ export function registerAdmin(app: FastifyInstance, ctx: AdminContext): void {
         } catch (err) {
           return reply.code(502).send({ error: (err as Error).message });
         }
+      });
+
+      // ---- code de séance ---------------------------------------------------------
+      // C'est la seule route qui expose le code : `/api/session`, publique, ne le dit pas.
+      const codeResponse = (c: { code: string; expiresAt: Date }): RoomCodeResponse => ({
+        code: c.code,
+        expiresAt: c.expiresAt.toISOString(),
+        joinUrl: `${ctx.publicUrl()}/?c=${c.code}`,
+      });
+
+      // Pas de code, ou expiré : ce n'est pas une erreur, c'est l'état d'avant la séance.
+      admin.get("/code", async (): Promise<CurrentCodeResponse> => {
+        const current = await auth.roomCode();
+        return { current: current ? codeResponse(current) : null };
+      });
+
+      admin.post("/code", async (req, reply) => {
+        const body = RotateCodeSchema.safeParse(req.body ?? {});
+        if (!body.success) return reply.code(400).send({ error: formatZod(body.error) });
+        const next = await auth.rotateRoomCode(body.data.hours);
+        app.log.info({ expiresAt: next.expiresAt }, "nouveau code de séance");
+        return codeResponse(next);
+      });
+
+      // ---- comptes ----------------------------------------------------------------
+      admin.get("/accounts", async (): Promise<{ accounts: AccountView[] }> => ({ accounts: await auth.accounts() }));
+
+      admin.post("/accounts", async (req, reply) => {
+        const body = CreateAccountSchema.safeParse(req.body);
+        if (!body.success) return reply.code(400).send({ error: formatZod(body.error) });
+        const { username, password, role } = body.data;
+        if ((await auth.accounts()).some((a) => a.username === username)) {
+          return reply.code(409).send({ error: `le compte « ${username} » existe déjà` });
+        }
+        return { account: await auth.createAccount(username, password, role) };
+      });
+
+      admin.post("/accounts/:id/password", async (req, reply) => {
+        const { id } = req.params as { id: string };
+        const body = z.object({ password: PasswordSchema }).safeParse(req.body);
+        if (!body.success) return reply.code(400).send({ error: formatZod(body.error) });
+        if (!(await auth.accounts()).some((a) => a.id === id)) return reply.code(404).send({ error: "compte inconnu" });
+        await auth.setPassword(id, body.data.password);
+        // Les sessions de ce compte sont fermées : il se reconnecte avec le nouveau mot de passe.
+        return { ok: true };
+      });
+
+      admin.delete("/accounts/:id", async (req, reply) => {
+        const { id } = req.params as { id: string };
+        const accounts = await auth.accounts();
+        const target = accounts.find((a) => a.id === id);
+        if (!target) return reply.code(404).send({ error: "compte inconnu" });
+        if (req.account?.id === id) return reply.code(409).send({ error: "on ne supprime pas le compte avec lequel on est connecté" });
+        if (target.role === "admin" && accounts.filter((a) => a.role === "admin").length <= 1) {
+          return reply.code(409).send({ error: "c'est le dernier compte d'administration : en créer un autre d'abord" });
+        }
+        await auth.deleteAccount(id);
+        return { ok: true };
       });
     },
     { prefix: "/api/admin" },

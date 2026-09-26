@@ -10,10 +10,13 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { OverviewResponse, RecentReport, SaveResponse, SettingsResponse } from "../../../shared/admin";
+import type { RoomCodeResponse } from "../../../shared/auth";
 import type { ClientSettings, FloorState, Lang, ServerEvent, StatsPayload } from "../../../shared/protocol";
 import type { Settings } from "../../../shared/settings";
+import { logout, whoami, type AccountView } from "../lib/auth";
 import { SalleSocket, type ConnState } from "../lib/ws";
 import { APP_NAME } from "../ui/brand";
+import { Login } from "../ui/Login";
 import { REPORT_LABEL } from "../ui/reports";
 import { AdminApi } from "./api";
 import { diffKeys, rebase } from "./draft";
@@ -58,8 +61,10 @@ function readHash(): { route: Route; anchor?: string } {
 const COSMOS: Route[] = ["", "supervision"];
 
 export function App() {
-  const [token] = useState(() => new URLSearchParams(location.search).get("token") ?? "");
-  const api = useMemo(() => new AdminApi(token), [token]);
+  /** Compte connecté (D17) : undefined = on ne sait pas encore, null = il faut se connecter. */
+  const [account, setAccount] = useState<AccountView | null | undefined>();
+  const [loginNotice, setLoginNotice] = useState<string>();
+  const api = useMemo(() => new AdminApi(), []);
   const [{ route, anchor }, setHash] = useState(readHash);
 
   const [conn, setConn] = useState<ConnState>("connecting");
@@ -134,8 +139,47 @@ export function App() {
     document.title = `${page.title} · ${APP_NAME}`;
   }, [route]);
 
+  // Qui est connecté ? Le cookie répond sans rien demander (D17).
+  useEffect(() => {
+    void whoami()
+      .then(setAccount)
+      .catch(() => setAccount(null));
+  }, []);
+
+  // ---- code de séance (D17) -------------------------------------------------------------
+  // Sans code ouvert, aucun apprenant ne peut entrer : la page Séance le dit et le propose.
+  const [code, setCode] = useState<RoomCodeResponse>();
+  const [rotating, setRotating] = useState(false);
+
+  useEffect(() => {
+    if (!account) return;
+    void api.code().then(setCode).catch(adminFailed);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- adminFailed est stable
+  }, [api, account]);
+
+  const rotateCode = () => {
+    setRotating(true);
+    void api
+      .rotateCode()
+      .then((c) => {
+        setCode(c);
+        log("salle", `nouveau code de séance : ${c.code}`);
+      })
+      .catch(adminFailed)
+      .finally(() => setRotating(false));
+  };
+
   // ---- API d'administration -----------------------------------------------------------
-  const adminFailed = (e: unknown) => setAdminError((e as Error).message);
+  // Une session expirée ou refusée ramène à l'écran de connexion, pas à un bandeau rouge.
+  const adminFailed = (e: unknown) => {
+    const msg = (e as Error).message;
+    if (/connexion requise|réservé à l'administration/.test(msg)) {
+      setLoginNotice(msg === "connexion requise" ? "Votre session a expiré." : msg);
+      setAccount(null);
+      return;
+    }
+    setAdminError(msg);
+  };
 
   /** Nouveaux réglages du serveur : le brouillon en cours est reposé dessus, sans rien perdre. */
   function applyServerSettings(next: Settings) {
@@ -178,6 +222,8 @@ export function App() {
   }
 
   useEffect(() => {
+    // Rien tant que personne n'est connecté : inutile de se faire refuser par l'API.
+    if (!account) return;
     void loadConf();
     void loadOverview();
     const id = setInterval(() => void loadOverview(), OVERVIEW_EVERY_MS);
@@ -185,7 +231,8 @@ export function App() {
       clearInterval(id);
       clearTimeout(overviewTimer.current);
     };
-  }, [api]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- loadConf/loadOverview sont stables
+  }, [api, account]);
 
   // ---- /api/session : le QR et les adresses ; on réessaie tant que le serveur ne répond pas.
   useEffect(() => {
@@ -238,9 +285,10 @@ export function App() {
 
   // ---- WebSocket de salle -------------------------------------------------------------
   useEffect(() => {
+    if (!account) return;
     const id = setInterval(() => setNow(Date.now()), 1000);
     const s = new SalleSocket(
-      { t: "join", role: "dashboard", token },
+      { t: "join", role: "dashboard" },
       {
         onState: (st) => {
           setConn(st);
@@ -255,7 +303,8 @@ export function App() {
       clearInterval(id);
       s.close();
     };
-  }, [token]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- handleEvent est stable ici
+  }, [account]);
 
   function handleEvent(e: ServerEvent) {
     switch (e.t) {
@@ -336,6 +385,12 @@ export function App() {
         log("degrade", e.mode === "none" ? `retour au nominal — ${e.reason}` : `${DEGRADED[e.mode] ?? e.mode} — ${e.reason}`);
         break;
       case "error":
+        // Session expirée : retour à l'écran de connexion plutôt qu'une page qui ne dit rien.
+        if (e.code === "unauthorized") {
+          setLoginNotice("Votre session a expiré. Reconnectez-vous.");
+          setAccount(null);
+          return;
+        }
         setWsError({ code: e.code, msg: e.msg });
         log("erreur", e.msg);
         break;
@@ -397,16 +452,9 @@ export function App() {
   const reportsToday = overview ? Object.values(overview.today.reports).reduce((a, b) => a + (b ?? 0), 0) : reports.length;
   const voiceName = (id: string) => conf?.settings.voices.find((v) => v.id === id)?.name;
 
-  const unauthorized = !token || adminError === "jeton de session invalide" || wsError?.code === "unauthorized";
   const banners = (
     <>
-      {unauthorized && (
-        <Banner tone="crit" icon="key_off">
-          {token ? "Jeton de session refusé." : "Lien incomplet : il manque le jeton de session."} Ouvrez l'administration avec son adresse complète,
-          jeton compris (<span className="font-metric-mono-sm">/dashboard?token=…</span>) : il figure dans la configuration du serveur de salle.
-        </Banner>
-      )}
-      {!unauthorized && adminError && conn === "open" && (
+      {adminError && conn === "open" && (
         <Banner tone="warn" icon="cloud_off" action={<Action icon="refresh" title="Réessayer" onClick={() => void (loadConf(), loadOverview())} />}>
           API d'administration indisponible : {adminError}
         </Banner>
@@ -458,6 +506,10 @@ export function App() {
       </Action>
     ) : undefined;
 
+  // Tant qu'on ne sait pas : rien, pour ne pas faire clignoter l'écran de connexion.
+  if (account === undefined) return <div className="min-h-dvh bg-surface" />;
+  if (account === null) return <Login surface="Administration" notice={loginNotice} onDone={setAccount} />;
+
   return (
     <Shell
       route={route}
@@ -466,7 +518,8 @@ export function App() {
       alerts={{ crit: alerts.filter((a) => a.severity === "crit").length, warn: alerts.filter((a) => a.severity === "warn").length }}
       reports={reportsToday}
       configDirty={dirty.size > 0}
-      token={token}
+      account={account}
+      onLogout={() => void logout().then(() => setAccount(null))}
       joinUrl={info?.joinUrl}
       actions={actions}
       cosmos={cosmos}
@@ -528,7 +581,19 @@ export function App() {
           onReset={resetSettings}
         />
       )}
-      {route === "seance" && <Session sig={sig} infoError={infoError} floor={floor} questions={questions} journal={journal} onClearJournal={() => setJournal([])} />}
+      {route === "seance" && (
+        <Session
+          sig={sig}
+          infoError={infoError}
+          floor={floor}
+          questions={questions}
+          journal={journal}
+          onClearJournal={() => setJournal([])}
+          code={code}
+          onRotateCode={rotateCode}
+          rotatingCode={rotating}
+        />
+      )}
     </Shell>
   );
 }
