@@ -5,12 +5,14 @@
  * pages servies par le serveur — les mêmes que dans un navigateur — si bien qu'un
  * déploiement met l'application à jour sans réinstallation. Elle n'apporte que ce qu'un
  * navigateur ne sait pas faire : ouvrir le micro sans redemander l'autorisation à chaque
- * lancement, verrouiller la navigation sur le domaine de la salle, et donner une vraie
- * fenêtre au poste formateur.
+ * lancement, verrouiller la navigation sur le domaine de la salle, retrouver sa fenêtre, et
+ * attendre poliment que la salle revienne.
  *
  *   VOXIS_URL=https://localhost:8787 npm run dev -w desktop   (serveur de développement)
  */
-import { app, BrowserWindow, Menu, session, shell } from "electron";
+import { app, BrowserWindow, Menu, net, session, shell } from "electron";
+import path from "node:path";
+import { loadWindowState, trackWindowState } from "./window-state";
 
 /** L'adresse de la plateforme. Le développement la remplace par le serveur local. */
 const SERVER = (process.env.VOXIS_URL ?? "https://institutcega.fr").replace(/\/$/, "");
@@ -22,6 +24,13 @@ const PAGES = {
   lecturer: { path: "/lecturer", label: "Poste formateur" },
   dashboard: { path: "/dashboard", label: "Administration" },
 } as const;
+
+const OFFLINE_PAGE = path.join(__dirname, "..", "static", "offline.html");
+
+/** La page à rouvrir quand la salle revient : celle que l'on visait, pas toujours l'accueil. */
+let target = `${SERVER}${PAGES.lecturer.path}`;
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
  * Est-ce une adresse de la salle ? On compare des origines analysées, jamais des chaînes :
@@ -38,10 +47,11 @@ function isOurs(url: string): boolean {
   }
 }
 
+// ---- autorisations -------------------------------------------------------------------
 /**
- * Autorisations accordées d'office, et à notre domaine seulement. Le micro est la raison
- * d'être de ce poste : le redemander à chaque lancement n'apporterait aucune sécurité,
- * puisque la navigation est verrouillée sur la salle. Tout le reste est refusé.
+ * Accordées d'office, et à notre domaine seulement. Le micro est la raison d'être de ce
+ * poste : le redemander à chaque lancement n'apporterait aucune sécurité, puisque la
+ * navigation est verrouillée sur la salle. Tout le reste est refusé.
  */
 const GRANTED = new Set(["media", "speaker-selection", "clipboard-sanitized-write", "notifications", "fullscreen"]);
 
@@ -55,8 +65,7 @@ function configurePermissions() {
   });
 
   // Chromium interroge aussi ce point d'entrée, et c'est lui qui décide si les noms et les
-  // identifiants des périphériques sont visibles — donc si la liste du formateur est
-  // utilisable. L'origine y arrive parfois avec une barre finale : on compare des URL.
+  // identifiants des périphériques sont visibles — donc si la liste du formateur est utilisable.
   s.setPermissionCheckHandler((_contents, permission, origin) => {
     const ok = isOurs(origin) && GRANTED.has(permission);
     if (DEV) console.log(`[voxis] vérification : ${permission} depuis ${origin} → ${ok ? "accordée" : "refusée"}`);
@@ -67,37 +76,61 @@ function configurePermissions() {
   s.setDevicePermissionHandler(({ origin }) => origin === ORIGIN);
 }
 
-/** Écran d'attente quand le serveur ne répond pas — jamais une fenêtre blanche. */
-function offlinePage(reason: string): string {
-  const html = `<!doctype html><html lang="fr"><head><meta charset="utf-8">
-<style>
-  :root { color-scheme: dark; }
-  body { margin:0; height:100vh; display:flex; align-items:center; justify-content:center;
-         background:#0f131c; color:#e3e6ee;
-         font:15px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif; }
-  main { max-width:30rem; padding:2rem; text-align:center; }
-  h1 { font-size:1.25rem; margin:0 0 .75rem; }
-  p { margin:0 0 1.5rem; color:#9aa3b8; }
-  code { color:#7dd3a0; }
-  button { font:inherit; font-weight:600; padding:.7rem 1.4rem; border:0; border-radius:.75rem;
-           background:#2f9e68; color:#fff; cursor:pointer; }
-</style></head><body><main>
-  <h1>Serveur de salle injoignable</h1>
-  <p>${reason}<br><code>${ORIGIN}</code></p>
-  <button onclick="location.href='${SERVER}${PAGES.lecturer.path}'">Réessayer</button>
-</main></body></html>`;
-  return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
+// ---- la salle répond-elle ? ----------------------------------------------------------
+/** Passe par la pile réseau de Chromium, donc par notre exception de certificat en dev. */
+async function serverReachable(): Promise<boolean> {
+  try {
+    // Un paramètre qui change évite qu'un cache réponde à notre place.
+    const res = await net.fetch(`${SERVER}/api/health?t=${Date.now()}`);
+    return res.ok;
+  } catch {
+    return false;
+  }
 }
 
+/** La fenêtre affiche-t-elle l'écran d'attente ? (le seul contenu local de l'application) */
+const onOfflineScreen = (win: BrowserWindow) => win.webContents.getURL().startsWith("file://");
+
+let watching = false;
+
+/**
+ * Montre l'écran d'attente et guette le retour de la salle. La cadence se calme peu à peu :
+ * une coupure de quelques secondes se rattrape vite, une panne longue n'interroge pas le
+ * réseau sans arrêt. Dès que le serveur répond, on rouvre la page visée.
+ */
+async function showOfflineAndWait(win: BrowserWindow): Promise<void> {
+  await win.loadFile(OFFLINE_PAGE, { hash: encodeURIComponent(target) }).catch(() => {});
+  if (watching) return;
+  watching = true;
+  try {
+    for (let wait = 2000; ; wait = Math.min(Math.round(wait * 1.4), 15_000)) {
+      await sleep(wait);
+      // Fenêtre fermée, ou le formateur a déjà réussi à revenir par le bouton : on s'arrête.
+      if (win.isDestroyed() || !onOfflineScreen(win)) return;
+      if (await serverReachable()) {
+        console.log("[voxis] la salle répond de nouveau");
+        void win.loadURL(target);
+        return;
+      }
+    }
+  } finally {
+    watching = false;
+  }
+}
+
+// ---- la fenêtre ----------------------------------------------------------------------
 function createWindow(): BrowserWindow {
+  const stateFile = path.join(app.getPath("userData"), "window-state.json");
+  const state = loadWindowState(stateFile, { width: 1280, height: 820, maximized: false });
+
   const win = new BrowserWindow({
-    width: 1280,
-    height: 820,
+    ...state,
     minWidth: 960,
     minHeight: 600,
     backgroundColor: "#0f131c",
-    autoHideMenuBar: false,
     title: "CEGA Voxis",
+    // La fenêtre n'apparaît qu'une fois prête : pas de rectangle blanc au lancement.
+    show: false,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -105,43 +138,63 @@ function createWindow(): BrowserWindow {
     },
   });
 
+  if (state.maximized) win.maximize();
+  win.once("ready-to-show", () => win.show());
+  trackWindowState(win, stateFile);
+
   // Un lien vers l'extérieur s'ouvre dans le vrai navigateur ; un lien de la salle
   // (le tableau de bord en a, en target="_blank") reste dans cette fenêtre.
   win.webContents.setWindowOpenHandler(({ url }) => {
-    if (isOurs(url)) void win.loadURL(url);
+    if (isOurs(url)) go(win, url);
     else void shell.openExternal(url);
     return { action: "deny" };
   });
 
-  // La coquille ne va nulle part ailleurs que sur la salle.
-  win.webContents.on("will-navigate", (event, url) => {
-    if (isOurs(url)) return;
+  // La coquille ne va nulle part ailleurs que sur la salle — y compris par redirection.
+  const keepInside = (event: { preventDefault(): void }, url: string) => {
+    if (isOurs(url) || url.startsWith("file://")) return;
     event.preventDefault();
     void shell.openExternal(url);
-  });
+  };
+  win.webContents.on("will-navigate", keepInside);
+  win.webContents.on("will-redirect", keepInside);
 
   win.webContents.on("did-fail-load", (_e, code, description, url, isMainFrame) => {
     // -3 = chargement interrompu par une navigation volontaire : ce n'est pas une panne.
     if (!isMainFrame || code === -3) return;
     console.error(`[voxis] chargement impossible (${code} ${description}) : ${url}`);
-    void win.loadURL(offlinePage("La connexion n'a pas abouti. Vérifiez votre accès à Internet, puis réessayez."));
+    void showOfflineAndWait(win);
   });
 
-  void win.loadURL(`${SERVER}${PAGES.lecturer.path}`);
+  // Un rendu qui meurt en pleine séance : on rouvre la page plutôt que de laisser un vide.
+  win.webContents.on("render-process-gone", (_e, details) => {
+    console.error(`[voxis] le rendu s'est arrêté : ${details.reason}`);
+    if (details.reason !== "clean-exit" && !win.isDestroyed()) go(win, target);
+  });
+
+  win.on("unresponsive", () => console.warn("[voxis] la page ne répond plus"));
+
+  go(win, target);
   return win;
 }
 
+/** Ouvre une page de la salle et retient laquelle, pour y revenir après une coupure. */
+function go(win: BrowserWindow, url: string) {
+  target = url;
+  void win.loadURL(url);
+}
+
 function buildMenu(win: BrowserWindow) {
-  const go = (path: string) => () => void win.loadURL(`${SERVER}${path}`);
+  const open = (p: string) => () => go(win, `${SERVER}${p}`);
   Menu.setApplicationMenu(
     Menu.buildFromTemplate([
       {
         label: "CEGA Voxis",
         submenu: [
-          { label: PAGES.lecturer.label, accelerator: "CmdOrCtrl+1", click: go(PAGES.lecturer.path) },
-          { label: PAGES.dashboard.label, accelerator: "CmdOrCtrl+2", click: go(PAGES.dashboard.path) },
+          { label: PAGES.lecturer.label, accelerator: "CmdOrCtrl+1", click: open(PAGES.lecturer.path) },
+          { label: PAGES.dashboard.label, accelerator: "CmdOrCtrl+2", click: open(PAGES.dashboard.path) },
           { type: "separator" },
-          { label: "Recharger", accelerator: "CmdOrCtrl+R", click: () => win.webContents.reload() },
+          { label: "Recharger", accelerator: "CmdOrCtrl+R", click: () => (onOfflineScreen(win) ? go(win, target) : win.webContents.reload()) },
           { type: "separator" },
           { role: "quit", label: "Quitter" },
         ],
@@ -161,6 +214,7 @@ function buildMenu(win: BrowserWindow) {
   );
 }
 
+// ---- cycle de vie --------------------------------------------------------------------
 // Une seule instance : deux fenêtres ouvriraient deux fois le micro du formateur.
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -171,6 +225,11 @@ if (!app.requestSingleInstanceLock()) {
       if (win.isMinimized()) win.restore();
       win.focus();
     }
+  });
+
+  // Rien d'embarqué ne doit charger de contenu : pas de <webview> dans nos pages.
+  app.on("web-contents-created", (_e, contents) => {
+    contents.on("will-attach-webview", (event) => event.preventDefault());
   });
 
   // En développement, le serveur local porte un certificat auto-signé : on l'accepte,

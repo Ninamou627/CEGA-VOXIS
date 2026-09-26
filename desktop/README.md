@@ -24,6 +24,7 @@ VOXIS_URL=https://localhost:8787 npm run dev -w desktop
 
 `VOXIS_URL` remplace l'adresse de production. Le certificat auto-signé du serveur de
 développement est accepté — **pour `localhost` seulement, et hors application empaquetée**.
+`VOXIS_DEBUG=1` affiche en plus ce que la coquille lit de l'état de la fenêtre.
 
 Sans cette variable, la coquille ouvre `https://institutcega.fr`.
 
@@ -39,13 +40,26 @@ données. Un déploiement du serveur la met à jour : rien à réinstaller.
 
 Menu : `Ctrl+1` poste formateur, `Ctrl+2` administration, `Ctrl+R` recharger.
 
+## Quand la salle ne répond pas
+
+La coquille affiche un écran d'attente (`static/offline.html`), interroge `/api/health` à
+cadence décroissante — 2 s d'abord, jusqu'à 15 s ensuite — et rouvre **la page qu'on
+visait** dès que le serveur revient. Un bouton permet de ne pas attendre.
+
+Cet écran ne couvre que les échecs de chargement. Une coupure **en pleine séance** est déjà
+traitée dans la page elle-même : `SalleSocket` se reconnecte avec backoff et l'en-tête
+affiche l'état de la liaison. La coquille n'en fait pas un doublon.
+
+La fenêtre retrouve sa taille et sa position au lancement suivant
+(`%APPDATA%/@salle/desktop/window-state.json`). Un écran débranché depuis la dernière fois
+ne l'envoie pas hors de vue : la position est alors laissée au système.
+
 ## Reste à faire
 
-- **Étape 2** — taille de fenêtre mémorisée, écran de reconnexion plus complet.
 - **Étape 3** — choix de la sortie audio (à ajouter dans le client partagé, pour que le Web
   en profite aussi), raccourci de coupure micro, notification à l'arrivée d'une question.
 - **Étape 4** — `CEGA_VOXIS_Setup.exe` par electron-builder, mise à jour automatique, page de
-  téléchargement sur le serveur.
+  téléchargement sur le serveur. Penser à inclure `static/` dans les fichiers empaquetés.
 
 ## Signature du code
 
