@@ -12,6 +12,7 @@ import { listMics, startMic, type MicHandle } from "../lib/mic";
 import { WebAudioPlayer } from "../lib/player";
 import { SalleSocket, type ConnState } from "../lib/ws";
 import { Header } from "./Header";
+import { CodeGate } from "../ui/CodeGate";
 import { Login } from "../ui/Login";
 import { whoami, type AccountView } from "../lib/auth";
 import type { Line, QuestionItem } from "./types";
@@ -32,9 +33,16 @@ const STOP_ARM_MS = 4000;
 
 export function App() {
   const params = new URLSearchParams(location.search);
-  /** Compte connecté (D17) : undefined = on ne sait pas encore, null = il faut se connecter. */
+  /** Compte connecté (D17) : undefined = on ne sait pas encore, null = il faut un code ou un compte. */
   const [account, setAccount] = useState<AccountView | null | undefined>();
   const [loginNotice, setLoginNotice] = useState<string>();
+  /**
+   * Le formateur entre avec un code d'accès (plus simple à confier pour une journée qu'un
+   * compte à créer) ; « J'ai un compte » bascule vers l'écran de connexion.
+   */
+  const [code, setCode] = useState(params.get("c") ?? "");
+  const [byAccount, setByAccount] = useState(false);
+  const [gateError, setGateError] = useState<string>();
   const [running, setRunning] = useState(false);
   const [conn, setConn] = useState<ConnState>("closed");
   const [hello, setHello] = useState<Hello>();
@@ -151,7 +159,7 @@ export function App() {
       await openMic(deviceId);
 
       const s = new SalleSocket(
-        { t: "join", role: "lecturer", sampleRate: mic.current!.sampleRate, ua: navigator.userAgent.slice(0, 200) },
+        { t: "join", role: "lecturer", code: code || undefined, sampleRate: mic.current!.sampleRate, ua: navigator.userAgent.slice(0, 200) },
         { onState: setConn, onEvent: handleEvent, onAudio: handleAudio },
       );
       sock.current = s;
@@ -250,9 +258,15 @@ export function App() {
         break;
       case "error":
         setErr(e.msg);
-        // Session expirée pendant la séance : on redemande la connexion.
+        // Session expirée ou code refusé : on redemande de quoi entrer.
         if (e.code === "unauthorized") {
           setLoginNotice("Votre session a expiré. Reconnectez-vous pour reprendre la séance.");
+          setByAccount(true);
+          setAccount(null);
+        }
+        if (e.code === "bad_code" || e.code === "too_many") {
+          setGateError(e.msg);
+          setCode("");
           setAccount(null);
         }
         break;
@@ -308,9 +322,27 @@ export function App() {
   const tgtLang: Lang = hello?.langs[0] ?? "fr";
   const asking = floor.state === "question";
 
-  // Tant qu'on ne sait pas : rien, pour ne pas faire clignoter l'écran de connexion.
+  // Tant qu'on ne sait pas : rien, pour ne pas faire clignoter l'écran d'entrée.
   if (account === undefined) return <div className="min-h-dvh bg-surface" />;
-  if (account === null) return <Login surface="Poste formateur" notice={loginNotice} onDone={setAccount} />;
+  // Ni compte connecté, ni code saisi : on demande le code, avec le compte en repli.
+  if (account === null && !code && !byAccount) {
+    return (
+      <CodeGate
+        surface="Poste formateur"
+        length={8}
+        hint="Saisissez le code formateur que l'administration vous a remis pour cette séance."
+        error={gateError}
+        onCode={(c) => {
+          setCode(c);
+          setGateError(undefined);
+        }}
+        onUseAccount={() => setByAccount(true)}
+      />
+    );
+  }
+  if (account === null && byAccount) {
+    return <Login surface="Poste formateur" notice={loginNotice} onDone={setAccount} />;
+  }
 
   return (
     <>

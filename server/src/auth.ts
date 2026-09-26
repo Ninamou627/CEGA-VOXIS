@@ -21,6 +21,9 @@ export const COOKIE_NAME = "voxis_session";
 
 export type AccountRole = "admin" | "lecturer";
 
+/** À qui s'adresse un code d'accès : la salle entière, ou le formateur seul. */
+export type CodeKind = "listener" | "lecturer";
+
 export interface Account {
   /** PostgreSQL rend un BIGSERIAL sous forme de chaîne : on ne le convertit pas. */
   id: string;
@@ -61,14 +64,21 @@ export function verifyPassword(password: string, stored: string): boolean {
   }
 }
 
-// ---- code de séance -----------------------------------------------------------------------
+// ---- codes d'accès ------------------------------------------------------------------------
 /** Sans I, O, 0 ni 1 : un code se dicte à voix haute et se tape sans hésiter. */
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-const CODE_LENGTH = 6;
 
-export function newRoomCode(): string {
+/**
+ * Deux usages, deux longueurs. Celui des apprenants est projeté et dicté à toute la salle :
+ * six caractères, pour qu'il se tape vite. Celui du formateur est remis à une seule personne
+ * et n'est jamais affiché : huit caractères ne coûtent rien et valent mille fois plus cher
+ * à deviner.
+ */
+export const CODE_LENGTH: Record<CodeKind, number> = { listener: 6, lecturer: 8 };
+
+export function newRoomCode(kind: CodeKind): string {
   let out = "";
-  for (let i = 0; i < CODE_LENGTH; i++) out += CODE_ALPHABET[randomInt(CODE_ALPHABET.length)];
+  for (let i = 0; i < CODE_LENGTH[kind]; i++) out += CODE_ALPHABET[randomInt(CODE_ALPHABET.length)];
   return out;
 }
 
@@ -226,28 +236,31 @@ export class Auth {
     if (sessionId) await this.db.exec(`DELETE FROM auth_sessions WHERE id = $1`, [sessionId]);
   }
 
-  // -- code de séance -----------------------------------------------------------------------
-  /** Le code courant, ou undefined s'il n'y en a pas ou s'il a expiré. */
-  async roomCode(): Promise<RoomCode | undefined> {
-    const row = await this.db.row<{ code: string; expires_at: Date }>(`SELECT code, expires_at FROM room_code WHERE expires_at > now()`);
+  // -- codes d'accès ------------------------------------------------------------------------
+  /** Le code courant d'un usage, ou undefined s'il n'y en a pas ou s'il a expiré. */
+  async roomCode(kind: CodeKind): Promise<RoomCode | undefined> {
+    const row = await this.db.row<{ code: string; expires_at: Date }>(
+      `SELECT code, expires_at FROM access_codes WHERE kind = $1 AND expires_at > now()`,
+      [kind],
+    );
     return row && { code: row.code, expiresAt: row.expires_at };
   }
 
-  /** Nouveau code : l'ancien QR code ne vaut plus rien. */
-  async rotateRoomCode(hours = this.opts.codeHours): Promise<RoomCode> {
-    const code = newRoomCode();
+  /** Nouveau code : l'ancien ne vaut plus rien — pour les apprenants, l'ancien QR non plus. */
+  async rotateRoomCode(kind: CodeKind, hours = this.opts.codeHours): Promise<RoomCode> {
+    const code = newRoomCode(kind);
     const expiresAt = new Date(Date.now() + hours * 3_600_000);
     await this.db.exec(
-      `INSERT INTO room_code (only_row, code, expires_at, updated_at) VALUES (true, $1, $2, now())
-       ON CONFLICT (only_row) DO UPDATE SET code = $1, expires_at = $2, updated_at = now()`,
-      [code, expiresAt],
+      `INSERT INTO access_codes (kind, code, expires_at, updated_at) VALUES ($1, $2, $3, now())
+       ON CONFLICT (kind) DO UPDATE SET code = $2, expires_at = $3, updated_at = now()`,
+      [kind, code, expiresAt],
     );
     return { code, expiresAt };
   }
 
-  async checkRoomCode(input: string | undefined): Promise<boolean> {
+  async checkRoomCode(kind: CodeKind, input: string | undefined): Promise<boolean> {
     if (!input) return false;
-    const current = await this.roomCode();
+    const current = await this.roomCode(kind);
     return Boolean(current && sameCode(normalizeCode(input), current.code));
   }
 

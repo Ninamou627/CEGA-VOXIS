@@ -10,7 +10,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { OverviewResponse, RecentReport, SaveResponse, SettingsResponse } from "../../../shared/admin";
-import type { RoomCodeResponse } from "../../../shared/auth";
+import type { CodeKind, CurrentCodeResponse } from "../../../shared/auth";
 import type { ClientSettings, FloorState, Lang, ServerEvent, StatsPayload } from "../../../shared/protocol";
 import type { Settings } from "../../../shared/settings";
 import { logout, whoami, type AccountView } from "../lib/auth";
@@ -146,27 +146,28 @@ export function App() {
       .catch(() => setAccount(null));
   }, []);
 
-  // ---- code de séance (D17) -------------------------------------------------------------
-  // Sans code ouvert, aucun apprenant ne peut entrer : la page Séance le dit et le propose.
-  const [code, setCode] = useState<RoomCodeResponse>();
-  const [rotating, setRotating] = useState(false);
+  // ---- codes d'accès (D17) --------------------------------------------------------------
+  // Sans code apprenant, personne n'entre dans la salle ; sans code formateur, le poste
+  // formateur n'ouvre que pour un compte. La page Séance le dit et propose de les ouvrir.
+  const [codes, setCodes] = useState<CurrentCodeResponse>();
+  const [rotating, setRotating] = useState<CodeKind>();
 
   useEffect(() => {
     if (!account) return;
-    void api.code().then(setCode).catch(adminFailed);
+    void api.codes().then(setCodes).catch(adminFailed);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- adminFailed est stable
   }, [api, account]);
 
-  const rotateCode = () => {
-    setRotating(true);
+  const rotateCode = (kind: CodeKind) => {
+    setRotating(kind);
     void api
-      .rotateCode()
+      .rotateCode(kind)
       .then((c) => {
-        setCode(c);
-        log("salle", `nouveau code de séance : ${c.code}`);
+        setCodes((prev) => ({ listener: null, lecturer: null, ...prev, [kind]: c }));
+        log("salle", kind === "listener" ? "nouveau code apprenant" : "nouveau code formateur");
       })
       .catch(adminFailed)
-      .finally(() => setRotating(false));
+      .finally(() => setRotating(undefined));
   };
 
   // ---- API d'administration -----------------------------------------------------------
@@ -589,7 +590,7 @@ export function App() {
           questions={questions}
           journal={journal}
           onClearJournal={() => setJournal([])}
-          code={code}
+          codes={codes}
           onRotateCode={rotateCode}
           rotatingCode={rotating}
         />

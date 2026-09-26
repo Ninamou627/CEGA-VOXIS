@@ -248,31 +248,43 @@ export function attachWs(wss: WebSocketServer, ctx: WsContext): void {
      * de séance, court et à durée limitée.
      */
     async function admit(evt: JoinEvent): Promise<void> {
+      /** Vérifie un code d'accès, en freinant les essais répétés d'une même adresse. */
+      const codeAccepted = async (kind: "listener" | "lecturer"): Promise<boolean> => {
+        const from = remote ?? "inconnu";
+        if (!auth.codes.allow(from)) {
+          sendErr("too_many", "trop d'essais. Réessayez dans quelques minutes.");
+          ws.close(4429, "too_many");
+          return false;
+        }
+        if (!(await auth.checkRoomCode(kind, evt.code))) {
+          auth.codes.fail(from);
+          log.warn({ id, remote, role: evt.role }, "code d'accès refusé");
+          sendErr("bad_code", evt.code ? "code invalide ou expiré" : "code requis");
+          ws.close(4403, "bad_code");
+          return false;
+        }
+        auth.codes.succeed(from);
+        return true;
+      };
+
       try {
-        if (evt.role === "lecturer" || evt.role === "dashboard") {
+        if (evt.role === "dashboard") {
+          // Le tableau de bord règle la salle, lit les signalements et gère les comptes :
+          // un vrai compte d'administration, jamais un code.
           const account = await auth.accountOf(cookieValue(req.headers.cookie, COOKIE_NAME));
-          // Le tableau de bord règle la salle : administration seulement. Un compte de
-          // formateur ouvre la page Formateur, pas les réglages.
-          if (!account || (evt.role === "dashboard" && account.role !== "admin")) {
+          if (!account || account.role !== "admin") {
             sendErr("unauthorized", account ? "réservé à l'administration" : "connexion requise");
             ws.close(4401, "unauthorized");
             return;
           }
-        } else {
-          const from = remote ?? "inconnu";
-          if (!auth.codes.allow(from)) {
-            sendErr("too_many", "trop d'essais. Réessayez dans quelques minutes.");
-            ws.close(4429, "too_many");
-            return;
-          }
-          if (!(await auth.checkRoomCode(evt.code))) {
-            auth.codes.fail(from);
-            log.warn({ id, remote, role: evt.role }, "code de séance refusé");
-            sendErr("bad_code", evt.code ? "code de séance invalide ou expiré" : "code de séance requis");
-            ws.close(4403, "bad_code");
-            return;
-          }
-          auth.codes.succeed(from);
+        } else if (evt.role === "lecturer") {
+          // Un compte ouvre le poste formateur — pratique quand l'administrateur anime
+          // lui-même. Sinon le code formateur suffit : plus simple à confier pour une
+          // journée qu'un compte à créer, et il expire tout seul.
+          const account = await auth.accountOf(cookieValue(req.headers.cookie, COOKIE_NAME));
+          if (!account && !(await codeAccepted("lecturer"))) return;
+        } else if (!(await codeAccepted("listener"))) {
+          return;
         }
       } catch (err) {
         log.error({ id, err: (err as Error).message }, "vérification de l'admission impossible");

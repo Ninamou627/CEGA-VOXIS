@@ -14,11 +14,17 @@ export interface CodeGateProps {
   surface: string;
   onCode: (code: string) => void;
   error?: string;
+  /** Ce que l'écran explique, quand ce n'est pas un QR code projeté. */
+  hint?: string;
+  /** Longueur attendue : six pour les apprenants, huit pour le formateur. */
+  length?: number;
+  /** Repli pour qui a un compte plutôt qu'un code (poste formateur). */
+  onUseAccount?: () => void;
 }
 
-export function CodeGate({ surface, onCode, error }: CodeGateProps) {
+export function CodeGate({ surface, onCode, error, hint, length = 6, onUseAccount }: CodeGateProps) {
   const [code, setCode] = useState("");
-  const ready = code.replace(/[^A-Z0-9]/g, "").length >= 6;
+  const ready = code.replace(/[^A-Z0-9]/g, "").length >= length;
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -36,20 +42,20 @@ export function CodeGate({ surface, onCode, error }: CodeGateProps) {
 
         <div className="bg-surface-container-lowest border border-outline-variant/25 rounded-2xl p-5 shadow-xl flex flex-col gap-4">
           <p className="text-sm text-on-surface-variant leading-relaxed">
-            Scannez le QR code affiché dans la salle, ou saisissez le code de séance que le formateur vous donne.
+            {hint ?? "Scannez le QR code affiché dans la salle, ou saisissez le code de séance que le formateur vous donne."}
           </p>
 
           <label className="flex flex-col gap-1">
-            <span className="text-[11px] text-on-surface-variant font-medium">Code de séance</span>
+            <span className="text-[11px] text-on-surface-variant font-medium">Code d'accès</span>
             <input
               value={code}
               // Le code n'a ni I, ni O, ni 0, ni 1 : rien à distinguer à la saisie.
-              onChange={(e) => setCode(e.target.value.toUpperCase().slice(0, 8))}
+              onChange={(e) => setCode(e.target.value.toUpperCase().slice(0, length + 2))}
               inputMode="text"
               autoCapitalize="characters"
               autoComplete="off"
               spellCheck={false}
-              placeholder="A7KP2M"
+              placeholder={"A7KP2MRT".slice(0, length)}
               // eslint-disable-next-line jsx-a11y/no-autofocus -- la page n'a que ce champ
               autoFocus
               className="w-full bg-surface-container border border-outline-variant/30 rounded-xl px-3 py-3 font-metric-mono-sm text-center text-2xl tracking-[0.3em] text-on-surface placeholder:text-outline focus:outline-none focus:border-secondary/60"
@@ -71,6 +77,12 @@ export function CodeGate({ surface, onCode, error }: CodeGateProps) {
             <Icon name="login" fill className="text-[20px]" />
             <span>Rejoindre la séance</span>
           </button>
+
+          {onUseAccount && (
+            <button type="button" onClick={onUseAccount} className="text-[13px] text-on-surface-variant hover:text-on-surface underline underline-offset-2 self-center">
+              J'ai un compte
+            </button>
+          )}
         </div>
       </form>
     </div>

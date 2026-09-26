@@ -29,11 +29,18 @@ export async function adminCookie(origin: string): Promise<string> {
   return cookie;
 }
 
-/** Le code de séance courant, ou un nouveau si aucun n'est ouvert. */
-export async function roomCode(origin: string, cookie: string): Promise<string> {
+/** Le code d'accès courant pour cet usage, ou un nouveau si aucun n'est ouvert. */
+export async function roomCode(origin: string, cookie: string, kind: "listener" | "lecturer" = "listener"): Promise<string> {
   const get = await fetch(`${origin}/api/admin/code`, { headers: { cookie } });
-  if (get.ok) return ((await get.json()) as { code: string }).code;
-  const made = await fetch(`${origin}/api/admin/code`, { method: "POST", headers: { cookie, "content-type": "application/json" }, body: "{}" });
-  if (!made.ok) throw new Error(`impossible d'ouvrir un code de séance (HTTP ${made.status}).`);
+  if (get.ok) {
+    const current = ((await get.json()) as Record<string, { code: string } | null>)[kind];
+    if (current) return current.code;
+  }
+  const made = await fetch(`${origin}/api/admin/code`, {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ kind }),
+  });
+  if (!made.ok) throw new Error(`impossible d'ouvrir un code d'accès (HTTP ${made.status}).`);
   return ((await made.json()) as { code: string }).code;
 }

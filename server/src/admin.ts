@@ -10,8 +10,8 @@
  *   POST   /api/admin/voices            ajouter une voix { id, lang }
  *   DELETE /api/admin/voices/:id        retirer une voix (?lang=)
  *   POST   /api/admin/voices/preview    écoute d'essai { id, lang, text? } → audio/mpeg
- *   GET    /api/admin/code              code de séance courant (null avant la séance) et QR
- *   POST   /api/admin/code              nouveau code { hours? } — l'ancien QR ne vaut plus rien
+ *   GET    /api/admin/code              codes apprenant et formateur (null avant la séance)
+ *   POST   /api/admin/code              nouveau code { kind, hours? } — l'ancien ne vaut plus
  *   GET    /api/admin/accounts          comptes
  *   POST   /api/admin/accounts          créer { username, password, role }
  *   POST   /api/admin/accounts/:id/password   changer un mot de passe { password }
@@ -20,7 +20,7 @@
 import type { FastifyInstance } from "fastify";
 import { z, ZodError } from "zod";
 import type { OverviewResponse, Quality, SaveResponse, SettingsResponse, VoiceStats } from "../../shared/admin";
-import { CreateAccountSchema, PasswordSchema, RotateCodeSchema, type AccountView, type CurrentCodeResponse, type RoomCodeResponse } from "../../shared/auth";
+import { CreateAccountSchema, PasswordSchema, RotateCodeSchema, type AccountView, type CodeKind, type CurrentCodeResponse, type RoomCodeResponse } from "../../shared/auth";
 import { LangSchema, type Lang } from "../../shared/protocol";
 import type { Auth } from "./auth";
 import { requireAccount } from "./auth-api";
@@ -241,26 +241,32 @@ export function registerAdmin(app: FastifyInstance, ctx: AdminContext): void {
         }
       });
 
-      // ---- code de séance ---------------------------------------------------------
-      // C'est la seule route qui expose le code : `/api/session`, publique, ne le dit pas.
-      const codeResponse = (c: { code: string; expiresAt: Date }): RoomCodeResponse => ({
+      // ---- codes d'accès ----------------------------------------------------------
+      // Seule route qui expose les codes : `/api/session`, publique, n'en dit rien.
+      const codeResponse = (kind: CodeKind, c: { code: string; expiresAt: Date }): RoomCodeResponse => ({
+        kind,
         code: c.code,
         expiresAt: c.expiresAt.toISOString(),
-        joinUrl: `${ctx.publicUrl()}/?c=${c.code}`,
+        // Pas de lien pour le code formateur : il ne doit jamais finir dans un QR projeté.
+        joinUrl: kind === "listener" ? `${ctx.publicUrl()}/?c=${c.code}` : undefined,
       });
 
       // Pas de code, ou expiré : ce n'est pas une erreur, c'est l'état d'avant la séance.
       admin.get("/code", async (): Promise<CurrentCodeResponse> => {
-        const current = await auth.roomCode();
-        return { current: current ? codeResponse(current) : null };
+        const [listener, lecturer] = await Promise.all([auth.roomCode("listener"), auth.roomCode("lecturer")]);
+        return {
+          listener: listener ? codeResponse("listener", listener) : null,
+          lecturer: lecturer ? codeResponse("lecturer", lecturer) : null,
+        };
       });
 
       admin.post("/code", async (req, reply) => {
         const body = RotateCodeSchema.safeParse(req.body ?? {});
         if (!body.success) return reply.code(400).send({ error: formatZod(body.error) });
-        const next = await auth.rotateRoomCode(body.data.hours);
-        app.log.info({ expiresAt: next.expiresAt }, "nouveau code de séance");
-        return codeResponse(next);
+        const { kind, hours } = body.data;
+        const next = await auth.rotateRoomCode(kind, hours);
+        app.log.info({ kind, expiresAt: next.expiresAt }, "nouveau code d'accès");
+        return codeResponse(kind, next);
       });
 
       // ---- comptes ----------------------------------------------------------------

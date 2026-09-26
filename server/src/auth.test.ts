@@ -32,17 +32,25 @@ describe("mots de passe", () => {
   });
 });
 
-describe("code de séance", () => {
-  it("six caractères, sans I, O, 0 ni 1 — il se dicte à voix haute", () => {
+describe("codes d'accès", () => {
+  it("apprenant : six caractères, sans I, O, 0 ni 1 — il se dicte à toute la salle", () => {
     for (let i = 0; i < 200; i++) {
-      const code = newRoomCode();
+      const code = newRoomCode("listener");
       expect(code).toHaveLength(6);
       expect(code).toMatch(/^[A-HJ-NP-Z2-9]{6}$/);
     }
   });
 
+  it("formateur : huit caractères — remis à une seule personne, jamais projeté", () => {
+    for (let i = 0; i < 200; i++) {
+      const code = newRoomCode("lecturer");
+      expect(code).toHaveLength(8);
+      expect(code).toMatch(/^[A-HJ-NP-Z2-9]{8}$/);
+    }
+  });
+
   it("ne rend pas deux fois le même code", () => {
-    const seen = new Set(Array.from({ length: 200 }, () => newRoomCode()));
+    const seen = new Set(Array.from({ length: 200 }, () => newRoomCode("listener")));
     expect(seen.size).toBeGreaterThan(190);
   });
 

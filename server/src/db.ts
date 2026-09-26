@@ -47,6 +47,25 @@ const MIGRATIONS: { name: string; sql: string }[] = [
       );
     `,
   },
+  {
+    name: "002-code-formateur",
+    sql: `
+      -- Deux codes, pas un : celui des apprenants est projeté et dicté à toute la salle,
+      -- celui du formateur est remis à une seule personne et n'apparaît jamais à l'écran.
+      -- Une ligne par usage ; une seule formation à la fois, donc deux lignes au plus.
+      CREATE TABLE access_codes (
+        kind       TEXT PRIMARY KEY CHECK (kind IN ('listener', 'lecturer')),
+        code       TEXT NOT NULL,
+        expires_at TIMESTAMPTZ NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+
+      INSERT INTO access_codes (kind, code, expires_at, updated_at)
+        SELECT 'listener', code, expires_at, updated_at FROM room_code;
+
+      DROP TABLE room_code;
+    `,
+  },
 ];
 
 export class Db {

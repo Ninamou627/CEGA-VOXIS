@@ -35,20 +35,30 @@ export const CreateAccountSchema = z.object({
   role: AccountRoleSchema,
 });
 
-/** GET|POST /api/admin/code — le code de séance et l'adresse à mettre dans le QR. */
+/**
+ * Deux codes d'accès, deux usages. Celui des apprenants est projeté, dicté à toute la salle
+ * et encodé dans le QR ; celui du formateur est remis à une seule personne et ne s'affiche
+ * ni sur l'écran de salle, ni dans un QR.
+ */
+export const CodeKindSchema = z.enum(["listener", "lecturer"]);
+export type CodeKind = z.infer<typeof CodeKindSchema>;
+
 export interface RoomCodeResponse {
+  kind: CodeKind;
   code: string;
   expiresAt: string;
-  /** Adresse complète, code compris : c'est elle qu'encode le QR code. */
-  joinUrl: string;
+  /** Apprenants seulement : l'adresse complète, code compris, qu'encode le QR code. */
+  joinUrl?: string;
 }
 
-/** GET /api/admin/code : `null` tant qu'aucune séance n'est ouverte — ce n'est pas une erreur. */
+/** GET /api/admin/code : `null` pour un code qui n'est pas ouvert — ce n'est pas une erreur. */
 export interface CurrentCodeResponse {
-  current: RoomCodeResponse | null;
+  listener: RoomCodeResponse | null;
+  lecturer: RoomCodeResponse | null;
 }
 
 export const RotateCodeSchema = z.object({
+  kind: CodeKindSchema,
   /** Durée de validité, en heures. */
   hours: z.number().int().min(1).max(72).optional(),
 });

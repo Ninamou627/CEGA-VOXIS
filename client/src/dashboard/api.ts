@@ -3,7 +3,7 @@
  * serveur remonte avec son message, pour être affichée telle quelle.
  */
 import type { CatalogVoice, OverviewResponse, SaveResponse, SettingsResponse } from "../../../shared/admin";
-import type { CurrentCodeResponse, RoomCodeResponse } from "../../../shared/auth";
+import type { CodeKind, CurrentCodeResponse, RoomCodeResponse } from "../../../shared/auth";
 import type { Lang } from "../../../shared/protocol";
 import type { Settings } from "../../../shared/settings";
 
@@ -37,14 +37,14 @@ export class AdminApi {
     return this.call("/overview");
   }
 
-  /** Code de séance courant (D17). `undefined` quand aucun n'est ouvert ou qu'il a expiré. */
-  async code(): Promise<RoomCodeResponse | undefined> {
-    return (await this.call<CurrentCodeResponse>("/code")).current ?? undefined;
+  /** Les deux codes d'accès (D17) : apprenant et formateur, `null` quand ils ne sont pas ouverts. */
+  codes(): Promise<CurrentCodeResponse> {
+    return this.call("/code");
   }
 
-  /** Nouveau code : l'ancien QR code ne vaut plus rien. */
-  rotateCode(hours?: number): Promise<RoomCodeResponse> {
-    return this.call("/code", { method: "POST", body: JSON.stringify(hours ? { hours } : {}) });
+  /** Nouveau code pour cet usage : l'ancien ne vaut plus rien. */
+  rotateCode(kind: CodeKind, hours?: number): Promise<RoomCodeResponse> {
+    return this.call("/code", { method: "POST", body: JSON.stringify({ kind, ...(hours ? { hours } : {}) }) });
   }
 
   catalog(refresh = false): Promise<{ voices: CatalogVoice[] }> {
