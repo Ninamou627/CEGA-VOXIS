@@ -277,6 +277,42 @@ que l'hébergeur n'est pas tranché et que les disques des hébergements managé
 aucun auditeur à distance) : la boîte de salle de l'Horizon 2 redevient la meilleure réponse,
 et `server/src/domain.ts` en porte déjà le certificat automatique.
 
+## D18 — Application de bureau : une coquille Electron sur la plateforme en ligne
+
+**Décision.** La version Windows est une fenêtre qui charge les pages servies par le serveur
+(`https://institutcega.fr/lecturer`, `/dashboard`), et rien d'autre : aucune interface, aucune
+logique métier, aucune base locale. Elle s'adresse au formateur et à l'administration ;
+l'apprenant reste sur le Web. La coquille est en **Electron**, pas en Tauri.
+
+**Pourquoi une coquille et pas une application.** Le client est déjà bâti pour ça : il déduit
+l'adresse de son WebSocket de la page qui le sert (`client/src/lib/ws.ts`), et tout le reste
+est relatif. Charger l'origine réelle plutôt qu'un front embarqué donne deux choses d'un
+coup : un déploiement serveur met l'application à jour sans réinstallation, et le cookie de
+session fonctionne tel quel — un front embarqué aurait exigé du CORS et un cookie
+`SameSite=None`, c'est-à-dire un affaiblissement réel de D17.
+
+**Pourquoi Electron plutôt que Tauri.** Le micro du formateur *est* le produit. Electron
+embarque Chromium : le comportement est identique à Chrome, déjà validé sur ce projet. Tauri
+s'appuie sur le WebView2 du poste client — version variable d'une machine à l'autre — et son
+autorisation micro passe par un `PermissionRequested` à écrire en Rust, avec des refus
+silencieux rapportés. À cela s'ajoute que charger une URL distante est l'usage le plus
+ordinaire d'Electron et un chemin secondaire chez Tauri, et que la chaîne Rust est absente de
+la machine de développement.
+
+**Ce qu'on perd.** Un installeur d'environ 150 Mo au lieu de 10, ~200 Mo de mémoire au lieu
+de 80, et la charge de suivre les correctifs de Chromium — une nouvelle version à publier tous
+les quelques mois. La coquille faisant environ deux cents lignes, revenir sur ce choix
+coûterait une journée : ce n'est pas une porte à sens unique.
+
+**Signature du code.** Sans certificat, Windows SmartScreen affiche un avertissement à la
+première installation. Un certificat OV coûte ~300 €/an ; Azure Artifact Signing (ex-Trusted
+Signing) revient à ~10 $/mois mais exige une identité d'organisation vérifiée. En attendant :
+empreinte SHA-256 publiée à côté du téléchargement, page d'installation illustrée, et
+distribution en HTTPS depuis notre propre domaine.
+
+**Ce qui ferait changer d'avis.** Un client pour qui 150 Mo est rédhibitoire, ou un support
+micro de première classe côté Tauri : la coquille se réécrit en une journée.
+
 ## Ce que six semaines (au lieu de 48 h) remettent sur la table
 
 Dans l'ordre de valeur : tests automatisés dès le départ (fait) ; multilingue réel
