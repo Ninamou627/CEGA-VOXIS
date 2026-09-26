@@ -1,0 +1,25 @@
+# Caddy devant le serveur de salle : il obtient et renouvelle seul le certificat
+# Let's Encrypt (challenge HTTP-01 — le serveur est joignable depuis Internet, contrairement
+# au PC de salle qui exigeait le DNS-01, voir D6 et D17).
+
+{$DOMAIN} {
+	# Les connexions WebSocket (audio du formateur, voix des apprenants) passent
+	# telles quelles : Caddy relaie l'Upgrade sans rien y changer.
+	reverse_proxy app:8787
+
+	encode zstd gzip
+
+	header {
+		# Le navigateur n'essaiera plus jamais ce nom en clair.
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "same-origin"
+		-Server
+	}
+
+	# Un enregistrement par requête, lisible avec : docker compose logs caddy
+	log {
+		output stdout
+		format console
+	}
+}

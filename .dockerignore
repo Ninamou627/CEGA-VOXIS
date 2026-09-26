@@ -1,0 +1,14 @@
+node_modules
+**/node_modules
+**/dist
+.git
+.env
+certs/
+data/
+*.jsonl
+*.log
+fixtures/*.wav
+fixtures/*.mp3
+commercial/
+.impeccable/
+.claude/

@@ -1,0 +1,77 @@
+# CEGA Voxis en production : le serveur de salle, sa base, et Caddy qui termine le TLS.
+#
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# Les valeurs sensibles viennent d'un fichier .env placé à côté (jamais dans git) :
+# voir docs/DEPLOIEMENT.md.
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: voxis
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?mot de passe de la base manquant}
+      POSTGRES_DB: voxis
+    volumes:
+      - db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U voxis -d voxis"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    # La base n'est joignable que par le serveur, jamais depuis Internet.
+    expose:
+      - "5432"
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PORT: 8787
+      HOST: 0.0.0.0
+      DATABASE_URL: postgres://voxis:${POSTGRES_PASSWORD}@db:5432/voxis
+      # Caddy termine le TLS : le serveur parle HTTP en interne, mais la salle est en HTTPS.
+      PUBLIC_URL: https://${DOMAIN:?nom de domaine manquant}
+      TRUST_PROXY: "true"
+      TLS_CERT: ""
+      TLS_KEY: ""
+      # Tout ce qui doit survivre à une mise à jour vit sous data/ (un seul volume).
+      SETTINGS_FILE: data/settings.json
+      TOTALS_FILE: data/totals.json
+      METRICS_FILE: data/metrics.jsonl
+    env_file:
+      - .env
+    volumes:
+      - data:/app/data
+    expose:
+      - "8787"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/api/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - app
+    environment:
+      DOMAIN: ${DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  db:
+  data:
+  caddy-data:
+  caddy-config:

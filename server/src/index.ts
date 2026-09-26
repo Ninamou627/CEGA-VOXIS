@@ -30,6 +30,14 @@ const cfg = loadConfig();
 // Chemins relatifs à la racine du dépôt (npm lance le serveur depuis server/).
 const fromRoot = (p: string) => (path.isAbsolute(p) ? p : path.resolve(here, "../..", p));
 const tls = cfg.TLS_CERT && cfg.TLS_KEY ? { cert: readFileSync(fromRoot(cfg.TLS_CERT)), key: readFileSync(fromRoot(cfg.TLS_KEY)) } : undefined;
+/**
+ * Les apprenants arrivent-ils en HTTPS ? Soit le serveur porte lui-même le certificat, soit
+ * un reverse proxy le termine devant lui (Caddy en production, D17) : le serveur parle alors
+ * HTTP en interne, mais la salle est bien en HTTPS. Sans cette distinction, le cookie de
+ * session perdrait son attribut `secure` et le tableau de bord annoncerait un faux HTTP.
+ */
+const publicHttps = Boolean(tls) || (cfg.TRUST_PROXY && Boolean(cfg.PUBLIC_URL?.startsWith("https://")));
+
 /** PUBLIC_URL sur un nom de domaine : certificat Let's Encrypt et DNS tenus par domain.ts. */
 const domain = domainOf(cfg.PUBLIC_URL);
 let domainWarning: (() => string | undefined) | undefined;
@@ -146,7 +154,7 @@ const auth = new Auth(db, { sessionHours: cfg.SESSION_HOURS, codeHours: cfg.CODE
 }
 // Les sessions de connexion périmées ne servent plus à rien.
 setInterval(() => void auth.purgeExpired().catch(() => {}), 6 * 3_600_000).unref();
-registerAuth(app, { auth, tls: Boolean(tls), log: app.log });
+registerAuth(app, { auth, tls: publicHttps, log: app.log });
 
 registerAdmin(app, {
   cfg,
@@ -174,7 +182,7 @@ if (existsSync(clientDist)) {
 // ---- API ---------------------------------------------------------------------------
 function publicUrl(ip = lanIp()): string {
   if (cfg.PUBLIC_URL) return cfg.PUBLIC_URL.replace(/\/$/, "");
-  return origin(Boolean(tls), ip ?? "localhost", cfg.PORT);
+  return origin(publicHttps, ip ?? "localhost", cfg.PORT);
 }
 
 // ---- santé du processus : CPU depuis le dernier appel, mémoire, retard de la boucle ----
@@ -237,7 +245,8 @@ app.get("/api/session", async () => ({
   joinUrls: cfg.PUBLIC_URL
     ? [{ url: `${publicUrl()}/`, iface: "PUBLIC_URL", virtual: false }]
     : lanIps().map((i) => ({ url: `${publicUrl(i.address)}/`, iface: i.iface, virtual: i.virtual })),
-  tls: Boolean(tls),
+  /** Ce que voient les téléphones : sans HTTPS, pas de micro, donc pas de questions parlées. */
+  tls: publicHttps,
 }));
 
 // ---- démarrage ----------------------------------------------------------------------
@@ -253,10 +262,11 @@ app.log.info(
     mt: providers.mt.name,
     tts: providers.tts.name,
     joinUrl: `${publicUrl()}/`,
-    lecturerUrl: `${publicUrl()}/lecturer?token=…`,
-    dashboardUrl: `${publicUrl()}/dashboard?token=…`,
+    lecturerUrl: `${publicUrl()}/lecturer`,
+    dashboardUrl: `${publicUrl()}/dashboard`,
     screenUrl: `${publicUrl()}/screen`,
-    tls: Boolean(tls),
+    tls: publicHttps,
+    tlsBy: tls ? "serveur" : publicHttps ? "reverse proxy" : "aucun",
   },
   "salle ouverte",
 );
