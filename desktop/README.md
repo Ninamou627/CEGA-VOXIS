@@ -31,14 +31,16 @@ L'apprenant reste sur le Web : rien à installer pour scanner un QR code.
 
 ```bash
 npm run db:up && npm run dev          # le serveur de salle, dans un terminal
-VOXIS_URL=https://localhost:8787 npm run dev -w desktop
+npm run dev -w desktop                # la coquille, dans un autre
 ```
 
-`VOXIS_URL` remplace l'adresse de production. Le certificat auto-signé du serveur de
-développement est accepté — **pour `localhost` seulement, et hors application empaquetée**.
-`VOXIS_DEBUG=1` affiche en plus ce que la coquille lit de l'état de la fenêtre.
+Hors empaquetage, la coquille vise `https://localhost:8787` ; une fois empaquetée, elle vise
+`https://institutcega.fr`. `VOXIS_URL` l'emporte dans les deux cas — pour ouvrir la
+production depuis une version de développement, par exemple.
 
-Sans cette variable, la coquille ouvre `https://institutcega.fr`.
+Le certificat auto-signé du serveur de développement est accepté — **pour `localhost`
+seulement, et jamais dans une application empaquetée**. `VOXIS_DEBUG=1` affiche en plus ce
+que la coquille lit de l'état de la fenêtre.
 
 ## Ce qu'elle fait, et ce qu'elle ne fait pas
 

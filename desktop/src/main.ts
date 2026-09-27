@@ -14,10 +14,18 @@ import { app, BrowserWindow, globalShortcut, Menu, net, session, shell } from "e
 import path from "node:path";
 import { loadWindowState, trackWindowState } from "./window-state";
 
-/** L'adresse de la plateforme. Le développement la remplace par le serveur local. */
-const SERVER = (process.env.VOXIS_URL ?? "https://institutcega.fr").replace(/\/$/, "");
-const ORIGIN = new URL(SERVER).origin;
 const DEV = !app.isPackaged;
+
+/**
+ * L'adresse de la plateforme. Hors empaquetage, on vise le serveur de développement : un
+ * `npm run dev -w desktop` qui ouvrirait la production afficherait l'écran d'attente tant
+ * qu'elle n'est pas déployée, ce qui ne veut rien dire quand on développe. `VOXIS_URL`
+ * l'emporte toujours — pour viser la production depuis une version non empaquetée, par
+ * exemple.
+ */
+const DEFAULT_SERVER = DEV ? "https://localhost:8787" : "https://institutcega.fr";
+const SERVER = (process.env.VOXIS_URL ?? DEFAULT_SERVER).replace(/\/$/, "");
+const ORIGIN = new URL(SERVER).origin;
 
 /** Les deux postes que l'application de bureau sert (l'apprenant reste sur le Web). */
 const PAGES = {
