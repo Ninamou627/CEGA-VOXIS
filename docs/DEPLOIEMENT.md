@@ -113,7 +113,24 @@ Depuis un téléphone en données mobiles — pas en Wi-Fi, pour être sûr de p
 Internet : scannez, choisissez une langue, écoutez. Le micro doit être proposé quand vous
 maintenez le bouton de question.
 
-## 6. Mettre à jour
+## 6. Publier l'application Windows
+
+L'installeur et son flux de mise à jour vivent dans `data/telechargements`, à l'intérieur du
+volume déjà sauvegardé. Depuis la machine de développement :
+
+```bash
+npm run dist -w desktop     # produit desktop/release/
+scp desktop/release/CEGA_VOXIS_Setup_*.exe \
+    desktop/release/CEGA_VOXIS_Setup_*.exe.blockmap \
+    desktop/release/latest.yml \
+    <serveur>:voxis/data/telechargements/
+```
+
+La page `https://institutcega.fr/telecharger` s'actualise toute seule : elle lit la version,
+la taille et l'empreinte SHA-256 du dernier fichier déposé. Les postes déjà installés voient
+la nouvelle version au lancement suivant, ou dans les 6 h.
+
+## 7. Mettre à jour le serveur
 
 ```bash
 git pull && docker compose -f docker-compose.prod.yml up -d --build
@@ -122,7 +139,7 @@ git pull && docker compose -f docker-compose.prod.yml up -d --build
 Quelques secondes de coupure : les migrations de base s'appliquent au démarrage, et les
 participants se reconnectent tout seuls. **Jamais pendant une séance.**
 
-## 7. Sauvegarder
+## 8. Sauvegarder
 
 Deux choses à garder : la base (comptes, codes) et le volume `data` (réglages, compteurs de
 long terme, `metrics.jsonl` — la mémoire longue du projet).

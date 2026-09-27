@@ -13,6 +13,7 @@ import { Auth } from "./auth";
 import { registerAuth } from "./auth-api";
 import { loadConfig, repoPath } from "./config";
 import { Db } from "./db";
+import { registerDownloads } from "./downloads";
 import { domainOf, HostingerDns, keepDomain } from "./domain";
 import { Metrics } from "./metrics";
 import { Pipeline } from "./pipeline/pipeline";
@@ -156,6 +157,9 @@ const auth = new Auth(db, { sessionHours: cfg.SESSION_HOURS, codeHours: cfg.CODE
 setInterval(() => void auth.purgeExpired().catch(() => {}), 6 * 3_600_000).unref();
 registerAuth(app, { auth, tls: publicHttps, log: app.log });
 
+// L'application Windows et son flux de mise à jour : publics, comme la page apprenant.
+registerDownloads(app, repoPath(cfg.DOWNLOAD_DIR));
+
 registerAdmin(app, {
   cfg,
   store,
@@ -173,6 +177,7 @@ if (existsSync(clientDist)) {
   app.get("/lecturer", (_req, reply) => reply.sendFile("lecturer.html"));
   app.get("/dashboard", (_req, reply) => reply.sendFile("dashboard.html"));
   app.get("/screen", (_req, reply) => reply.sendFile("screen.html"));
+  app.get("/telecharger", (_req, reply) => reply.sendFile("telecharger.html"));
 } else {
   app.get("/", async () => ({
     message: "Client non compilé. En développement, ouvrez le serveur Vite (npm run dev) ; en production, npm run build.",

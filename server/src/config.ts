@@ -54,6 +54,8 @@ const EnvSchema = z.object({
   SETTINGS_FILE: z.string().default("data/settings.json"),
   /** Compteurs de long terme : voix traduite, disponibilité, signalements, par jour. */
   TOTALS_FILE: z.string().default("data/totals.json"),
+  /** Installeurs de l'application Windows et flux de mise à jour (D18). */
+  DOWNLOAD_DIR: z.string().default("data/telechargements"),
 
   STT_PROVIDER: z.enum(["mock", "assemblyai", "deepgram"]).default("mock"),
   MT_PROVIDER: z.enum(["mock", "anthropic", "deepl"]).default("mock"),

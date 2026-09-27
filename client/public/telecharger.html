@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0f131c" />
+    <title>Installer CEGA Voxis · Windows</title>
+    <!--
+      Page publique : un formateur doit pouvoir installer l'application avant d'avoir un
+      compte ou un code. Volontairement en HTML simple, hors des quatre interfaces React —
+      elle ne doit dépendre de rien et s'afficher même si le reste ne se charge pas.
+    -->
+    <style>
+      :root {
+        color-scheme: dark;
+        --fond: #0f131c;
+        --carte: #161b26;
+        --bord: #262c3a;
+        --texte: #e3e6ee;
+        --discret: #9aa3b8;
+        --efface: #8b93a6;
+        --accent: #4edea3;
+        --accent-survol: #6ffbbe;
+        --sur-accent: #003824;
+        --alerte: #d9a441;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: 2rem 1rem 4rem;
+        background: var(--fond);
+        color: var(--texte);
+        font: 16px/1.65 system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      main { max-width: 42rem; margin: 0 auto; }
+      .marque {
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+        font-weight: 700;
+        font-size: 1.05rem;
+        margin-bottom: 2.5rem;
+      }
+      .marque svg { width: 1.9rem; height: 1.9rem; }
+      h1 { font-size: 1.85rem; line-height: 1.25; margin: 0 0 0.6rem; letter-spacing: -0.02em; }
+      .accroche { color: var(--discret); margin: 0 0 2rem; }
+      h2 { font-size: 1.05rem; margin: 2.5rem 0 0.75rem; }
+      p { margin: 0 0 1rem; }
+      .carte {
+        background: var(--carte);
+        border: 1px solid var(--bord);
+        border-radius: 1rem;
+        padding: 1.5rem;
+      }
+      .telecharger {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.6rem;
+        font: inherit;
+        font-weight: 700;
+        text-decoration: none;
+        padding: 0.85rem 1.6rem;
+        border-radius: 0.75rem;
+        background: var(--accent);
+        color: var(--sur-accent);
+      }
+      .telecharger:hover { background: var(--accent-survol); }
+      .telecharger[aria-disabled="true"] { opacity: 0.5; pointer-events: none; }
+      .meta { margin-top: 1rem; font-size: 0.8125rem; color: var(--efface); }
+      .empreinte {
+        font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+        font-size: 0.75rem;
+        word-break: break-all;
+        color: var(--discret);
+        margin-top: 0.35rem;
+      }
+      ol { padding-left: 1.25rem; margin: 0; }
+      li { margin-bottom: 0.65rem; }
+      li:last-child { margin-bottom: 0; }
+      .avertissement {
+        border-left: 3px solid var(--alerte);
+        padding-left: 1rem;
+        margin: 1.25rem 0;
+        color: var(--discret);
+      }
+      strong { color: var(--texte); }
+      code {
+        font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+        font-size: 0.9em;
+        color: var(--accent);
+      }
+      footer { margin-top: 3rem; font-size: 0.8125rem; color: var(--efface); }
+      footer a { color: var(--discret); }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="marque">
+        <svg viewBox="0 0 32 32" role="img" aria-label="CEGA Voxis">
+          <rect width="32" height="32" rx="8" fill="#2563eb" />
+          <rect x="6.5" y="12" width="3" height="8" rx="1.5" fill="#dbe1ff" />
+          <rect x="12" y="8" width="3" height="16" rx="1.5" fill="#ffffff" />
+          <rect x="17.5" y="5" width="3" height="22" rx="1.5" fill="#4edea3" />
+          <rect x="23" y="11" width="3" height="10" rx="1.5" fill="#dbe1ff" />
+        </svg>
+        <span>CEGA Voxis</span>
+      </div>
+
+      <h1>Installer CEGA Voxis sur Windows</h1>
+      <p class="accroche">
+        Pour le formateur et l'administration. Les apprenants n'ont rien à installer : ils scannent le QR code de la salle.
+      </p>
+
+      <div class="carte">
+        <a id="lien" class="telecharger" href="#" aria-disabled="true" download>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 3v12m0 0 4-4m-4 4-4-4M4 19h16" />
+          </svg>
+          <span id="libelle">Recherche de la dernière version…</span>
+        </a>
+        <div class="meta" id="meta"></div>
+        <div class="empreinte" id="empreinte"></div>
+      </div>
+
+      <h2>Ce que Windows va vous dire</h2>
+      <div class="avertissement">
+        <p style="margin: 0 0 0.75rem">
+          <strong>« Windows a protégé votre ordinateur »</strong> apparaîtra au lancement de l'installateur, avec la mention
+          <em>éditeur inconnu</em>.
+        </p>
+        <p style="margin: 0">
+          C'est normal : cette application n'est pas encore signée par un certificat commercial. Cliquez sur
+          <strong>Informations complémentaires</strong>, puis sur <strong>Exécuter quand même</strong>.
+        </p>
+      </div>
+      <p>
+        Pour vous assurer que le fichier est bien celui que nous avons publié, comparez son empreinte avec celle affichée
+        ci-dessus. Dans PowerShell :
+      </p>
+      <p><code id="commande">Get-FileHash .\CEGA_VOXIS_Setup.exe -Algorithm SHA256</code></p>
+
+      <h2>Installation</h2>
+      <ol>
+        <li>Lancez le fichier téléchargé et laissez-vous guider. Aucun droit administrateur n'est nécessaire.</li>
+        <li>Un raccourci est créé sur le bureau et dans le menu Démarrer.</li>
+        <li>Au premier lancement, connectez-vous avec votre compte, ou saisissez le code formateur qui vous a été remis.</li>
+      </ol>
+
+      <h2>Mises à jour</h2>
+      <p>
+        Rien à refaire : les interfaces sont servies en ligne et se mettent à jour d'elles-mêmes. L'application ne se met à
+        jour que rarement, en arrière-plan, et jamais pendant une séance — elle attend que vous la fermiez.
+      </p>
+
+      <h2>Désinstaller</h2>
+      <p><em>Paramètres → Applications → CEGA Voxis → Désinstaller.</em></p>
+
+      <footer>
+        Besoin de la version web ? <a href="/lecturer">Poste formateur</a> · <a href="/dashboard">Administration</a>
+      </footer>
+    </main>
+
+    <script>
+      const octetsEnTexte = (mo) => (mo >= 1 ? `${mo} Mo` : "moins de 1 Mo");
+
+      fetch("/api/telechargement")
+        .then((r) => r.json())
+        .then(({ current }) => {
+          const lien = document.getElementById("lien");
+          const libelle = document.getElementById("libelle");
+          if (!current) {
+            libelle.textContent = "Aucune version publiée pour l'instant";
+            return;
+          }
+          lien.href = current.url;
+          lien.setAttribute("aria-disabled", "false");
+          libelle.textContent = `Télécharger pour Windows — ${current.version}`;
+
+          const date = new Date(current.publishedAt).toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" });
+          document.getElementById("meta").textContent = `${current.file} · ${octetsEnTexte(current.sizeMb)} · publié le ${date}`;
+          document.getElementById("empreinte").textContent = `SHA-256 : ${current.sha256}`;
+          document.getElementById("commande").textContent = `Get-FileHash .\\${current.file} -Algorithm SHA256`;
+        })
+        .catch(() => {
+          document.getElementById("libelle").textContent = "Serveur injoignable — réessayez dans un instant";
+        });
+    </script>
+  </body>
+</html>

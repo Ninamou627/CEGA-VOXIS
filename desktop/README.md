@@ -68,10 +68,44 @@ La fenêtre retrouve sa taille et sa position au lancement suivant
 (`%APPDATA%/@salle/desktop/window-state.json`). Un écran débranché depuis la dernière fois
 ne l'envoie pas hors de vue : la position est alors laissée au système.
 
+## Construire l'installateur
+
+```bash
+npm run dist -w desktop
+```
+
+Produit `desktop/release/CEGA_VOXIS_Setup_<version>.exe` (~107 Mo) et le flux de mise à
+jour `latest.yml`. Installation par utilisateur, sans droits administrateur ; raccourci sur
+le bureau et au menu Démarrer ; désinstallation par *Paramètres → Applications*.
+
+Pour le publier, copiez les trois fichiers — l'installeur, son `.blockmap` et `latest.yml` —
+dans le dossier `DOWNLOAD_DIR` du serveur (`data/telechargements` par défaut). La page
+`/telecharger` et l'updater lisent le même dossier.
+
+Le numéro de version vient de `desktop/package.json` : l'incrémenter avant de construire est
+ce qui déclenche la mise à jour chez les postes déjà installés.
+
+## Mises à jour
+
+Les interfaces se mettent à jour par simple déploiement du serveur — elles sont chargées en
+ligne. Seule la coquille a besoin d'un installeur, et cela reste rare.
+
+Elle vérifie le flux au lancement puis toutes les 6 h, télécharge en fond, et **n'installe
+qu'à la fermeture** : jamais de redémarrage imposé au milieu d'une formation.
+
+## Signature du code
+
+Il n'y a pas de certificat : Windows SmartScreen affichera « éditeur inconnu » à la première
+installation. La page `/telecharger` explique la manœuvre et publie l'empreinte SHA-256 du
+fichier, ce qui reste le seul moyen pour le client de vérifier ce qu'il installe.
+
+Conséquence technique : `verifyUpdateCodeSignature` est désactivé, sans quoi aucune mise à
+jour ne s'appliquerait. C'est donc **HTTPS seul** qui garantit l'intégrité du téléchargement
+— d'où un flux servi par notre propre domaine, et rien d'autre. Voir D18 pour les options de
+signature.
+
 ## Reste à faire
 
-- **Étape 4** — `CEGA_VOXIS_Setup.exe` par electron-builder, mise à jour automatique, page de
-  téléchargement sur le serveur. Penser à inclure `static/` dans les fichiers empaquetés.
 - **Étape 5** — PWA de la page apprenant (manifeste, icônes, service worker *réseau d'abord*
   pour ne jamais servir une version périmée).
 

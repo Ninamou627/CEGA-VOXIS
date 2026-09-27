@@ -11,6 +11,7 @@
  *   VOXIS_URL=https://localhost:8787 npm run dev -w desktop   (serveur de développement)
  */
 import { app, BrowserWindow, globalShortcut, Menu, net, session, shell } from "electron";
+import { autoUpdater } from "electron-updater";
 import path from "node:path";
 import { loadWindowState, trackWindowState } from "./window-state";
 
@@ -241,6 +242,33 @@ function buildMenu(win: BrowserWindow) {
   );
 }
 
+// ---- mises à jour de la coquille -----------------------------------------------------
+/**
+ * Les interfaces se mettent à jour par le serveur : elles sont chargées en ligne. Seule la
+ * coquille elle-même a besoin d'un installeur, et cela n'arrive que rarement.
+ *
+ * Elle se télécharge en fond et **ne s'installe qu'à la fermeture** : jamais de redémarrage
+ * imposé au milieu d'une formation. Sans certificat de signature, la vérification de
+ * signature est désactivée — c'est alors HTTPS qui garantit seul l'intégrité du
+ * téléchargement, d'où un flux servi par notre propre domaine et rien d'autre (voir D18).
+ */
+const UPDATE_EVERY_MS = 6 * 3_600_000;
+
+function watchForUpdates() {
+  if (DEV) return; // rien à mettre à jour depuis les sources
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+
+  autoUpdater.on("update-available", (info) => console.log(`[voxis] version ${info.version} disponible, téléchargement en fond`));
+  autoUpdater.on("update-downloaded", (info) => console.log(`[voxis] version ${info.version} prête, elle s'installera à la fermeture`));
+  // Serveur injoignable, flux absent : ce n'est pas une raison d'ennuyer le formateur.
+  autoUpdater.on("error", (err) => console.warn(`[voxis] mise à jour impossible : ${err.message}`));
+
+  const check = () => void autoUpdater.checkForUpdates().catch(() => {});
+  check();
+  setInterval(check, UPDATE_EVERY_MS).unref();
+}
+
 // ---- cycle de vie --------------------------------------------------------------------
 // Une seule instance : deux fenêtres ouvriraient deux fois le micro du formateur.
 if (!app.requestSingleInstanceLock()) {
@@ -283,6 +311,7 @@ if (!app.requestSingleInstanceLock()) {
     const win = createWindow();
     buildMenu(win);
     registerShortcuts(win);
+    watchForUpdates();
 
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) buildMenu(createWindow());

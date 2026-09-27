@@ -3,15 +3,62 @@
   "version": "0.1.0",
   "private": true,
   "description": "Coquille Windows de CEGA Voxis : une fenêtre sur la plateforme en ligne",
+  "author": "Institut CEGA",
   "main": "dist/main.js",
   "scripts": {
     "build": "tsc",
     "dev": "npm run build && electron .",
     "start": "electron .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "dist": "npm run build && electron-builder --win --publish never"
   },
+  "comment": "La version d'Electron est figée, jamais une plage : c'est ce Chromium précis qui est livré au client, et electron-builder l'exige pour télécharger les binaires.",
   "devDependencies": {
-    "electron": "^44.4.5",
+    "electron": "44.4.5",
+    "electron-builder": "^26.15.3",
     "typescript": "^5.6.0"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9"
+  },
+  "build": {
+    "appId": "fr.institutcega.voxis",
+    "productName": "CEGA Voxis",
+    "copyright": "Institut CEGA",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "static/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "build/icon.png",
+      "artifactName": "CEGA_VOXIS_Setup_${version}.${ext}",
+      "verifyUpdateCodeSignature": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "CEGA Voxis",
+      "uninstallDisplayName": "CEGA Voxis",
+      "deleteAppDataOnUninstall": false,
+      "language": "1036"
+    },
+    "publish": [
+      {
+        "provider": "generic",
+        "url": "https://institutcega.fr/telechargements",
+        "channel": "latest"
+      }
+    ]
   }
 }
