@@ -104,10 +104,11 @@ jour ne s'appliquerait. C'est donc **HTTPS seul** qui garantit l'intégrité du 
 — d'où un flux servi par notre propre domaine, et rien d'autre. Voir D18 pour les options de
 signature.
 
-## Reste à faire
+## Les icônes
 
-- **Étape 5** — PWA de la page apprenant (manifeste, icônes, service worker *réseau d'abord*
-  pour ne jamais servir une version périmée).
+`npm run icons -w client` régénère les cinq tailles — PWA, iOS et cet installateur — depuis
+la géométrie du logo (`client/scripts/generate-icons.mjs`). Le logo définitif n'étant pas
+encore fourni, une seule description à modifier les refera toutes.
 
 ## Signature du code
 

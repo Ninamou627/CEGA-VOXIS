@@ -5,6 +5,18 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <meta name="theme-color" content="#0f131c" />
     <title>CEGA Voxis · Interprète de salle</title>
+    <!--
+      Installation facultative sur l'écran d'accueil (D18). Un apprenant qui scanne le QR
+      code écoute sans rien installer ; la PWA ne fait qu'éviter de retélécharger le code.
+      Seule cette page est installable : le formateur a l'application de bureau.
+    -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icons/icon-192.png" type="image/png" />
+    <!-- iOS ignore le manifeste pour l'écran d'accueil et lit ces deux balises. -->
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Voxis" />
     <!-- Thème mémorisé appliqué avant le premier rendu (voir src/ui/theme.ts). -->
     <script>
       try {

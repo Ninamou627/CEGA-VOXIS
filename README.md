@@ -85,7 +85,13 @@ chaque page garde son dossier (`listener`, `lecturer`, `dashboard`) avec ses vue
 apprenant tient sur un écran, avec deux boutons flottants : poser une question (le
 studio s'ouvre par-dessus, micro ou clavier) et signaler un problème (feuille par le
 bas). L'écran de salle (`/screen`) se branche avec le rôle `screen` : tout le texte,
-toutes les langues, jamais d'audio, pas de jeton.
+toutes les langues, jamais d'audio.
+
+La page apprenant est **installable** sur l'écran d'accueil d'un téléphone (manifeste,
+icônes, service worker). L'installation reste facultative : qui scanne le QR code écoute
+sans rien installer. Le service worker travaille **réseau d'abord** — il ne sert qu'à
+éviter de retélécharger le code sur un Wi-Fi fatigué, jamais à faire croire que la salle
+fonctionne hors ligne, et jamais à servir une version périmée après un déploiement.
 
 À l'ouverture de chaque interface, l'**animation d'entrée** CEGA Voxis
 (`client/public/media/intro.mp4`, 8 s, muette) se joue une fois par onglet, par-dessus
