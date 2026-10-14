@@ -191,3 +191,68 @@ describe("CommitGate — horodatage", () => {
     expect(t[0].tOrigin).toBe(1500);
   });
 });
+
+/**
+ * Mots horodatés dans le flux audio : « mot@fin » (fin en ms d'audio). Le flux est reçu en
+ * temps réel depuis t = 10 000 : la position p a été prononcée à 10 000 + p.
+ */
+const T = (s: string, isFinal?: boolean) =>
+  s
+    .split(" ")
+    .filter(Boolean)
+    .map((x) => {
+      const [text, end] = x.split("@");
+      return { text, startMs: Number(end) - 250, endMs: Number(end), ...(isFinal ? { isFinal } : {}) };
+    });
+
+function timedGate(overrides = {}) {
+  let t = 10_000;
+  const g = new CommitGate({ ...DEFAULT_COMMIT, ...overrides }, () => t, { spokenAt: (ms) => 10_000 + ms });
+  return { g, advance: (ms: number) => (t += ms) };
+}
+
+describe("CommitGate — fin prononcée (D19)", () => {
+  it("tEnd est la fin prononcée du dernier mot du segment, pas son apparition", () => {
+    const { g, advance } = timedGate();
+    advance(1200);
+    const r = g.onPartial(T("today@300 we@600 are.@900", true));
+    expect(r.segments).toHaveLength(1);
+    expect(r.segments[0].tEnd).toBe(10_900);
+    expect(r.segments[0].tEndExact).toBe(true);
+    expect(r.segments[0].tOrigin).toBe(11_200); // vus pour la première fois à cet instant
+  });
+
+  it("sans horodatage, tEnd retombe sur l'apparition du dernier mot, et le dit", () => {
+    const { g, advance } = gate();
+    g.onPartial(W("today we")); // 1000
+    advance(300);
+    g.onPartial(W("today we are.")); // 1300 : « are. » vu
+    advance(300);
+    const r = g.onPartial(W("today we are. Then"));
+    expect(r.segments[0].tEnd).toBe(1300);
+    expect(r.segments[0].tEndExact).toBe(false);
+  });
+});
+
+describe("CommitGate — sans accord, seuls les mots définitifs du fournisseur", () => {
+  it("ne fige jamais un fragment affiché puis corrigé (« part » → « partial »)", () => {
+    const { g } = gate({ agreement: false });
+    // Ce qu'affiche AssemblyAI universal-streaming : le mot en cours de prononciation, puis sa correction.
+    g.onPartial([{ text: "handles", isFinal: true }, { text: "part" }, { text: "trans" }]);
+    g.onPartial([{ text: "handles", isFinal: true }, { text: "part" }, { text: "transcripts" }]);
+    expect(g.pendingText).toBe("handles"); // l'accord aurait figé « part »
+    g.onPartial([
+      { text: "handles", isFinal: true },
+      { text: "partial", isFinal: true },
+      { text: "transcripts", isFinal: true },
+    ]);
+    expect(g.pendingText).toBe("handles partial transcripts");
+  });
+
+  it("avec l'accord (U3.5 Pro, simulateur), deux hypothèses concordantes suffisent", () => {
+    const { g } = gate({ agreement: true });
+    g.onPartial(W("handles part trans"));
+    g.onPartial(W("handles part transcripts"));
+    expect(g.pendingText).toBe("handles part");
+  });
+});

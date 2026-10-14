@@ -81,8 +81,13 @@ export class MockStt implements SttProvider {
         return;
       }
 
-      const spoken = Math.min(ws.length, Math.floor(elapsed / WORD_MS) + 1);
-      const hyp: Word[] = ws.slice(0, spoken).map((text, i) => ({ text, startMs: i * WORD_MS, endMs: (i + 1) * WORD_MS }));
+      // Un mot n'est entendu qu'une fois fini de prononcer, comme chez un vrai moteur ; ses
+      // horodatages comptent depuis l'ouverture du flux, comme ceux d'AssemblyAI.
+      const spoken = Math.min(ws.length, Math.floor(elapsed / WORD_MS));
+      if (!spoken) return;
+      const hyp: Word[] = ws
+        .slice(0, spoken)
+        .map((text, i) => ({ text, startMs: sentenceStartMs + i * WORD_MS, endMs: sentenceStartMs + (i + 1) * WORD_MS }));
 
       if (elapsed >= total) {
         // Fin de phrase : transcription finale, puis fin d'énoncé.

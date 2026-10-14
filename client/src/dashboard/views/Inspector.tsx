@@ -109,7 +109,7 @@ function seriesOf(id: StageId, history: Sample[], sig: Signals): Series {
         mark: { at: levelNorm(threshold), label: `seuil ${threshold} dB` },
       };
     case "stt":
-      return latency("Temps de reconnaissance (médiane)", (s) => s.commitP50, st?.stages.commitP50 ?? null);
+      return latency("Fin de phrase → segment figé (médiane)", (s) => s.endCommitP50, st?.stages.endCommitP50 ?? null);
     case "mt":
       return latency("Temps de traduction (médiane)", (s) => s.mtP50, st?.stages.mtP50 ?? null);
     case "tts":
@@ -155,7 +155,7 @@ function measuresOf(id: StageId, sig: Signals, conf?: SettingsResponse): Row[] {
       return [
         { label: "Moteur", value: engineName(pl?.stt) ?? "—", title: pl?.stt },
         { label: "Flux", value: au ? (au.sttOpen ? "ouvert" : "fermé") : "—", tone: au && h?.lecturer && !au.sttOpen ? "crit" : undefined },
-        { label: "Temps médian", value: st?.stages.commitP50 != null ? delay(st.stages.commitP50) : "—", title: "Du mot entendu au segment figé, sur la dernière minute" },
+        { label: "Temps médian", value: st?.stages.endCommitP50 != null ? delay(st.stages.endCommitP50) : "—", title: "De la fin de la phrase prononcée au segment figé, sur la dernière minute (D19)" },
         { label: "Confiance aujourd'hui", value: today?.transcription.confidence != null ? rate(today.transcription.confidence) : "—" },
         { label: "Segments aujourd'hui", value: today ? num(today.transcription.segments) : "—" },
         { label: "Signalés aujourd'hui", value: today ? String(today.transcription.reports) : "—", tone: today?.transcription.reports ? "warn" : undefined },
@@ -203,7 +203,7 @@ function settingsOf(id: StageId, conf: SettingsResponse): { rows: Row[]; section
           { label: "Segmentation", value: `${s.speech.minWords} / ${s.speech.clauseWords} / ${s.speech.maxWords} mots`, title: "minimum / coupe à la proposition / maximum" },
           { label: "Délai de coupe", value: delay(s.speech.segmentTimeoutMs) },
           { label: "Vocabulaire", value: `${count(s.speech.keyterms, /[,\n]/)} termes` },
-          { label: "Description de séance", value: s.speech.prompt.trim() ? "renseignée" : "vide" },
+          { label: "Description de séance", value: !o.sttPrompt ? "non utilisée par ce moteur" : s.speech.prompt.trim() ? "renseignée" : "vide" },
         ],
       };
     case "mt": {

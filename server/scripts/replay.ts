@@ -81,7 +81,11 @@ ws.on("message", (raw, isBinary) => {
   const e = JSON.parse(raw.toString());
   if (e.t === "src.commit") console.log(`[commit #${e.seq} ${e.reason}] ${e.text}`);
   if (e.t === "tr.segment") console.log(`   → ${e.lang}: ${e.text}`);
-  if (e.t === "stats" && e.stats.e2eP50 != null) console.log(`   (e2e p50 ${e.stats.e2eP50} ms · p95 ${e.stats.e2eP95} ms · file max ${e.stats.queueMaxMs} ms)`);
+  if (e.t === "stats" && e.stats.e2eP50 != null)
+    console.log(
+      `   (fin de phrase → voix p50 ${e.stats.endP50 ?? "—"} ms · p95 ${e.stats.endP95 ?? "—"} ms` +
+        ` · décalage ressenti p50 ${e.stats.e2eP50} ms · file max ${e.stats.queueMaxMs} ms)`,
+    );
   if (e.t === "error") console.error("erreur :", e.msg);
 });
 ws.on("close", () => process.exit(0));

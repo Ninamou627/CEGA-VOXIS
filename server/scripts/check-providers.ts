@@ -198,7 +198,14 @@ if (!wavArg && p.stt.name.startsWith("assemblyai") && cfg.ASSEMBLYAI_LANGUAGE_GA
     // Un partiel d'un ou deux mots peut passer avant que l'heuristique tranche ; le
     // commit verrouillé n'en fait rien. Au-delà, ou sans aucun écartement, c'est un échec.
     if (discards > 0 && maxWords < 3) ok(`français écarté (${discards} écartement(s), au plus ${maxWords} mot(s) transmis avant verdict)`);
-    else throw new Error(`garde-fou insuffisant : ${discards} écartement(s), ${maxWords} mot(s) transmis`);
+    else if (cfg.ASSEMBLYAI_MODEL.includes("english")) {
+      // Choix assumé (D19) : le modèle anglais seul gagne ~0,25 s par mot mais transcrit le
+      // français en anglais approximatif, que l'heuristique ne reconnaît qu'après quelques mots.
+      console.warn(
+        `  ⚠ modèle anglais seul (${cfg.ASSEMBLYAI_MODEL}) : ${discards} écartement(s), jusqu'à ${maxWords} mot(s) transmis avant verdict.\n` +
+          `    De l'écho peut passer : casque fermé obligatoire pour le formateur. Protection complète : ASSEMBLYAI_MODEL=universal-streaming-multilingual.`,
+      );
+    } else throw new Error(`garde-fou insuffisant : ${discards} écartement(s), ${maxWords} mot(s) transmis`);
   });
 }
 

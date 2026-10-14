@@ -21,6 +21,12 @@ export interface DayTotals {
   availableMs: number;
   e2eSum: number;
   e2eN: number;
+  /**
+   * Latence fin de phrase → voix (D19), sommée par écoute. Absentes des jours enregistrés
+   * avant cette mesure.
+   */
+  endSum?: number;
+  endN?: number;
   /** Confiance des mots donnée par le moteur de reconnaissance, sommée par segment. */
   confSum: number;
   confN: number;
@@ -77,6 +83,8 @@ export interface OverviewResponse {
   availability: number | null;
   availabilityToday: number | null;
   e2e: { p50: number | null; p95: number | null };
+  /** Latence fin de phrase → voix sur tout l'historique (D19), à la résolution de l'histogramme. */
+  end: { p50: number | null; p95: number | null; n: number };
   quality: Quality;
   qualityToday: Quality;
   /** 14 derniers jours, du plus ancien au plus récent. */
@@ -108,6 +116,8 @@ export interface SettingsOptions {
   stt: string;
   /** Le moteur de reconnaissance accepte les réglages d'ouverture (AssemblyAI). */
   sttTunable: boolean;
+  /** Le modèle de reconnaissance lit la description de séance (AssemblyAI U3.5 Pro seulement). */
+  sttPrompt: boolean;
   tts: string;
   /** Une clé ElevenLabs est configurée : on peut lister et essayer des voix. */
   voicesEnabled: boolean;

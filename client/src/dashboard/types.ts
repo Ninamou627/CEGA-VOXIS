@@ -69,11 +69,16 @@ export interface Sample {
   t: number;
   e2eP50: number | null;
   e2eP95: number | null;
+  /** Latence fin de phrase → voix (D19). */
+  endP50: number | null;
   queueMaxMs: number | null;
   listeners: number;
   micDb: number | null;
-  /** Temps médians de chaque étage (reconnaissance, traduction, synthèse), pour l'inspecteur. */
-  commitP50: number | null;
+  /**
+   * Temps médians de chaque étage, pour l'inspecteur : reconnaissance (fin de phrase →
+   * segment figé, D19), traduction, synthèse.
+   */
+  endCommitP50: number | null;
   mtP50: number | null;
   ttsP50: number | null;
 }

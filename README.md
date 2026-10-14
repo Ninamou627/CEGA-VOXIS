@@ -2,8 +2,12 @@
 
 Interprétation IA quasi simultanée EN ↔ FR pour une salle de formation : le formateur
 parle dans son micro HF, les apprenants entendent une voix française dans leurs
-écouteurs avec ~1,5 s de décalage, et peuvent poser une question qui arrive en anglais
-dans le casque du formateur.
+écouteurs, et peuvent poser une question qui arrive en anglais dans le casque du formateur.
+
+L'objectif est **moins d'une seconde de la fin d'une phrase du formateur au début de sa
+traduction entendue** (D19). Mesuré le 14/10/2026 avec les vrais moteurs : environ 4 s ; le
+tableau de bord affiche cette latence en direct, avec le décalage ressenti depuis le
+premier mot.
 
 Les décisions d'architecture et leurs raisons sont dans [docs/DECISIONS.md](docs/DECISIONS.md).
 

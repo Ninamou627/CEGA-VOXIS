@@ -42,15 +42,25 @@ export interface StatsPayload {
   listeners: number;
   /** Auditeurs par langue d'écoute (tableau de bord). */
   byLang?: Partial<Record<Lang, number>>;
-  /** Bout-en-bout mesuré à la réception des ack (ms), fenêtre glissante 60 s. */
+  /**
+   * Décalage ressenti, mesuré à la réception des ack (ms), fenêtre glissante 60 s : du
+   * premier mot reconnu d'un segment au début de son écoute.
+   */
   e2eP50: number | null;
   e2eP95: number | null;
   e2eMean: number | null;
   /**
-   * Temps médian de chaque étage sur la même fenêtre (ms) : de la première apparition
-   * d'un mot à son commit (reconnaissance), traduction, synthèse.
+   * Latence qui valide le projet (D19), même fenêtre : de la fin prononcée d'un segment
+   * au début de son écoute. Cible : moins d'une seconde.
    */
-  stages: { commitP50: number | null; mtP50: number | null; ttsP50: number | null };
+  endP50: number | null;
+  endP95: number | null;
+  /**
+   * Temps médian de chaque étage sur la même fenêtre (ms) : de la première apparition
+   * d'un mot à son commit (reconnaissance), de la fin prononcée au commit, traduction,
+   * synthèse.
+   */
+  stages: { commitP50: number | null; endCommitP50: number | null; mtP50: number | null; ttsP50: number | null };
   /** Profondeur de file audio côté clients (ms). L'indicateur de dérive. */
   queueP50Ms: number | null;
   queueMaxMs: number | null;

@@ -1,21 +1,35 @@
 /**
- * AssemblyAI Universal-3.5 Pro Realtime — STT primaire recommandé.
+ * AssemblyAI en streaming — STT primaire. Deux familles de modèles, mesurées le 14/10/2026
+ * sur la même fixture, de la fin prononcée d'un segment à son commit (D19) :
  *
- * Aligné sur le document « AssemblyAI Integration — Coding Agent Instructions » :
- *   - `mode` est le réglage principal (min_latency / balanced / max_accuracy) ;
- *   - sur U3.5 Pro, `end_of_turn:true` est finalisé ET ponctué en un seul message
- *     (`format_turns` n'existe pas sur ce modèle ; un garde-fou reste pour les anciens) ;
- *   - `prompt` (description de la séance) et `keyterms_prompt` (≤ 100 termes) portent
- *     le vocabulaire de la formation côté STT ;
- *   - `word_is_final` par mot alimente le commit verrouillé ;
- *   - trames de 50–1000 ms, jamais plus vite que le réel (sinon fermeture 3007) ;
- *   - toujours envoyer `Terminate` (sinon la session reste facturée jusqu'à 3 h).
+ *   - `universal-3-5-pro` (défaut) : ponctué dès les partiels, `mode` et `prompt`. Clôt une
+ *     fin de phrase vite (~0,4 s), mais n'envoie qu'~1 partiel/s et ne marque aucun mot
+ *     définitif avant la fin du tour : une phrase longue coupée au délai se fige ~2 s après
+ *     son dernier mot (p95 ~3 s).
+ *   - `universal-streaming-english` : ~3 partiels/s, chaque mot marqué définitif
+ *     (`word_is_final`) ~0,5 s après avoir été prononcé : ~0,7 s partout (p95 ~1 s). Texte
+ *     sans ponctuation ni majuscules, et des partiels qui montrent des fragments de mots
+ *     (« part », « trans ») : le commit n'attend donc que ses mots définitifs (`finalWords`).
+ *     Refuse `mode` et `prompt` (fermeture 3006) ; accepte `keyterms_prompt` et
+ *     `min_end_of_turn_silence_when_confident`. `universal-streaming-multilingual` : ~0,25 s
+ *     de plus par mot, mais il reconnaît le français, donc garde la détection de langue.
+ *
+ * Communs : `word_is_final` par mot alimente le commit verrouillé ; trames de 50–1000 ms,
+ * jamais plus vite que le réel (sinon fermeture 3007) — 50 ms n'a rien gagné sur 100 ms ;
+ * toujours envoyer `Terminate` (sinon la session reste facturée jusqu'à 3 h).
+ *
+ * Pas de `format_turns` : la version mise en forme arrive après la fin de tour (latence) et
+ * peut changer le nombre de mots (« twenty five » → « 25 »), ce qui décalerait le commit
+ * verrouillé, qui repère les mots par leur position dans le tour.
  *
  * Garde-fou de langue (anti-boucle, anti-intrus) : ce que le micro capte dans la
  * langue cible est presque toujours notre propre sortie ou quelqu'un d'autre. La
  * détection officielle (`language_code`) n'arrive qu'en fin de tour ; les partiels
  * sont donc filtrés par une heuristique locale (langHint), et un tour suspect est
  * abandonné sans être prononcé. Si la fin de tour le dément, il est réinjecté entier.
+ * Le modèle anglais seul n'a pas de détection officielle et transcrit le français en
+ * anglais approximatif : l'heuristique ne le reconnaît qu'après quelques mots (mesuré :
+ * au 7e). Avec lui, le casque fermé du formateur est la vraie protection (D11, D19).
  */
 import WebSocket from "ws";
 import type { Lang } from "../../../../shared/protocol";
@@ -51,30 +65,83 @@ export interface AssemblyAiOptions {
 const CLOSE_CODES: Record<number, string> = {
   1008: "clé API invalide ou manquante",
   3005: "session annulée côté serveur",
-  3006: "message invalide",
+  3006: "message ou paramètre invalide (un réglage non accepté par ce modèle ?)",
   3007: "trame audio hors 50–1000 ms, ou envoyée plus vite que le temps réel",
   3008: "session expirée (limite de 3 h)",
   3009: "trop de sessions simultanées",
 };
 
-const FORMATTED_GRACE_MS = 400;
 const LANGUAGE_GATE_CONFIDENCE = 0.6;
+
+/**
+ * Modèles universal-streaming : silence exigé (ms) une fois le modèle confiant que le tour
+ * est fini — la « fin de phrase » de l'administration. Rapide : 160 ms, mesuré (fin de tour
+ * ~0,6 s après le dernier mot contre ~0,75 s par défaut, sans tour coupé en plus).
+ * Équilibrée : le réglage d'AssemblyAI. Précise : attendre davantage avant de clore.
+ */
+const END_OF_TURN_SILENCE_MS: Record<NonNullable<AssemblyAiOptions["mode"]>, number | undefined> = {
+  min_latency: 160,
+  balanced: undefined,
+  max_accuracy: 800,
+};
+
+/**
+ * Paramètres d'ouverture du flux. Un paramètre que le modèle refuse ferme la session
+ * (3006) au démarrage du micro : chaque famille ne reçoit que ce qu'elle accepte
+ * (vérifié le 14/10/2026 sur universal-streaming : `mode` et `prompt` refusés).
+ */
+export function streamParams(o: {
+  model: string;
+  sampleRate: number;
+  lang: Lang;
+  gate: boolean;
+  mode: NonNullable<AssemblyAiOptions["mode"]>;
+  keyterms: string[];
+  prompt?: string;
+  voiceFocus?: AssemblyAiOptions["voiceFocus"];
+}): URLSearchParams {
+  const params = new URLSearchParams({ sample_rate: String(o.sampleRate), encoding: "pcm_s16le", speech_model: o.model });
+  if (o.model.startsWith("universal-3")) {
+    params.set("mode", o.mode);
+    if (o.prompt) params.set("prompt", o.prompt.slice(0, 1500));
+    // Non vérifié sur universal-streaming : on ne risque pas une fermeture 3006 en séance.
+    if (o.voiceFocus) params.set("voice_focus", o.voiceFocus);
+  } else {
+    const silence = END_OF_TURN_SILENCE_MS[o.mode];
+    if (silence != null) params.set("min_end_of_turn_silence_when_confident", String(silence));
+  }
+  // Le modèle anglais seul n'a ni détection de langue, ni épinglage.
+  if (!o.model.includes("english")) {
+    if (o.gate) params.set("language_detection", "true");
+    else params.set("language_code", o.lang);
+  }
+  if (o.keyterms.length) params.set("keyterms_prompt", JSON.stringify(o.keyterms.slice(0, 100)));
+  return params;
+}
 
 export class AssemblyAiStt implements SttProvider {
   private readonly model: string;
   private readonly restBase: string;
   private readonly wsBase: string;
+  /** U3.x : `mode`, `prompt`, ponctuation dès les partiels, ~1 partiel/s. */
+  private readonly universal3: boolean;
 
   constructor(private opts: AssemblyAiOptions) {
     if (!opts.apiKey) throw new Error("ASSEMBLYAI_API_KEY manquant");
     this.model = opts.model ?? "universal-3-5-pro";
+    this.universal3 = this.model.startsWith("universal-3");
     const region = opts.region ?? "eu";
     this.restBase = region === "eu" ? "https://api.eu.assemblyai.com" : "https://api.assemblyai.com";
     this.wsBase = region === "edge" ? "wss://streaming.assemblyai.com/v3/ws" : `wss://streaming.${region}.assemblyai.com/v3/ws`;
   }
 
   get name(): string {
-    return `assemblyai:${this.model}:${this.tuning().mode}`;
+    return this.universal3 ? `assemblyai:${this.model}:${this.tuning().mode}` : `assemblyai:${this.model}`;
+  }
+
+  /** universal-streaming marque ses mots définitifs en cours de tour ; U3.5 Pro, seulement en fin de tour. */
+  get finalWords(): boolean {
+    return !this.universal3;
   }
 
   private tuning() {
@@ -85,26 +152,10 @@ export class AssemblyAiStt implements SttProvider {
     const gate = this.opts.languageGate ?? true;
     const gateLangs = (this.opts.gateLangs ?? ["fr", "es", "pt", "ar", "en"]).filter((l) => l !== opts.lang);
 
-    const t = this.tuning();
-    const params = new URLSearchParams({
-      sample_rate: String(opts.sampleRate),
-      encoding: "pcm_s16le",
-      speech_model: this.model,
-      mode: t.mode,
-    });
-    if (gate) params.set("language_detection", "true");
-    else params.set("language_code", opts.lang);
-    if (t.prompt) params.set("prompt", t.prompt.slice(0, 1500));
-    if (t.keyterms.length) params.set("keyterms_prompt", JSON.stringify(t.keyterms.slice(0, 100)));
-    if (this.opts.voiceFocus) params.set("voice_focus", this.opts.voiceFocus);
-    // Anciens modèles universal-streaming : le formatage est une option séparée.
-    if (!this.model.startsWith("universal-3")) params.set("format_turns", "true");
-
+    const params = streamParams({ model: this.model, ...opts, gate, voiceFocus: this.opts.voiceFocus, ...this.tuning() });
     const ws = new WebSocket(`${this.wsBase}?${params}`, { headers: { Authorization: this.opts.apiKey } });
 
     let closed = false;
-    let pendingFinal: Word[] | undefined;
-    let graceTimer: NodeJS.Timeout | undefined;
     /** Tour courant jugé suspect par l'heuristique : ses partiels sont retenus. */
     let suspectTurn: number | null = null;
     let ignoredTurns = 0;
@@ -129,9 +180,6 @@ export class AssemblyAiStt implements SttProvider {
       }));
 
     const finalize = (words: Word[]) => {
-      if (graceTimer) clearTimeout(graceTimer);
-      graceTimer = undefined;
-      pendingFinal = undefined;
       if (words.length) ev.onPartial({ words: words.map((w) => ({ ...w, isFinal: true })), isFinal: true });
       ev.onUtteranceEnd();
     };
@@ -179,16 +227,12 @@ export class AssemblyAiStt implements SttProvider {
         ev.onPartial({ words, isFinal: false });
         return;
       }
-      // U3.5 Pro : fin de tour = finalisé et ponctué. Anciens modèles : la version
-      // ponctuée suit ; on lui laisse 400 ms.
-      if (m.turn_is_formatted !== false) return finalize(words);
-      pendingFinal = words;
-      if (graceTimer) clearTimeout(graceTimer);
-      graceTimer = setTimeout(() => pendingFinal && finalize(pendingFinal), FORMATTED_GRACE_MS);
+      // Fin de tour : le texte est définitif (U3.5 Pro le ponctue ; universal-streaming,
+      // sans format_turns, le laisse brut — on n'attend pas de seconde version).
+      finalize(words);
     });
     ws.on("error", (err) => ev.onError(err));
     ws.on("close", (code, reason) => {
-      if (graceTimer) clearTimeout(graceTimer);
       if (!closed) ev.onError(new Error(`AssemblyAI fermé (${code} — ${CLOSE_CODES[code] ?? (reason.toString() || "sans motif")})`));
     });
 
@@ -198,7 +242,6 @@ export class AssemblyAiStt implements SttProvider {
       },
       close: async () => {
         closed = true;
-        if (graceTimer) clearTimeout(graceTimer);
         if (ignoredTurns) console.info(`[assemblyai] ${ignoredTurns} tour(s) écarté(s) : autre langue que « ${opts.lang} »`);
         if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: "Terminate" }));
         // Laisser partir Terminate avant de fermer le socket.

@@ -82,6 +82,11 @@ const EnvSchema = z.object({
       ),
     ),
   ASSEMBLYAI_API_KEY: optional,
+  /**
+   * U3.5 Pro : fige une fin de phrase ~0,4 s après le dernier mot, mais une phrase longue
+   * coupée au délai ~2 s après. universal-streaming-english : ~0,7 s partout. Mesuré (D19) ;
+   * à départager sur l'enregistrement réel du formateur.
+   */
   ASSEMBLYAI_MODEL: z.string().default("universal-3-5-pro"),
   ASSEMBLYAI_REGION: z.enum(["eu", "us", "edge"]).default("eu"),
   ASSEMBLYAI_MODE: z.enum(["min_latency", "balanced", "max_accuracy"]).default("balanced"),

@@ -30,6 +30,9 @@ const more = (href: string, label = "Détail") => (
   </a>
 );
 
+/** L'objectif du projet (D19) : moins d'une seconde de la fin de la phrase à la voix. */
+const LATENCY_TARGET_MS = 1000;
+
 /** 0.87 → « 0,87 » : le nombre seul, l'unité est posée à côté en petit. */
 const dec = (x: number, digits: number) => x.toFixed(digits).replace(".", ",");
 
@@ -42,10 +45,12 @@ export function Overview({ sig, nodes, speaking, alerts, inspected, onInspect }:
   const listeners = stats?.listeners ?? health?.listeners ?? 0;
   const byLang = Object.entries(stats?.byLang ?? {}).filter(([, n]) => (n ?? 0) > 0) as [Lang, number][];
 
-  // Latence : la dernière minute quand la salle parle, sinon la moyenne de l'historique.
-  const liveMean = stats?.e2eMean ?? null;
-  const meanMs = liveMean ?? ov?.quality.speed.meanMs ?? null;
-  const latencyTone: Tone = meanMs == null ? "idle" : meanMs > 4000 ? "crit" : meanMs > 2500 ? "warn" : "ok";
+  // Latence qui valide le projet (D19) : de la fin de la phrase prononcée au début de sa
+  // traduction entendue, médiane de la dernière minute quand la salle parle, sinon de l'historique.
+  const liveEnd = stats?.endP50 ?? null;
+  const endMs = liveEnd ?? ov?.end.p50 ?? null;
+  const endP95 = liveEnd != null ? (stats?.endP95 ?? null) : (ov?.end.p95 ?? null);
+  const latencyTone: Tone = endMs == null ? "idle" : endMs > 2000 ? "crit" : endMs > LATENCY_TARGET_MS ? "warn" : "ok";
 
   const crit = alerts.filter((a) => a.severity === "crit").length;
   const warn = alerts.filter((a) => a.severity === "warn").length;
@@ -70,9 +75,13 @@ export function Overview({ sig, nodes, speaking, alerts, inspected, onInspect }:
         />
         <Stat
           icon="timer"
-          label="Latence moyenne"
-          value={meanMs != null ? <Value parts={[[dec(meanMs / 1000, 2), "s"]]} /> : "—"}
-          caption={liveMean != null ? `dernière minute${stats?.e2eP95 != null ? ` · p95 ${delay(stats.e2eP95)}` : ""}` : meanMs != null ? "moyenne de l'historique" : "aucune lecture mesurée"}
+          label="Fin de phrase → voix"
+          value={endMs != null ? <Value parts={[[dec(endMs / 1000, 2), "s"]]} /> : "—"}
+          caption={
+            endMs != null
+              ? `médiane ${liveEnd != null ? "de la dernière minute" : "de l'historique"}${endP95 != null ? ` · p95 ${delay(endP95)}` : ""} · cible 1 s`
+              : "aucune lecture mesurée"
+          }
           tone={latencyTone}
           href="#/supervision"
         />

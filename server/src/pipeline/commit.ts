@@ -10,10 +10,29 @@
  * Les mots figés s'accumulent dans un tampon, découpé en segments prêts à traduire
  * selon, dans l'ordre : ponctuation terminale, frontière de proposition (à partir de
  * `clauseWords`), longueur maximale, silence (endpointing du STT), timeout anti-famine.
+ *
+ * Quand le fournisseur marque lui-même ses mots définitifs en cours de tour (AssemblyAI
+ * universal-streaming), l'accord de deux hypothèses est coupé (`agreement`) : ce moteur
+ * affiche des fragments de mots en cours de prononciation (« part », « trans ») puis les
+ * corrige, et l'accord les figeait — mesuré le 14/10/2026. On n'attend alors que ses mots
+ * définitifs, marqués ~0,5 s après avoir été dits.
+ *
+ * Chaque segment est daté deux fois : `tOrigin`, première apparition de son premier mot,
+ * et `tEnd`, instant où son dernier mot a fini d'être prononcé — le départ de la latence
+ * qui valide le projet (D19).
  */
 import type { Word } from "../providers/types";
 
 export type FlushReason = "punctuation" | "clause" | "maxlen" | "timeout" | "silence" | "final";
+
+/**
+ * Lien avec le flux audio, quand le fournisseur horodate ses mots depuis l'ouverture du
+ * flux (AssemblyAI, Deepgram, simulateur) : `spokenAt` date une position du flux à l'heure
+ * serveur.
+ */
+export interface AudioTiming {
+  spokenAt(audioMs: number): number | undefined;
+}
 
 export interface CommitConfig {
   /** Sous ce nombre de mots, seul un silence ou une ponctuation peut produire un segment. */
@@ -26,6 +45,11 @@ export interface CommitConfig {
   timeoutMs: number;
   /** Ne jamais figer le dernier mot de l'hypothèse courante. */
   holdLastWord: boolean;
+  /**
+   * Accord de deux hypothèses successives (LocalAgreement-2). Coupé quand le fournisseur
+   * marque ses mots définitifs en cours de tour : seuls ceux-là sont alors figés.
+   */
+  agreement: boolean;
 }
 
 export const DEFAULT_COMMIT: CommitConfig = {
@@ -34,6 +58,7 @@ export const DEFAULT_COMMIT: CommitConfig = {
   maxWords: 18,
   timeoutMs: 2500,
   holdLastWord: true,
+  agreement: true,
 };
 
 export interface Segment {
@@ -41,6 +66,13 @@ export interface Segment {
   words: Word[];
   /** Horloge serveur (ms) de la première apparition du premier mot du segment. */
   tOrigin: number;
+  /**
+   * Horloge serveur (ms) de la fin prononcée du dernier mot du segment. À défaut
+   * d'horodatage, l'instant où ce mot est apparu pour la première fois (plus tardif :
+   * la latence mesurée est alors sous-estimée, et `tEndExact` vaut false).
+   */
+  tEnd: number;
+  tEndExact: boolean;
   reason: FlushReason;
 }
 
@@ -76,6 +108,7 @@ export class CommitGate {
   constructor(
     private cfg: CommitConfig = DEFAULT_COMMIT,
     private readonly now: () => number = () => Date.now(),
+    private readonly timing?: AudioTiming,
   ) {}
 
   /** Nouveaux seuils de segmentation, pris en compte dès le prochain mot. */
@@ -99,7 +132,7 @@ export class CommitGate {
     const n = Math.min(this.prev.length, words.length);
     while (agree < n && normalize(this.prev[agree].text) === normalize(words[agree].text)) agree++;
 
-    let stable = agree;
+    let stable = this.cfg.agreement ? agree : 0;
     if (this.cfg.holdLastWord) stable = Math.min(stable, words.length - 1);
     if (stable < 0) stable = 0;
 
@@ -206,8 +239,13 @@ export class CommitGate {
   }
 
   private flush(count: number, reason: FlushReason): Segment {
+    // Index, dans l'énoncé, du dernier mot qui part (avant de le retirer du tampon).
+    const lastIdx = this.committedCount - this.buf.length + count - 1;
     const words = this.buf.splice(0, count);
-    const seg: Segment = { text: joinWords(words), words, tOrigin: this.bufOrigin, reason };
+    const last = words[words.length - 1];
+    const spoken = last.endMs != null ? this.timing?.spokenAt(last.endMs) : undefined;
+    const tEnd = spoken ?? this.firstSeen[lastIdx] ?? this.now();
+    const seg: Segment = { text: joinWords(words), words, tOrigin: this.bufOrigin, tEnd, tEndExact: spoken != null, reason };
     if (this.buf.length) {
       const firstRemaining = this.committedCount - this.buf.length;
       this.bufOrigin = this.firstSeen[firstRemaining] ?? this.now();

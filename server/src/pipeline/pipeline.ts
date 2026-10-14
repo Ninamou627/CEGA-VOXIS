@@ -9,6 +9,7 @@ import type { DegradedMode, Lang, PipelineStatus } from "../../../shared/protoco
 import type { Metrics } from "../metrics";
 import type { Providers, SttStream, Word } from "../providers/types";
 import { TypedEmitter } from "../util/emitter";
+import { AudioClock } from "./audio-clock";
 import { CommitGate, DEFAULT_COMMIT, type CommitConfig, type Segment } from "./commit";
 
 /** Réglages de l'administration relus en cours de séance. */
@@ -31,7 +32,7 @@ const DEFAULT_TUNING: PipelineTuning = { commit: {}, contextSegments: 2, baseSpe
 
 export interface PipelineEvents extends Record<string, unknown> {
   "src.partial": { text: string };
-  "src.commit": { seq: number; text: string; tOrigin: number; reason: string; confidence?: number };
+  "src.commit": { seq: number; text: string; tOrigin: number; tEnd: number; reason: string; confidence?: number };
   "tr.segment": { seq: number; lang: Lang; text: string; srcSeq: number; untranslated?: boolean };
   audio: { seq: number; lang: Lang; mime: string; durMs: number; tOrigin: number; srcSeq: number; text: string; bytes: Uint8Array; voice?: string };
   degraded: { mode: DegradedMode; reason: string };
@@ -41,6 +42,8 @@ export interface PipelineEvents extends Record<string, unknown> {
 
 export class Pipeline extends TypedEmitter<PipelineEvents> {
   private gate: CommitGate;
+  /** Relie les horodatages de mots du STT à l'heure où le formateur les a prononcés. */
+  private clock: AudioClock;
   private stt?: SttStream;
   private seq = 0;
   private muted = false;
@@ -59,16 +62,22 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     private readonly metrics: Metrics,
   ) {
     super();
-    this.gate = new CommitGate({ ...DEFAULT_COMMIT, ...this.tuning.commit });
+    this.clock = new AudioClock(cfg.sampleRate);
+    this.gate = new CommitGate(this.commitConfig(), undefined, { spokenAt: (ms) => this.clock.spokenAt(ms) });
   }
 
   private get tuning(): PipelineTuning {
     return this.cfg.tuning?.() ?? DEFAULT_TUNING;
   }
 
+  /** Segmentation de l'administration ; un fournisseur qui marque ses mots définitifs se passe de l'accord. */
+  private commitConfig(): CommitConfig {
+    return { ...DEFAULT_COMMIT, ...this.tuning.commit, agreement: !this.providers.stt.finalWords };
+  }
+
   /** L'administration a changé la segmentation : prise en compte dès le prochain mot. */
   retune(): void {
-    this.gate.configure(this.tuning.commit);
+    this.gate.configure(this.commitConfig());
   }
 
   get status(): PipelineStatus {
@@ -118,6 +127,9 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     this.restartTimer = undefined;
     const s = this.stt;
     this.stt = undefined;
+    // Ce qui restait de la dernière phrase part ; le prochain démarrage du micro repart de
+    // zéro, sans hériter des mots (ni de leurs instants) de cette prise.
+    this.handle(this.gate.onUtteranceEnd());
     await s?.close();
     this.emitStatus();
   }
@@ -158,6 +170,8 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
         },
       },
     );
+    // Nouveau flux : ses horodatages repartent de zéro avec la première trame qu'il reçoit.
+    this.clock.reset();
     this.stt = stream;
     this.restartAttempts = 0;
     if (this.degraded === "stt-lost") this.setDegraded("none", "reconnaissance vocale rétablie");
@@ -187,6 +201,7 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     this.audio.forwarded++;
     this.metrics.audio(pcm);
     this.stt.sendAudio(pcm);
+    this.clock.push(pcm.byteLength, this.audio.lastAt);
   }
 
   get sttOpen(): boolean {
@@ -216,12 +231,22 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     // Confiance moyenne du moteur de reconnaissance sur les mots du segment, s'il la donne.
     const conf = seg.words.map((w) => w.confidence).filter((c): c is number => typeof c === "number");
     const confidence = conf.length ? conf.reduce((a, b) => a + b, 0) / conf.length : undefined;
-    this.emit("src.commit", { seq, text: seg.text, tOrigin: seg.tOrigin, reason: seg.reason, confidence });
+    this.emit("src.commit", { seq, text: seg.text, tOrigin: seg.tOrigin, tEnd: seg.tEnd, reason: seg.reason, confidence });
     this.metrics.stage("commit", tCommit - seg.tOrigin);
+    // Fin prononcée → segment figé : la part de la reconnaissance dans la latence de D19.
+    this.metrics.stage("endCommit", tCommit - seg.tEnd);
+    this.metrics.segmentEnd(seq, seg.tOrigin, seg.tEnd);
+    // Retard d'affichage du STT : du premier mot prononcé à sa première apparition.
+    const first = seg.words[0]?.endMs;
+    const firstSpoken = first != null ? this.clock.spokenAt(first) : undefined;
     this.metrics.event("commit", {
+      sttLagMs: firstSpoken != null ? seg.tOrigin - firstSpoken : null,
       seq,
       tOrigin: seg.tOrigin,
       commitMs: tCommit - seg.tOrigin,
+      tEnd: seg.tEnd,
+      endCommitMs: tCommit - seg.tEnd,
+      tEndExact: seg.tEndExact,
       words: seg.words.length,
       reason: seg.reason,
       confidence: confidence != null ? Math.round(confidence * 1000) / 1000 : null,
@@ -291,6 +316,7 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
         mtMs: tMt - t0,
         ttsMs: tTts - tMt,
         readyMs: tTts - seg.tOrigin,
+        endReadyMs: tTts - seg.tEnd,
         durMs: a.durMs,
         chars: text.length,
         speed,

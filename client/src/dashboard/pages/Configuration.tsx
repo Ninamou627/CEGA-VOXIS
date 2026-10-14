@@ -366,9 +366,10 @@ export function Configuration({ conf, value, dirty, micDb, onChange, onSave, onD
               onChange={(x) => set("speech", { prompt: x })}
               max={1500}
               rows={3}
-              disabled={!o.sttTunable}
+              disabled={!o.sttPrompt}
               placeholder="A three-day training on industrial cybersecurity for maintenance technicians."
             />
+            {!o.sttPrompt && <Note>Lue seulement par AssemblyAI U3.5 Pro ; le moteur actuel ({o.stt}) ne l'utilise pas. Le vocabulaire, lui, est transmis.</Note>}
           </Field>
         </div>
       </Section>

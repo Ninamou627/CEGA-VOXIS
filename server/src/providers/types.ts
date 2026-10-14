@@ -46,6 +46,14 @@ export interface SttStream {
 
 export interface SttProvider {
   readonly name: string;
+  /**
+   * Il marque ses mots définitifs EN COURS de tour (`Word.isFinal`), vite et sûrement :
+   * le commit verrouillé n'attend alors que ceux-là, sans deviner leur stabilité par
+   * l'accord de deux hypothèses. Vrai pour AssemblyAI universal-streaming (~0,5 s après le
+   * mot, et ses partiels montrent des fragments de mots que l'accord figeait). Faux pour
+   * U3.5 Pro, qui ne marque rien avant la fin du tour.
+   */
+  readonly finalWords?: boolean;
   start(opts: { lang: Lang; sampleRate: number }, events: SttEvents): Promise<SttStream>;
   /** Transcription en un bloc (questions des apprenants). */
   transcribeOnce(audio: Uint8Array, mime: string, lang: Lang): Promise<string>;

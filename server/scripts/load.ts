@@ -133,12 +133,12 @@ const timer = setInterval(async () => {
   const h = await health();
   const p = h?.process ?? {};
   const s = h?.stats ?? {};
-  rows.push({ ...r, cpu: p.cpuPercent, rss: p.rssMb, lag: p.loopLagMaxMs, e2e: s.e2eP50, e2e95: s.e2eP95, qmax: s.queueMaxMs });
+  rows.push({ ...r, cpu: p.cpuPercent, rss: p.rssMb, lag: p.loopLagMaxMs, e2e: s.e2eP50, e2e95: s.e2eP95, end: s.endP50, end95: s.endP95, qmax: s.queueMaxMs });
   console.log(
     `t=${String(r.t).padStart(3)}s  clients ${String(r.connected).padStart(3)}/${N}  trames/client ${r.min}–${r.max}` +
       `  ${r.mbps} Mbit/s  sautés ${r.dropped}  reconnexions ${r.reconnects}  trous ${r.gaps}` +
       `  | serveur CPU ${p.cpuPercent ?? "?"} %  RSS ${p.rssMb ?? "?"} Mo  boucle ${p.loopLagMaxMs ?? "?"} ms` +
-      `  e2e p50 ${s.e2eP50 ?? "—"} p95 ${s.e2eP95 ?? "—"}  file max ${s.queueMaxMs ?? "—"}`,
+      `  fin de phrase → voix p50 ${s.endP50 ?? "—"} p95 ${s.endP95 ?? "—"}  e2e p50 ${s.e2eP50 ?? "—"}  file max ${s.queueMaxMs ?? "—"}`,
   );
   if (r.t >= SECONDS) {
     clearInterval(timer);
@@ -152,7 +152,8 @@ const timer = setInterval(async () => {
     console.log(`fan-out : chaque client a reçu entre ${last.min} et ${last.max} trames${last.min === last.max ? " (identique : aucun client lésé)" : " (INÉGAL)"}`);
     console.log(`segments sautés ${last.dropped} · trous de séquence ${last.gaps} · reconnexions ${last.reconnects}`);
     console.log(`serveur : CPU max ${cpuMax} % · RSS ${last.rss} Mo · retard de boucle max ${lagMax} ms`);
-    console.log(`bout-en-bout p50 ${last.e2e ?? "—"} ms · p95 ${last.e2e95 ?? "—"} ms · file max ${last.qmax ?? "—"} ms`);
+    console.log(`fin de phrase → voix p50 ${last.end ?? "—"} ms · p95 ${last.end95 ?? "—"} ms`);
+    console.log(`décalage ressenti (premier mot → voix) p50 ${last.e2e ?? "—"} ms · p95 ${last.e2e95 ?? "—"} ms · file max ${last.qmax ?? "—"} ms`);
     setTimeout(() => process.exit(0), 500);
   }
 }, 10_000);

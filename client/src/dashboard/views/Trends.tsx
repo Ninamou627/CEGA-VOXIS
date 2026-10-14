@@ -1,6 +1,9 @@
 /**
  * Dix minutes de latence et de dérive, relevées toutes les 2 s (D7 : la dérive est un
  * indicateur de premier rang), puis le temps médian de chaque étage de la chaîne.
+ *
+ * Deux latences (D19) : celle qui valide le projet part de la fin de la phrase prononcée ;
+ * le décalage ressenti part de son premier mot, et contient donc le temps de la dire.
  */
 import type { StatsPayload } from "../../../../shared/protocol";
 import { delay } from "../../ui/format";
@@ -29,21 +32,21 @@ export function Trends({ history, stats }: { history: Sample[]; stats?: StatsPay
     <div className="flex flex-col gap-6">
       <div className="grid grid-cols-1 md:grid-cols-3 gap-y-6">
         <Trend
-          label="Décalage médian"
+          label="Fin de phrase → voix"
+          value={stats?.endP50 ?? null}
+          caption={`médiane${stats?.endP95 != null ? ` · p95 ${delay(stats.endP95)}` : ""} · cible 1 s`}
+          tone={toneOf(stats?.endP50 ?? null, 1000, 2000)}
+          values={history.map((s) => s.endP50)}
+          warn={1000}
+          max={4000}
+        />
+        <Trend
+          label="Décalage ressenti"
           value={stats?.e2eP50 ?? null}
-          caption="du mot prononcé à la voix entendue · alerte à 2,5 s"
+          caption="médiane, du premier mot du segment à la voix"
           tone={toneOf(stats?.e2eP50 ?? null, 2500, 4000)}
           values={history.map((s) => s.e2eP50)}
           warn={2500}
-          max={5000}
-        />
-        <Trend
-          label="Décalage p95"
-          value={stats?.e2eP95 ?? null}
-          caption="les 5 % de lectures les plus lentes"
-          tone={toneOf(stats?.e2eP95 ?? null, 4000, 6000)}
-          values={history.map((s) => s.e2eP95)}
-          warn={4000}
           max={8000}
         />
         <Trend
@@ -58,7 +61,7 @@ export function Trends({ history, stats }: { history: Sample[]; stats?: StatsPay
       </div>
       <dl className="flex flex-wrap gap-x-10 gap-y-3 pt-5 border-t border-outline-variant/15">
         {[
-          { k: "Reconnaissance", v: sg?.commitP50 != null ? delay(sg.commitP50) : "—", hint: "mot entendu → segment figé" },
+          { k: "Reconnaissance", v: sg?.endCommitP50 != null ? delay(sg.endCommitP50) : "—", hint: "fin de phrase → segment figé" },
           { k: "Traduction", v: sg?.mtP50 != null ? delay(sg.mtP50) : "—", hint: "appel au moteur" },
           { k: "Synthèse", v: sg?.ttsP50 != null ? delay(sg.ttsP50) : "—", hint: "texte → premier son" },
           { k: "En attente", v: pl ? `${pl.backlog} seg.` : "—", hint: "segments pas encore dits" },

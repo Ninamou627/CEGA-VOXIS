@@ -313,6 +313,49 @@ distribution en HTTPS depuis notre propre domaine.
 **Ce qui ferait changer d'avis.** Un client pour qui 150 Mo est rédhibitoire, ou un support
 micro de première classe côté Tauri : la coquille se réécrit en une journée.
 
+## D19 — La latence qui valide le projet part de la fin de la phrase
+
+**Décision.** L'objectif du projet — moins d'une seconde — se mesure **de la fin prononcée
+d'un segment au début de son écoute** chez l'apprenant (`endP50`, `endP95`). Le serveur date
+la fin du dernier mot par ses horodatages STT, reliés à l'heure de réception de l'audio
+(`pipeline/audio-clock.ts`) ; l'accusé de lecture du téléphone ferme la mesure. Le décalage
+ressenti, du premier mot reconnu à l'écoute (`e2eP50`), reste affiché à côté.
+
+**Pourquoi.** Mesurée depuis le premier mot, la latence contient le temps que met le
+formateur à dire le segment : 2,4 s pour six mots à débit normal. Aucun système, ni aucun
+interprète humain (2 à 3 s derrière l'orateur), ne passe sous une seconde sur cette
+définition. Depuis la fin de la phrase, la mesure dit ce que le système ajoute.
+
+**Garde-fou.** Cette mesure récompense l'attente de phrases entières : un segment plus long
+ne la dégrade pas, alors que l'apprenant attend davantage. On la lit toujours avec le
+décalage ressenti, jamais seule.
+
+**Première mesure (14/10/2026, fixture synthétique de 36 s, vrais moteurs, 3 apprenants
+simulés).** Fin de phrase → voix : ~4 s en médiane. Décomposition : reconnaissance 0,4 à
+0,8 s, traduction Claude Opus 5 ~1,4 s (p95 2,2 s), synthèse ~0,3 s, attente derrière le
+segment précédent jusqu'à 1,4 s, file du téléphone ~0,8 s. Deux premiers appels Claude sur
+quatre ont dépassé le délai de 6 s (connexion à froid) et basculé sur DeepL.
+
+**Reconnaissance : U3.5 Pro reste le défaut.** Deux passages par modèle, de la fin d'un
+segment à son commit :
+
+| Modèle | Médiane | p95 | Fins de phrase | Phrases coupées au délai |
+|---|---|---|---|---|
+| `universal-3-5-pro` | 0,36–0,46 s | 2,9–3,4 s | ~0,4 s | ~2 s |
+| `universal-streaming-english` | 0,66–0,75 s | 0,9–1,1 s | ~0,6 s | ~0,9 s |
+
+U3.5 Pro clôt vite une fin de phrase mais n'envoie qu'un partiel par seconde ; le modèle
+anglais est régulier mais plus lent en médiane, sans ponctuation, et sans détection de
+langue (l'écho n'est reconnu qu'au 7e mot). Le gain n'étant pas établi sur la médiane, le
+défaut ne change pas ; le choix se fera sur l'enregistrement réel du formateur, dont la
+longueur des phrases décide. Le modèle anglais affiche des fragments de mots en cours de
+prononciation (« part », « trans ») que l'accord de deux hypothèses figeait : avec lui, le
+commit n'attend que les mots qu'il déclare définitifs (`SttProvider.finalWords`). Une coupe
+sur pause (absence de mot nouveau) a été essayée et retirée : elle figeait ces fragments.
+
+**Ce qui ferait changer d'avis.** Sur l'enregistrement réel, une part de phrases coupées au
+délai qui fasse passer la médiane d'U3.5 Pro au-dessus de celle du modèle anglais.
+
 ## Ce que six semaines (au lieu de 48 h) remettent sur la table
 
 Dans l'ordre de valeur : tests automatisés dès le départ (fait) ; multilingue réel

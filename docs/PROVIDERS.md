@@ -20,8 +20,13 @@ compte, vérifiées par écrit (RGPD, sous-traitance).
 
 | Fournisseur | Fichier | Rôle | État |
 |---|---|---|---|
-| AssemblyAI Universal-3.5 Pro Realtime | `stt/assemblyai.ts` | primaire EN, batch des questions FR | **validé** (streaming + batch, région EU) |
+| AssemblyAI Universal-3.5 Pro Realtime | `stt/assemblyai.ts` | primaire EN (défaut), batch des questions FR | **validé** (streaming + batch, région EU) |
+| AssemblyAI universal-streaming (english / multilingual) | `stt/assemblyai.ts` | alternative, `ASSEMBLYAI_MODEL` | **validé** (streaming, région EU) — voir D19 |
 | Deepgram Nova-3 | `stt/deepgram.ts` | secours EN | écrit, à valider avec une clé |
+
+Latence mesurée de la fin d'un segment à son commit (D19) : U3.5 Pro ~0,4 s en fin de
+phrase mais ~2 s pour une phrase longue coupée au délai ; universal-streaming-english
+~0,7 s partout. `npm run check` le dit pour le modèle choisi ; le tableau de bord, en séance.
 
 Ce que le pipeline attend : `onPartial` reçoit l'**hypothèse complète** de l'énoncé
 courant (pas le delta) ; `isFinal:true` quand le fournisseur ne la révisera plus ;

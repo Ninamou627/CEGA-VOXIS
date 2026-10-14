@@ -99,6 +99,7 @@ export function registerAdmin(app: FastifyInstance, ctx: AdminContext): void {
           models: CLAUDE_MODELS,
           stt: providers.stt.name,
           sttTunable: cfg.STT_PROVIDER === "assemblyai",
+          sttPrompt: cfg.STT_PROVIDER === "assemblyai" && cfg.ASSEMBLYAI_MODEL.startsWith("universal-3"),
           tts: providers.tts.name,
           voicesEnabled: Boolean(catalog),
           /** La voix de séance est-elle ElevenLabs ? Sinon les voix choisies attendront la bascule. */
@@ -147,6 +148,7 @@ export function registerAdmin(app: FastifyInstance, ctx: AdminContext): void {
           availability: ratio(all.availableMs, all.sessionMs),
           availabilityToday: ratio(today.availableMs, today.sessionMs),
           e2e,
+          end: { p50: totals.endPercentile(50), p95: totals.endPercentile(95), n: totals.endCount() },
           quality: quality(all, e2e),
           qualityToday: quality(today, { p95: null }),
           days: totals.lastDays(14).map(({ day, totals: d }) => ({

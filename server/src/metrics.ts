@@ -3,10 +3,18 @@
  * tableau de bord. La mesure bout-en-bout est prise à la réception de l'ack : le
  * client n'a pas besoin d'horloge synchronisée, et l'erreur est bornée par un aller
  * simple sur le LAN (~10–30 ms), toujours dans le sens d'une surestimation.
+ *
+ * Deux latences, deux points de départ (D19) :
+ *   - `end` : de la fin prononcée du segment au début de son écoute. C'est l'objectif du
+ *     projet (moins d'une seconde) : ce que le système ajoute une fois la phrase dite.
+ *   - `e2e` : du premier mot reconnu du segment au début de son écoute. Il contient en plus
+ *     le temps que le formateur met à dire le segment : c'est le décalage ressenti.
  */
 import { createWriteStream, type WriteStream } from "node:fs";
 
 const WINDOW_MS = 60_000;
+/** Segments dont on garde la fin prononcée, le temps que leurs acks arrivent. */
+const KEEP_SEGMENTS = 500;
 
 function percentile(values: number[], p: number): number | null {
   if (!values.length) return null;
@@ -15,12 +23,26 @@ function percentile(values: number[], p: number): number | null {
   return Math.round(sorted[idx]);
 }
 
-export type StageName = "commit" | "mt" | "tts";
+/**
+ * Étages : `commit` va de la première apparition d'un mot au segment figé, `endCommit` de
+ * la fin prononcée du segment au segment figé (la part de la reconnaissance dans `end`).
+ */
+export type StageName = "commit" | "endCommit" | "mt" | "tts";
+
+export interface AckLatency {
+  /** Premier mot reconnu → début d'écoute. */
+  e2eMs: number;
+  /** Fin prononcée → début d'écoute ; null si le segment n'est plus connu (redémarrage). */
+  endMs: number | null;
+}
 
 export class Metrics {
   private stream?: WriteStream;
   private e2e: { t: number; ms: number }[] = [];
-  private stages: Record<StageName, { t: number; ms: number }[]> = { commit: [], mt: [], tts: [] };
+  private end: { t: number; ms: number }[] = [];
+  /** seq → instants du segment, pour dater les acks qui le concernent. */
+  private segments = new Map<number, { tOrigin: number; tEnd: number }>();
+  private stages: Record<StageName, { t: number; ms: number }[]> = { commit: [], endCommit: [], mt: [], tts: [] };
   /** Seuil de « parole » (dBFS) : en dessous, le micro reçoit du silence. Réglable dans l'administration. */
   speechDb = -35;
   private queues = new Map<string, { t: number; ms: number }>();
@@ -39,14 +61,25 @@ export class Metrics {
     this.stream?.write(line + "\n");
   }
 
+  /** Un segment vient d'être figé : on retient sa fin prononcée jusqu'aux acks. */
+  segmentEnd(seq: number, tOrigin: number, tEnd: number): void {
+    this.segments.set(seq, { tOrigin, tEnd });
+    if (this.segments.size > KEEP_SEGMENTS) this.segments.delete(this.segments.keys().next().value!);
+  }
+
   /** Ack d'un client : début de lecture effectif d'un segment. */
-  ack(participantId: string, seq: number, tOrigin: number, queueMs: number): number {
+  ack(participantId: string, seq: number, tOrigin: number, queueMs: number): AckLatency {
     const now = Date.now();
     const e2eMs = now - tOrigin;
+    // Le tOrigin renvoyé par le client doit être celui du segment : un seq d'un autre
+    // processus (serveur redémarré) ne doit pas fabriquer une mesure.
+    const seg = this.segments.get(seq);
+    const endMs = seg && seg.tOrigin === tOrigin ? now - seg.tEnd : null;
     this.e2e.push({ t: now, ms: e2eMs });
+    if (endMs != null) this.end.push({ t: now, ms: endMs });
     this.queues.set(participantId, { t: now, ms: queueMs });
-    this.event("ack", { participantId, seq, e2eMs, queueMs });
-    return e2eMs;
+    this.event("ack", { participantId, seq, e2eMs, endMs, queueMs });
+    return { e2eMs, endMs };
   }
 
   forget(participantId: string): void {
@@ -87,6 +120,8 @@ export class Metrics {
     const cutoff = now - WINDOW_MS;
     this.e2e = this.e2e.filter((s) => s.t >= cutoff);
     const e2e = this.e2e.map((s) => s.ms);
+    this.end = this.end.filter((s) => s.t >= cutoff);
+    const end = this.end.map((s) => s.ms);
     const queues = [...this.queues.values()].filter((q) => q.t >= cutoff).map((q) => q.ms);
     const recent = this.mic.filter((m) => m.t >= now - 2000);
     const stage = (name: StageName) => {
@@ -100,7 +135,9 @@ export class Metrics {
       e2eP50: percentile(e2e, 50),
       e2eP95: percentile(e2e, 95),
       e2eMean: e2e.length ? Math.round(e2e.reduce((a, b) => a + b, 0) / e2e.length) : null,
-      stages: { commitP50: stage("commit"), mtP50: stage("mt"), ttsP50: stage("tts") },
+      endP50: percentile(end, 50),
+      endP95: percentile(end, 95),
+      stages: { commitP50: stage("commit"), endCommitP50: stage("endCommit"), mtP50: stage("mt"), ttsP50: stage("tts") },
       queueP50Ms: percentile(queues, 50),
       queueMaxMs: queues.length ? Math.round(Math.max(...queues)) : null,
       micDb: recent.length ? Math.round(Math.max(...recent.map((m) => m.db))) : null,

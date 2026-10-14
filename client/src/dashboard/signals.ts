@@ -87,8 +87,8 @@ export function stageStates(sig: Signals): StageState[] {
         : !lecturer
           ? { id: "stt", label: "Reconnaissance vocale", icon: "hearing", tone: "idle", status: "En veille", metric: "attend le micro" }
           : sttErr
-            ? { id: "stt", label: "Reconnaissance vocale", icon: "hearing", tone: "warn", status: "Instable", metric: sg?.commitP50 != null ? `p50 ${delay(sg.commitP50)}` : "—" }
-            : { id: "stt", label: "Reconnaissance vocale", icon: "hearing", tone: "ok", status: "Opérationnelle", metric: sg?.commitP50 != null ? `p50 ${delay(sg.commitP50)}` : "à l'écoute" };
+            ? { id: "stt", label: "Reconnaissance vocale", icon: "hearing", tone: "warn", status: "Instable", metric: sg?.endCommitP50 != null ? `p50 ${delay(sg.endCommitP50)}` : "—" }
+            : { id: "stt", label: "Reconnaissance vocale", icon: "hearing", tone: "ok", status: "Opérationnelle", metric: sg?.endCommitP50 != null ? `p50 ${delay(sg.endCommitP50)}` : "à l'écoute" };
   stt.engine = pl?.stt;
   stt.incident = sttErr?.msg;
 
@@ -188,8 +188,9 @@ export function computeAlerts(sig: Signals): Alert[] {
       break;
   }
 
-  const e2e = st?.e2eP50 ?? null;
-  if (e2e != null && e2e > 2500) out.push({ id: "e2e", severity: e2e > 4000 ? "crit" : "warn", title: `Décalage élevé : ${delay(e2e)}`, detail: "Médiane sur la dernière minute ; la cible est 1,5 s.", to: "supervision" });
+  const end = st?.endP50 ?? null;
+  if (end != null && end > 1000)
+    out.push({ id: "e2e", severity: end > 2000 ? "crit" : "warn", title: `Latence élevée : ${delay(end)}`, detail: "De la fin de la phrase à la voix, médiane sur la dernière minute ; la cible est 1 s.", to: "supervision" });
   const q = st?.queueMaxMs ?? null;
   if (q != null && q > 5000) out.push({ id: "drift", severity: "warn", title: `Dérive : un téléphone a ${delay(q)} de retard en file`, detail: "Au-delà de 8 s, les segments sont sautés.", to: "supervision", stage: "tts" });
 

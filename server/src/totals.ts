@@ -27,11 +27,16 @@ interface TotalsFile {
   days: Record<string, DayTotals>;
   /** Histogramme bout-en-bout, cases de 250 ms jusqu'à 10 s (la dernière déborde). */
   e2eHist: number[];
+  /** Histogramme de la latence fin de phrase → voix (D19), cases de 100 ms jusqu'à 10 s. */
+  endHist: number[];
   voices: Record<string, VoiceTotals>;
 }
 
 const BUCKET_MS = 250;
 const BUCKETS = 40;
+/** Plus fin que le bout-en-bout : la cible est une seconde, il faut voir 0,9 et 1,1. */
+const END_BUCKET_MS = 100;
+const END_BUCKETS = 100;
 const KEEP_DAYS = 60;
 
 function emptyDay(): DayTotals {
@@ -44,11 +49,25 @@ function emptyDay(): DayTotals {
     availableMs: 0,
     e2eSum: 0,
     e2eN: 0,
+    endSum: 0,
+    endN: 0,
     confSum: 0,
     confN: 0,
     reports: {},
     questions: 0,
   };
+}
+
+/** Percentile d'un histogramme à cases régulières : la borne haute de la case qui le contient. */
+function percentileOf(hist: number[], buckets: number, bucketMs: number, p: number): number | null {
+  const n = hist.reduce((a, b) => a + (b ?? 0), 0);
+  if (!n) return null;
+  let acc = 0;
+  for (let i = 0; i < buckets; i++) {
+    acc += hist[i] ?? 0;
+    if (acc >= (p / 100) * n) return (i + 1) * bucketMs;
+  }
+  return buckets * bucketMs;
 }
 
 function dayKey(t = Date.now()): string {
@@ -104,13 +123,21 @@ export class Totals {
     });
   }
 
-  ack(e2eMs: number) {
+  ack(e2eMs: number, endMs: number | null = null) {
     this.bump((d) => {
       d.e2eSum += e2eMs;
       d.e2eN++;
+      if (endMs != null) {
+        d.endSum = (d.endSum ?? 0) + endMs;
+        d.endN = (d.endN ?? 0) + 1;
+      }
     });
     const i = Math.min(BUCKETS - 1, Math.floor(e2eMs / BUCKET_MS));
     this.data.e2eHist[i] = (this.data.e2eHist[i] ?? 0) + 1;
+    if (endMs != null) {
+      const j = Math.min(END_BUCKETS - 1, Math.max(0, Math.floor(endMs / END_BUCKET_MS)));
+      this.data.endHist[j] = (this.data.endHist[j] ?? 0) + 1;
+    }
   }
 
   confidence(c: number) {
@@ -174,15 +201,17 @@ export class Totals {
 
   /** Percentile bout-en-bout sur tout l'historique, à la résolution de l'histogramme. */
   e2ePercentile(p: number): number | null {
-    const h = this.data.e2eHist;
-    const n = h.reduce((a, b) => a + (b ?? 0), 0);
-    if (!n) return null;
-    let acc = 0;
-    for (let i = 0; i < BUCKETS; i++) {
-      acc += h[i] ?? 0;
-      if (acc >= (p / 100) * n) return (i + 1) * BUCKET_MS;
-    }
-    return BUCKETS * BUCKET_MS;
+    return percentileOf(this.data.e2eHist, BUCKETS, BUCKET_MS, p);
+  }
+
+  /** Percentile de la latence fin de phrase → voix sur tout l'historique (borne haute de la case). */
+  endPercentile(p: number): number | null {
+    return percentileOf(this.data.endHist, END_BUCKETS, END_BUCKET_MS, p);
+  }
+
+  /** Écoutes datées depuis leur fin de phrase, sur tout l'historique. */
+  endCount(): number {
+    return this.data.endHist.reduce((a, b) => a + (b ?? 0), 0);
   }
 
   voices(): Record<string, VoiceTotals> {
@@ -213,7 +242,7 @@ export class Totals {
   }
 
   private load(): TotalsFile {
-    const fresh: TotalsFile = { since: Date.now(), all: emptyDay(), days: {}, e2eHist: [], voices: {} };
+    const fresh: TotalsFile = { since: Date.now(), all: emptyDay(), days: {}, e2eHist: [], endHist: [], voices: {} };
     if (!existsSync(this.file)) return fresh;
     try {
       const raw = JSON.parse(readFileSync(this.file, "utf8")) as Partial<TotalsFile>;
@@ -222,6 +251,7 @@ export class Totals {
         all: { ...emptyDay(), ...raw.all },
         days: raw.days ?? {},
         e2eHist: raw.e2eHist ?? [],
+        endHist: raw.endHist ?? [],
         voices: raw.voices ?? {},
       };
     } catch (err) {

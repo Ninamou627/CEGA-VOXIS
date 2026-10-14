@@ -164,9 +164,9 @@ export function attachWs(wss: WebSocketServer, ctx: WsContext): void {
 
       // -- apprenant -----------------------------------------------------------
       if (evt.t === "ack") {
-        const e2e = metrics.ack(me.id, evt.seq, evt.tOrigin, evt.queueMs);
-        totals.ack(e2e);
-        if (e2e > 8000) log.warn({ id: me.id, e2e, queueMs: evt.queueMs }, "client très en retard");
+        const { e2eMs: e2e, endMs } = metrics.ack(me.id, evt.seq, evt.tOrigin, evt.queueMs);
+        totals.ack(e2e, endMs);
+        if (e2e > 8000) log.warn({ id: me.id, e2e, endMs, queueMs: evt.queueMs }, "client très en retard");
         return;
       }
       if (evt.t === "resync") {
