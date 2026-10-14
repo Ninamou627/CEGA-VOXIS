@@ -73,6 +73,11 @@ export interface MtRequest {
 export interface MtProvider {
   readonly name: string;
   translate(req: MtRequest): Promise<string>;
+  /**
+   * Garde chaude la connexion (D20) : appelé à l'ouverture du micro (`force`), puis
+   * régulièrement — le fournisseur n'envoie une requête gratuite que s'il est resté inactif.
+   */
+  warm?(force?: boolean): Promise<void>;
 }
 
 export interface TtsRequest {
@@ -97,6 +102,8 @@ export interface TtsResult {
 export interface TtsProvider {
   readonly name: string;
   synthesize(req: TtsRequest): Promise<TtsResult>;
+  /** Comme `MtProvider.warm`. */
+  warm?(force?: boolean): Promise<void>;
 }
 
 export interface Providers {

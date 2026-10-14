@@ -29,6 +29,8 @@ export interface PipelineConfig {
 }
 
 const DEFAULT_TUNING: PipelineTuning = { commit: {}, contextSegments: 2, baseSpeed: 1 };
+/** Cadence à laquelle on demande aux fournisseurs s'ils ont besoin d'être réchauffés (D20). */
+const WARM_EVERY_MS = 5000;
 
 export interface PipelineEvents extends Record<string, unknown> {
   "src.partial": { text: string };
@@ -114,15 +116,29 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     if (this.started) return;
     this.started = true;
     this.metrics.micReset();
+    // Les connexions vers la traduction et la voix s'ouvrent pendant que le STT se connecte,
+    // et restent chaudes pendant les pauses du formateur (D20).
+    this.warmProviders(true);
+    this.warmTimer = setInterval(() => this.warmProviders(false), WARM_EVERY_MS);
     await this.openStt();
     this.tickTimer = setInterval(() => this.handle(this.gate.tick()), 100);
     this.emitStatus();
+  }
+
+  private warmTimer?: NodeJS.Timeout;
+
+  /** Chaque fournisseur ne réchauffe que s'il est resté inactif (ou toujours, avec `force`). */
+  private warmProviders(force: boolean) {
+    void this.providers.mt.warm?.(force).catch(() => {});
+    void this.providers.tts.warm?.(force).catch(() => {});
   }
 
   async stop(): Promise<void> {
     this.started = false;
     if (this.tickTimer) clearInterval(this.tickTimer);
     this.tickTimer = undefined;
+    if (this.warmTimer) clearInterval(this.warmTimer);
+    this.warmTimer = undefined;
     if (this.restartTimer) clearTimeout(this.restartTimer);
     this.restartTimer = undefined;
     const s = this.stt;

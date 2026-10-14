@@ -156,3 +156,21 @@ describe("Pipeline — mots définitifs du fournisseur", () => {
     await r.pipeline.stop();
   });
 });
+
+describe("Pipeline — connexions chaudes (D20)", () => {
+  it("réchauffe traduction et voix à l'ouverture du micro, puis les interroge pendant les pauses", async () => {
+    const warms: string[] = [];
+    const stt = new FakeStt(true);
+    const wmt: MtProvider = { ...mt, warm: async (force) => void warms.push(`mt${force ? "!" : ""}`) };
+    const wtts: TtsProvider = { ...tts, warm: async (force) => void warms.push(`tts${force ? "!" : ""}`) };
+    const pipeline = new Pipeline({ stt, mt: wmt, tts: wtts }, { srcLang: "en", targetLangs: ["fr"], sampleRate: 16000 }, new Metrics());
+    await pipeline.start();
+    expect(warms).toEqual(["mt!", "tts!"]);
+    await vi.advanceTimersByTimeAsync(20_000); // le formateur se tait 20 s
+    expect(warms.filter((w) => w === "mt")).toHaveLength(4);
+    await pipeline.stop();
+    const after = warms.length;
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(warms).toHaveLength(after); // micro coupé : plus rien
+  });
+});

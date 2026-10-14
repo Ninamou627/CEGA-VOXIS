@@ -13,6 +13,7 @@
  */
 import Anthropic from "@anthropic-ai/sdk";
 import type { Lang } from "../../../../shared/protocol";
+import { providerFetch, WarmLink } from "../http";
 import type { MtProvider, MtRequest } from "../types";
 import { modelCaps } from "./claude-models";
 
@@ -48,16 +49,25 @@ export function buildSystemPrompt(from: Lang, to: Lang, glossary?: Record<string
 
 export class AnthropicMt implements MtProvider {
   private client: Anthropic;
+  private readonly link: WarmLink;
 
   constructor(private opts: { apiKey?: string; tuning: () => AnthropicTuning }) {
-    this.client = new Anthropic(opts.apiKey ? { apiKey: opts.apiKey } : {});
+    // Connexions gardées (D20) : un premier appel à froid a dépassé le délai de 6 s en séance.
+    this.client = new Anthropic({ ...(opts.apiKey ? { apiKey: opts.apiKey } : {}), fetch: providerFetch });
+    // Lister un modèle est gratuit : de quoi garder la connexion sans rien générer.
+    this.link = new WarmLink(() => this.client.models.list({ limit: 1 }, { timeout: 5000, maxRetries: 0 }));
   }
 
   get name(): string {
     return `anthropic:${this.opts.tuning().model}`;
   }
 
+  warm(force?: boolean): Promise<void> {
+    return this.link.warm(force);
+  }
+
   async translate(req: MtRequest): Promise<string> {
+    this.link.used();
     const t = this.opts.tuning();
     const caps = modelCaps(t.model);
     const messages: Anthropic.Beta.BetaMessageParam[] = [];

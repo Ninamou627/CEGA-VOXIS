@@ -56,12 +56,25 @@ Deepgram : `endpointing=300`, `utterance_end_ms=1000`.
 
 ## Traduction — `MtProvider`
 
-`mt/anthropic.ts` : prompt d'interprète (condense, ne commente jamais), glossaire, les
-deux segments précédents fournis comme tours réels, préfixe mis en cache,
-`effort: "low"`, repli serveur en cas de refus de sécurité.
+| Fournisseur | Fichier | Rôle | Mesuré par segment (14/10/2026, D20) |
+|---|---|---|---|
+| DeepL | `mt/deepl.ts` | **principal en séance** | ~0,25 s |
+| Claude Haiku 4.5 | `mt/anthropic.ts` | secours | ~0,85 s |
+| Claude Opus 5 | `mt/anthropic.ts` | — | ~1,7 s |
 
-À faire : comparer `MT_MODEL=claude-opus-5` et `claude-haiku-4-5` sur la fixture — le
-critère est `mtMs` dans `metrics.jsonl`. Prévoir DeepL en secours.
+`mt/deepl.ts` : contexte des segments précédents (non traduit), glossaire de
+l'administration créé une fois chez DeepL puis cité par son identifiant. `model_type`
+(latence ou qualité) n'a rien changé de mesurable. Ne condense pas : la dérive se combat
+par la vitesse de la voix.
+
+`mt/anthropic.ts` : prompt d'interprète (condense, ne commente jamais), glossaire, les
+deux segments précédents fournis comme tours réels, `effort: "low"`, repli serveur en
+cas de refus de sécurité. Le préfixe est marqué pour le cache, mais il est sous le minimum
+de 512 tokens : rien n'est servi depuis le cache (mesuré).
+
+**Connexions** (`providers/http.ts`) : gardées 60 s, et réchauffées à l'ouverture du micro
+puis après 15 s d'inactivité. Sans cela, la première requête après une pause du formateur
+rouvrait une connexion : 1 à 2,5 s vers DeepL, jusqu'à 2 s vers ElevenLabs (D20).
 
 ## TTS — `TtsProvider`
 

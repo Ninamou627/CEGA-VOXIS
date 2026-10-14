@@ -1,4 +1,5 @@
 import type { MtEngineInfo } from "../../../shared/admin";
+import type { Lang } from "../../../shared/protocol";
 import type { Config } from "../config";
 import { parseGlossary, parseKeyterms, type MtEngine, type Settings } from "../settings";
 import type { MtProvider, MtRequest, Providers, TtsProvider, TtsRequest, TtsResult } from "./types";
@@ -41,6 +42,10 @@ export class FallbackTts implements TtsProvider {
       () => this.backup.synthesize(req),
     );
   }
+  /** Le secours aussi : s'il prend le relais, sa première phrase ne doit pas payer la connexion. */
+  async warm(force?: boolean): Promise<void> {
+    await Promise.all([this.primary.warm?.(force), this.backup.warm?.(force)]);
+  }
 }
 
 export class FallbackMt implements MtProvider {
@@ -64,6 +69,9 @@ export class FallbackMt implements MtProvider {
       () => this.backup.translate(req),
     );
   }
+  async warm(force?: boolean): Promise<void> {
+    await Promise.all([this.primary.warm?.(force), this.backup.warm?.(force)]);
+  }
 }
 
 /**
@@ -71,6 +79,9 @@ export class FallbackMt implements MtProvider {
  * construits au démarrage ; choisir un autre primaire ou secours dans l'administration
  * reconstruit seulement la chaîne. Le glossaire et le contexte de séance sont relus à
  * chaque segment.
+ *
+ * Le glossaire s'écrit dans le sens du formateur (« terme source = rendu imposé ») : pour une
+ * question d'apprenant, traduite vers la langue du formateur, il est retourné.
  */
 export class SwitchableMt implements MtProvider {
   private chain!: MtProvider;
@@ -79,6 +90,7 @@ export class SwitchableMt implements MtProvider {
     private readonly engines: Partial<Record<MtEngine, MtProvider>>,
     private readonly hooks: FallbackHooks,
     private readonly settings: () => Settings,
+    private readonly srcLang: Lang,
   ) {
     this.rebuild();
   }
@@ -97,7 +109,13 @@ export class SwitchableMt implements MtProvider {
 
   translate(req: MtRequest): Promise<string> {
     const t = this.settings().translation;
-    return this.chain.translate({ ...req, glossary: parseGlossary(t.glossary), domain: t.domain.trim() || undefined });
+    const glossary = parseGlossary(t.glossary);
+    const oriented = !glossary || req.from === this.srcLang ? glossary : Object.fromEntries(Object.entries(glossary).map(([k, v]) => [v, k]));
+    return this.chain.translate({ ...req, glossary: oriented, domain: t.domain.trim() || undefined });
+  }
+
+  warm(force?: boolean): Promise<void> {
+    return this.chain.warm?.(force) ?? Promise.resolve();
   }
 }
 
@@ -172,7 +190,8 @@ export function makeProviders(cfg: Config, settings: () => Settings, hooks: Fall
   // Sans clé dans le .env, le SDK peut encore trouver des identifiants (profil `ant auth`) :
   // on tente la construction, et c'est la première traduction qui dira si ça répond.
   engines.anthropic = tryBuild("moteur Claude", () => new AnthropicMt({ apiKey: cfg.ANTHROPIC_API_KEY, tuning: translation }));
-  if (cfg.DEEPL_API_KEY) engines.deepl = tryBuild("moteur DeepL", () => new DeepLMt({ apiKey: cfg.DEEPL_API_KEY!, timeoutMs: () => translation().timeoutMs }));
+  if (cfg.DEEPL_API_KEY)
+    engines.deepl = tryBuild("moteur DeepL", () => new DeepLMt({ apiKey: cfg.DEEPL_API_KEY!, timeoutMs: () => translation().timeoutMs, mainFrom: cfg.SRC_LANG, log: (m) => console.warn(`[providers] ${m}`) }));
   const mtEngines: MtEngineInfo[] = [
     {
       id: "anthropic",
@@ -190,7 +209,7 @@ export function makeProviders(cfg: Config, settings: () => Settings, hooks: Fall
     if (primary === cfg.MT_PROVIDER) throw new Error(`moteur de traduction « ${primary} » indisponible (clé manquante ?)`);
     console.warn(`[providers] moteur de traduction « ${primary} » indisponible : simulateur en attendant`);
   }
-  const mt = new SwitchableMt(engines, hooks, settings);
+  const mt = new SwitchableMt(engines, hooks, settings, cfg.SRC_LANG);
 
   // ---- voix -----------------------------------------------------------------------
   let tts = makeTts(cfg.TTS_PROVIDER, cfg, settings);

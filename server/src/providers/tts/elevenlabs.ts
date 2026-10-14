@@ -12,6 +12,7 @@
  */
 import type { Lang } from "../../../../shared/protocol";
 import { mp3DurationMs } from "../../util/mp3";
+import { providerFetch, WarmLink } from "../http";
 import type { TtsProvider, TtsRequest, TtsResult } from "../types";
 
 /** Réglages de l'administration, relus à chaque segment. */
@@ -40,6 +41,7 @@ export class ElevenLabsTts implements TtsProvider {
   private readonly format: string;
   /** Contexte de continuité par langue. */
   private last = new Map<Lang, { text: string; ids: string[] }>();
+  private readonly link: WarmLink;
 
   constructor(private opts: ElevenLabsOptions) {
     if (!opts.apiKey) throw new Error("ELEVENLABS_API_KEY manquant");
@@ -47,9 +49,18 @@ export class ElevenLabsTts implements TtsProvider {
     this.model = opts.model ?? "eleven_turbo_v2_5";
     this.format = opts.outputFormat ?? "mp3_44100_64";
     this.name = `elevenlabs:${this.model}`;
+    // La liste des modèles est gratuite : de quoi garder la connexion sans décompter de caractères (D20).
+    this.link = new WarmLink(() =>
+      providerFetch("https://api.elevenlabs.io/v1/models", { headers: { "xi-api-key": opts.apiKey }, signal: AbortSignal.timeout(5000) }).then((r) => r.arrayBuffer()),
+    );
+  }
+
+  warm(force?: boolean): Promise<void> {
+    return this.link.warm(force);
   }
 
   async synthesize(req: TtsRequest): Promise<TtsResult> {
+    this.link.used();
     const t = this.opts.tuning?.();
     // `||` et non `??` : un identifiant vide ne doit jamais partir dans l'URL.
     const voice = req.voice || t?.defaults[req.lang] || this.opts.voiceByLang?.[req.lang] || this.opts.voiceId;
@@ -75,7 +86,7 @@ export class ElevenLabsTts implements TtsProvider {
       if (prev.ids.length) body.previous_request_ids = prev.ids.slice(-3);
     }
 
-    const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voice)}?output_format=${this.format}`, {
+    const res = await providerFetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voice)}?output_format=${this.format}`, {
       method: "POST",
       headers: { "xi-api-key": this.opts.apiKey, "Content-Type": "application/json", Accept: "audio/mpeg" },
       body: JSON.stringify(body),

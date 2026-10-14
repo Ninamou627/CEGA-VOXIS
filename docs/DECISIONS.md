@@ -356,6 +356,63 @@ sur pause (absence de mot nouveau) a été essayée et retirée : elle figeait c
 **Ce qui ferait changer d'avis.** Sur l'enregistrement réel, une part de phrases coupées au
 délai qui fasse passer la médiane d'U3.5 Pro au-dessus de celle du modèle anglais.
 
+## D20 — DeepL traduit en direct, Claude en secours ; des connexions toujours chaudes
+
+**Décision.** En séance, la traduction principale est DeepL ; Claude (Haiku 4.5) prend le
+relais 60 s s'il échoue. Les connexions vers les fournisseurs sont gardées ouvertes 60 s et
+réchauffées : à l'ouverture du micro, puis dès qu'un fournisseur est resté 15 s sans servir
+(`providers/http.ts`). Le glossaire de l'administration est transmis à DeepL (créé une fois
+chez DeepL, puis cité par son identifiant) et retourné pour les questions des apprenants.
+
+**Pourquoi DeepL.** Mesuré le 14/10/2026, par segment et connexion ouverte : DeepL ~0,25 s ;
+Claude Haiku 4.5 ~0,85 s ; Haiku 5.5 ~1,1 s ; Sonnet 5 ~1,35 s ; Opus 5 ~1,7 s. Avec une
+reconnaissance à 0,4–0,8 s, seul DeepL laisse une chance de passer sous une seconde de la fin
+de phrase à la voix (D19). Le réglage `model_type` de DeepL (latence ou qualité) n'a rien
+changé de mesurable. Le mode rapide d'Opus n'est pas ouvert sur le compte, et il accélère le
+débit, pas le premier mot ; le cache de prompt ne s'active pas (prompt sous 512 tokens).
+
+**Ce qu'on perd.** Le registre d'interprète : DeepL traduit, il ne condense pas. Le français
+est plus long, la dérive se combat par la vitesse de la voix. Claude reste dans le produit :
+secours, préparation du glossaire, transcription révisée.
+
+**Pourquoi des connexions chaudes.** Le `fetch` de Node ferme une connexion inactive au bout
+de 4 s ; la requête suivante en rouvre une. Mesuré, requête gratuite après un silence :
+
+| Fournisseur | Connexion chaude | Après 6 s / 20 s (Node par défaut) | Gardée 60 s |
+|---|---|---|---|
+| DeepL | ~0,1 s | 1,0 / 2,6 s | 0,1 / 0,1 s |
+| ElevenLabs | ~0,6 s | 2,1 / 0,9 s | 0,6 / 0,6 s |
+| Anthropic | ~0,3 s | 0,5 / 0,5 s | 0,3 / 0,4 s |
+
+DeepL ferme lui-même ses connexions entre 20 et 45 s (1,6 s après 45 s, même gardées) :
+d'où la requête de maintien à 15 s. En séance, chaque phrase qui suit une pause du formateur
+payait ce prix ; les fixtures précédentes, sans pause de plus de 0,6 s, ne le montraient pas.
+Sur un passage réel avec pauses (ancien code), la traduction a une médiane de 0,34 s mais des
+pointes de 1,1 à 2,1 s, et la voix de 0,9 à 1,9 s.
+
+**Mesuré avant / après** (même fixture de 66 s avec des pauses de 8 et 15 s, DeepL en
+direct, voix simulée, passages enchaînés) :
+
+| | Avant | Après |
+|---|---|---|
+| Traduction, médiane / p95 | 0,90 / 4,09 s | 0,33 / 0,91 s |
+| Attente derrière le segment précédent, médiane | 1,26 s (jusqu'à 11,8 s) | ~0 |
+| Dégradations | DeepL puis Claude hors délai : texte seul | aucune |
+| Fin de phrase → voix, médiane / p95 | 8,9 / 17,9 s | 3,9 / 7,6 s |
+
+Le réseau du poste de mesure était instable ce jour-là, et plus dégradé pendant le passage
+« avant » (retard d'AssemblyAI jusqu'à 5 s) : l'écart total surestime le gain, qui est établi
+sur la traduction et l'attente. Après, l'essentiel des 3,9 s vient de la reconnaissance
+(médiane 2 s : phrases longues coupées au délai, D19) et de la file du téléphone (~1,2 s).
+
+**Glossaire, vérifié contre l'API.** Une clé DeepL gratuite n'a droit qu'à un glossaire
+(refus 456 au deuxième) : il va au sens du formateur, et un glossaire modifié libère
+l'ancien avant d'être créé. Les questions des apprenants (français → anglais) s'en passent
+sur une clé gratuite ; Claude, en secours, reçoit le glossaire retourné.
+
+**Ce qui ferait changer d'avis.** Un Claude sous 0,4 s par segment mesuré depuis le serveur
+hébergé, ou des signalements « traduction » nettement plus nombreux avec DeepL.
+
 ## Ce que six semaines (au lieu de 48 h) remettent sur la table
 
 Dans l'ordre de valeur : tests automatisés dès le départ (fait) ; multilingue réel
