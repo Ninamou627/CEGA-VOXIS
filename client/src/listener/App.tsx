@@ -8,6 +8,7 @@
  */
 import { APP_NAME } from "../ui/brand";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { localRate as playbackRate, MAX_AGE_MS, MAX_QUEUE_MS, RATE_EVERY_MS } from "../../../shared/playback";
 import type { AudioHeader, FloorState, Lang, ReportKind, ServerEvent, StatsPayload } from "../../../shared/protocol";
 import { BIN_MS, envelope } from "../lib/envelope";
 import { QuestionRecorder } from "../lib/mic";
@@ -25,9 +26,6 @@ import { ReportSheet } from "./views/ReportSheet";
 import { Studio, type StudioPhase } from "./views/Studio";
 import { WAVE_BARS, type WaveSample } from "./views/Waveform";
 
-/** Au-delà, on saute le segment plutôt que de dériver (§10 de la revue). */
-const MAX_QUEUE_MS = 8000;
-const MAX_AGE_MS = 8000;
 const REPLAY_WINDOW_MS = 30_000;
 /** Une question dure au plus 30 s : au-delà, elle part toute seule. */
 const MAX_ASK_MS = 30_000;
@@ -121,13 +119,11 @@ export function App() {
       if (!p) return;
       const q = p.queueMs;
       setQueueMs(Math.round(q));
-      // Parade locale immédiate (§09) : on vise la même vitesse cible que le serveur,
-      // mais sans attendre que l'audio déjà synthétisé soit passé.
-      const target = q > 6000 ? 1.25 : q > 4000 ? 1.15 : q > 2000 ? 1.08 : 1;
-      const rate = Math.max(1, Math.round((target / serverSpeed.current) * 100) / 100);
+      // Parade locale immédiate (§09), la même que celle des apprenants simulés (shared/playback).
+      const rate = playbackRate(q, serverSpeed.current);
       p.setRate(rate);
       setLocalRate(rate);
-    }, 500);
+    }, RATE_EVERY_MS);
     // Écran maintenu allumé pendant l'écoute (le lecteur média joue même écran verrouillé).
     const stop = keepWakeLockAlive();
     return () => {

@@ -413,6 +413,35 @@ sur une clé gratuite ; Claude, en secours, reçoit le glossaire retourné.
 **Ce qui ferait changer d'avis.** Un Claude sous 0,4 s par segment mesuré depuis le serveur
 hébergé, ou des signalements « traduction » nettement plus nombreux avec DeepL.
 
+## D21 — La file du téléphone se vide en amont, pas sur le téléphone
+
+**Constat.** La file d'écoute du téléphone (1,2 à 1,7 s en médiane sur les passages mesurés)
+n'est pas une dérive. Avec DeepL, la voix française dure ×0,93 à ×1,04 la parole anglaise
+qu'elle traduit (×0,77 avec Claude, qui condense) ; les silences en tête et en queue des
+segments ElevenLabs pèsent 2 % du son (mesuré par l'alignement des caractères). La file
+vient d'un segment rapide qui attend derrière un segment lent : une phrase longue coupée au
+délai est reconnue en 1 à 3 s, la fin de phrase qui la suit en 0,3 s, et sa voix arrive
+pendant que la précédente joue encore.
+
+**Ce qui a été simulé** (lecture de la page rejouée pas à pas sur quatre passages réels) :
+accélérer la lecture jusqu'à ×1,3 ne gagne que 0,1 à 0,5 s en médiane, pour une voix
+nettement plus rapide. En revanche, sur le passage de référence (U3.5 Pro, DeepL, vraie
+voix), une reconnaissance aussi rapide pour toutes les phrases que pour les fins de phrase
+ferait passer l'attente au téléphone de 1,6 à 0,6 s et la fin de phrase → voix de 4,4 à
+2,7 s ; avec en plus une traduction et une voix sans pointes (D20), 1,6 s.
+
+**Décision.** La politique de lecture du téléphone ne change pas (×1,08 au-delà de 2 s de
+file, ×1,15 au-delà de 4 s, ×1,25 au-delà de 6 s, saut au-delà de 8 s). Elle vit désormais
+dans `shared/playback.ts`, partagée avec les apprenants simulés du test de charge, qui
+l'appliquent à l'identique (vitesse réajustée toutes les 500 ms, même définition de file
+dans l'accusé) : la latence mesurée par `npm run load` est celle d'un vrai téléphone.
+Jusqu'ici, ils jouaient sans accélérer et surestimaient la file. Le levier est la
+reconnaissance : la rendre aussi rapide pour les phrases longues que pour les fins de phrase.
+
+**Pas encore mesuré.** La latence avec ces apprenants fidèles : les deux passages du
+14/10/2026 au soir ont été faussés par le réseau du poste de mesure (retard d'AssemblyAI de
+3 à 15 s, DeepL hors délai). À refaire depuis le serveur hébergé.
+
 ## Ce que six semaines (au lieu de 48 h) remettent sur la table
 
 Dans l'ordre de valeur : tests automatisés dès le départ (fait) ; multilingue réel

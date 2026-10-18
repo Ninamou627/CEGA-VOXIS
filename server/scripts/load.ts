@@ -3,9 +3,11 @@
  *
  *   npm run load -- [apprenants=30] [secondes=60] [ws://localhost:8787/ws]
  *
- * Chaque client rejoint la session, reçoit les trames audio, simule une lecture
- * (file locale, ack au démarrage effectif de chaque segment, abandon au-delà de 8 s
- * comme la vraie page) et se reconnecte s'il est coupé. Toutes les 10 s, un rapport :
+ * Chaque client rejoint la session, reçoit les trames audio, et les « joue » comme la
+ * page apprenant (shared/playback) : file locale, vitesse de lecture réajustée toutes les
+ * 500 ms selon la file, saut au-delà de 8 s, ack au démarrage effectif de chaque segment
+ * avec la même définition de file. La latence mesurée est donc celle d'un vrai téléphone.
+ * Il se reconnecte s'il est coupé. Toutes les 10 s, un rapport :
  * clients, trames, débit, égalité du fan-out, santé du serveur (/api/health).
  *
  * Mesure le serveur et le fan-out sur boucle locale — PAS le Wi-Fi de salle.
@@ -13,7 +15,8 @@
  */
 import WebSocket from "ws";
 import { decodeFrame } from "../../shared/framing";
-import type { AudioHeader } from "../../shared/protocol";
+import { localRate, MAX_AGE_MS, MAX_QUEUE_MS, RATE_EVERY_MS } from "../../shared/playback";
+import type { AudioHeader, ServerEvent } from "../../shared/protocol";
 import { adminCookie, originOf, roomCode } from "./session";
 
 const N = Number(process.argv[2] ?? 30);
@@ -23,7 +26,15 @@ const ORIGIN = originOf(URL);
 const HEALTH = `${ORIGIN}/api/health`;
 // Les apprenants simulés présentent un vrai code de séance (D17), comme de vrais téléphones.
 const CODE = await roomCode(ORIGIN, await adminCookie(ORIGIN));
-const MAX_QUEUE_MS = 8000;
+/** Pas de la lecture simulée : l'écoute démarre au plus 20 ms après l'instant réel. */
+const PLAY_STEP_MS = 20;
+
+/** Un segment dans la file d'un apprenant simulé ; `left` : ms restant à jouer à vitesse 1. */
+interface Item {
+  seq: number;
+  tOrigin: number;
+  left: number;
+}
 
 interface Client {
   id: number;
@@ -33,7 +44,14 @@ interface Client {
   bytes: number;
   dropped: number;
   reconnects: number;
-  playheadEnd: number; // instant (ms) où la file locale sera vide
+  // Lecteur simulé, comme ElementPlayer : ce qui joue, ce qui attend, la vitesse locale.
+  current?: Item;
+  queue: Item[];
+  rate: number;
+  /** Vitesse déjà appliquée à la synthèse par le serveur (stats). */
+  serverSpeed: number;
+  /** Horloge serveur − horloge locale (hello). */
+  clockOffset: number;
   lastSeq: number;
   gaps: number; // seq manqués
 }
@@ -45,7 +63,10 @@ const clients: Client[] = Array.from({ length: N }, (_, id) => ({
   bytes: 0,
   dropped: 0,
   reconnects: 0,
-  playheadEnd: 0,
+  queue: [],
+  rate: 1,
+  serverSpeed: 1,
+  clockOffset: 0,
   lastSeq: 0,
   gaps: 0,
 }));
@@ -63,7 +84,12 @@ function connect(c: Client, attempt = 0) {
     if (fullAt === null && clients.every((x) => x.connected)) fullAt = Date.now();
   });
   ws.on("message", (raw, isBinary) => {
-    if (!isBinary) return;
+    if (!isBinary) {
+      const e = JSON.parse(raw.toString()) as ServerEvent;
+      if (e.t === "hello") c.clockOffset = e.tServer - Date.now();
+      if (e.t === "stats") c.serverSpeed = e.stats.pipeline.speed;
+      return;
+    }
     const buf = raw as Buffer;
     const { header, payload } = decodeFrame<AudioHeader>(new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength));
     if (header.t !== "audio") return;
@@ -73,18 +99,14 @@ function connect(c: Client, attempt = 0) {
     if (c.lastSeq && header.seq > c.lastSeq + 1) c.gaps += header.seq - c.lastSeq - 1;
     c.lastSeq = header.seq;
 
-    // Lecture simulée, même politique que la page apprenant.
-    const now = Date.now();
-    const queueMs = Math.max(0, c.playheadEnd - now);
-    if (queueMs > MAX_QUEUE_MS) {
+    // Même politique que la page apprenant : saut si la file ou l'âge dépassent 8 s.
+    const age = Date.now() + c.clockOffset - header.tOrigin;
+    if (queueOf(c) > MAX_QUEUE_MS || age > MAX_AGE_MS) {
       c.dropped++;
       return;
     }
-    const start = Math.max(now, c.playheadEnd);
-    c.playheadEnd = start + header.durMs;
-    setTimeout(() => {
-      if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ t: "ack", seq: header.seq, tOrigin: header.tOrigin, queueMs }));
-    }, start - now);
+    c.queue.push({ seq: header.seq, tOrigin: header.tOrigin, left: header.durMs });
+    if (!c.current) startNext(c);
   });
   ws.on("close", () => {
     c.connected = false;
@@ -97,6 +119,32 @@ function connect(c: Client, attempt = 0) {
     /* close suit */
   });
 }
+
+/** Comme ElementPlayer.queueMs : audio restant à jouer, segment en cours compris, à la vitesse courante. */
+function queueOf(c: Client): number {
+  return (c.queue.reduce((a, q) => a + q.left, 0) + (c.current?.left ?? 0)) / c.rate;
+}
+
+/** Le segment suivant commence : ack avec la file vue à cet instant, comme la page. */
+function startNext(c: Client) {
+  c.current = c.queue.shift();
+  if (!c.current || c.ws?.readyState !== WebSocket.OPEN) return;
+  c.ws.send(JSON.stringify({ t: "ack", seq: c.current.seq, tOrigin: c.current.tOrigin, queueMs: queueOf(c) }));
+}
+
+// La lecture avance, et la vitesse se réajuste toutes les 500 ms, pour tous les apprenants simulés.
+let lastRateAt = 0;
+setInterval(() => {
+  const now = Date.now();
+  const retune = now - lastRateAt >= RATE_EVERY_MS;
+  if (retune) lastRateAt = now;
+  for (const c of clients) {
+    if (retune) c.rate = localRate(queueOf(c), c.serverSpeed);
+    if (!c.current) continue;
+    c.current.left -= PLAY_STEP_MS * c.rate;
+    if (c.current.left <= 0) startNext(c);
+  }
+}, PLAY_STEP_MS).unref();
 
 let stopping = false;
 const t0 = Date.now();
