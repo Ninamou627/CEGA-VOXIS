@@ -140,7 +140,7 @@ describe("Pipeline — mots définitifs du fournisseur", () => {
     await r.speak(17);
     r.stt.ev!.onPartial(hyp("part"));
     r.stt.ev!.onPartial(hyp("part"));
-    await r.speak(30); // délai anti-famine dépassé : seuls les mots définitifs partent
+    await r.speak(45); // délai de coupe dépassé : seuls les mots définitifs partent
     expect(r.commits.map((c) => c.text)).toEqual(["how the pipeline handles"]);
     await r.pipeline.stop();
   });
@@ -151,7 +151,7 @@ describe("Pipeline — mots définitifs du fournisseur", () => {
     await r.speak(17);
     r.stt.ev!.onPartial(hyp("part"));
     r.stt.ev!.onPartial(hyp("part"));
-    await r.speak(30);
+    await r.speak(45);
     expect(r.commits.map((c) => c.text)).toEqual(["how the pipeline handles part"]);
     await r.pipeline.stop();
   });
@@ -172,5 +172,65 @@ describe("Pipeline — connexions chaudes (D20)", () => {
     const after = warms.length;
     await vi.advanceTimersByTimeAsync(20_000);
     expect(warms).toHaveLength(after); // micro coupé : plus rien
+  });
+});
+
+describe("Pipeline — fin de tour forcée pendant une pause (D22)", () => {
+  /** Ton à −24 dBFS : le formateur parle. */
+  const LOUD = (() => {
+    const b = new Uint8Array(3200);
+    const v = new DataView(b.buffer);
+    for (let i = 0; i < 1600; i++) v.setInt16(i * 2, Math.round(3000 * Math.sin((2 * Math.PI * 440 * i) / 16000)), true);
+    return b;
+  })();
+
+  function forcingRoom() {
+    const forced: number[] = [];
+    const stt: SttProvider & { ev?: SttEvents } = {
+      name: "fake-stt",
+      async start(_o, ev) {
+        stt.ev = ev;
+        return { sendAudio: () => {}, forceEndpoint: () => void forced.push(Date.now()), close: async () => {} };
+      },
+      async transcribeOnce() {
+        return "";
+      },
+    };
+    const pipeline = new Pipeline({ stt, mt, tts }, { srcLang: "en", targetLangs: ["fr"], sampleRate: 16000 }, new Metrics());
+    const push = async (frames: number, loud: boolean) => {
+      for (let i = 0; i < frames; i++) {
+        await vi.advanceTimersByTimeAsync(100);
+        pipeline.pushAudio(loud ? LOUD : FRAME);
+      }
+    };
+    const words = (n: number) => ({ words: Array.from({ length: n }, (_, i) => ({ text: `w${i}`, startMs: i * 300, endMs: i * 300 + 250 })), isFinal: false });
+    return { stt, pipeline, forced, push, words };
+  }
+
+  it("clôt le tour une fois par pause, quand au moins 4 mots attendent", async () => {
+    const r = forcingRoom();
+    await r.pipeline.start();
+    await r.push(20, true);
+    r.stt.ev!.onPartial(r.words(6));
+    await r.push(2, false); // 200 ms de silence : pas encore une pause
+    expect(r.forced).toHaveLength(0);
+    await r.push(1, false); // 300 ms
+    expect(r.forced).toHaveLength(1);
+    await r.push(10, false); // la même pause ne force qu'une fois
+    expect(r.forced).toHaveLength(1);
+    await r.push(5, true); // il reprend, puis se tait de nouveau
+    await r.push(3, false);
+    expect(r.forced).toHaveLength(2);
+    await r.pipeline.stop();
+  });
+
+  it("ne coupe pas pour moins de 4 mots en attente", async () => {
+    const r = forcingRoom();
+    await r.pipeline.start();
+    await r.push(10, true);
+    r.stt.ev!.onPartial(r.words(3));
+    await r.push(10, false);
+    expect(r.forced).toHaveLength(0);
+    await r.pipeline.stop();
   });
 });

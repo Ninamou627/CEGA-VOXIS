@@ -41,6 +41,11 @@ export interface SttEvents {
 export interface SttStream {
   /** PCM 16 bits little-endian mono. */
   sendAudio(pcm: Uint8Array): void;
+  /**
+   * Demande au fournisseur de clore le tour en cours : il livre aussitôt son texte définitif
+   * (~0,2 s chez AssemblyAI). Appelé pendant une pause du formateur (D22).
+   */
+  forceEndpoint?(): void;
   close(): Promise<void>;
 }
 

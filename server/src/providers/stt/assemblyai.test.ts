@@ -34,3 +34,4 @@ describe("AssemblyAI — paramètres d'ouverture du flux", () => {
     expect(p.has("min_end_of_turn_silence_when_confident")).toBe(false);
   });
 });
+

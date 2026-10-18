@@ -177,7 +177,7 @@ describe("CommitGate — horodatage", () => {
   });
 
   it("le reste du tampon hérite de l'origine de son propre premier mot", () => {
-    const { g, advance } = gate({ maxWords: 3, minWords: 2 });
+    const { g, advance } = gate({ maxWords: 3, minWords: 2, timeoutMs: 2500 });
     g.onPartial(W("a b c")); // 1000
     advance(500);
     const r = g.onPartial(W("a b c d e")); // 1500 : d, e vus ; a b c figés → coupe à 3
@@ -254,5 +254,68 @@ describe("CommitGate — sans accord, seuls les mots définitifs du fournisseur"
     g.onPartial(W("handles part trans"));
     g.onPartial(W("handles part transcripts"));
     expect(g.pendingText).toBe("handles part");
+  });
+});
+
+describe("CommitGate — un mot ne part jamais deux fois (D22)", () => {
+  it("écarte les mots qu'un tour suivant reprend, d'après leurs horodatages", () => {
+    const { g, advance } = timedGate();
+    advance(5000);
+    // Tour A, clos de force : ses hypothèses avaient déjà donné « …and why that matters ».
+    const a = g.onFinal(T("partial@3200 transcripts,@3700 and@4000 why@4300 that@4500 matters@4800"));
+    expect(a.map((s) => s.text)).toEqual(["partial transcripts, and why that matters"]);
+    advance(1000);
+    // Tour B : le STT reprend « And why that matters » avant la suite.
+    const b = g.onFinal(T("And@4050 why@4300 that@4500 matters@4800 for@5000 latency.@5600"));
+    expect(b.map((s) => s.text)).toEqual(["for latency."]);
+  });
+
+  it("un nouveau flux STT repart de zéro : ses horodatages recommencent", () => {
+    const { g, advance } = timedGate();
+    advance(5000);
+    g.onFinal(T("hello@800 there.@1200"));
+    g.newStream();
+    expect(g.onFinal(T("again@600 now.@1000")).map((s) => s.text)).toEqual(["again now."]);
+  });
+});
+
+describe("CommitGate — fin de tour demandée", () => {
+  it("le délai de coupe attend le texte définitif demandé au STT", () => {
+    const { g, advance } = gate({ timeoutMs: 1000, minWords: 3 });
+    g.onPartial(W("a b c d e"));
+    g.onPartial(W("a b c d e f")); // t = 1 000 : « a b c d e » en attente
+    advance(900);
+    g.holdTimeout(800); // pause du formateur : fin de tour demandée
+    advance(300); // délai de coupe dépassé (1 200 ms), mais suspendu
+    expect(g.tick()).toEqual([]);
+    const segs = g.onFinal(W("a b c d e f g"));
+    expect(segs.map((s) => [s.text, s.reason])).toEqual([["a b c d e f g", "final"]]);
+  });
+
+  it("si le texte définitif tarde, le délai de coupe reprend", () => {
+    const { g, advance } = gate({ timeoutMs: 1000, minWords: 3 });
+    g.onPartial(W("a b c d e"));
+    g.onPartial(W("a b c d e f"));
+    advance(900);
+    g.holdTimeout(800);
+    advance(900); // la suspension a expiré
+    expect(g.tick().map((s) => s.reason)).toEqual(["timeout"]);
+  });
+});
+
+describe("CommitGate — un mot nouveau n'est jamais pris pour une répétition", () => {
+  it("garde un mot nouveau même si l'horodatage provisoire du mot précédent le chevauchait", () => {
+    const { g, advance } = timedGate({ timeoutMs: 1000 });
+    advance(3000);
+    // « discuss » est parti avec une fin provisoire à 2 500 ms ; « how the » arrivent ensuite, plus tôt dans l'audio.
+    g.onFinal(T("going@1600 to@1800 discuss@2500"));
+    expect(g.onFinal(T("how@2450 the@2600 pipeline.@3000")).map((s) => s.text)).toEqual(["how the pipeline."]);
+  });
+
+  it("garde une vraie répétition du formateur (« no, no »)", () => {
+    const { g, advance } = timedGate();
+    advance(3000);
+    g.onFinal(T("no,@1000"));
+    expect(g.onFinal(T("no.@1400")).map((s) => s.text)).toEqual(["no."]);
   });
 });

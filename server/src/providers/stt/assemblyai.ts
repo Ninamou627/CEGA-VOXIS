@@ -240,6 +240,10 @@ export class AssemblyAiStt implements SttProvider {
       sendAudio: (pcm) => {
         if (ws.readyState === ws.OPEN) ws.send(pcm);
       },
+      // Mesuré : le tour définitif arrive 0,17 à 0,34 s après la commande (D22).
+      forceEndpoint: () => {
+        if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: "ForceEndpoint" }));
+      },
       close: async () => {
         closed = true;
         if (ignoredTurns) console.info(`[assemblyai] ${ignoredTurns} tour(s) écarté(s) : autre langue que « ${opts.lang} »`);

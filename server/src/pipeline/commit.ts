@@ -56,7 +56,10 @@ export const DEFAULT_COMMIT: CommitConfig = {
   minWords: 4,
   clauseWords: 12,
   maxWords: 18,
-  timeoutMs: 2500,
+  // Filet de sécurité pour l'orateur qui ne s'arrête pas : les phrases longues se coupent à
+  // leurs pauses (D22), ~0,3 s après le dernier mot ; une coupe au délai en coûte ~2 à 3 s.
+  // À 2,5 s, le délai tranchait encore la phrase juste avant sa pause (4 segments sur 17).
+  timeoutMs: 4000,
   holdLastWord: true,
   agreement: true,
 };
@@ -83,6 +86,14 @@ export interface GateResult {
   segments: Segment[];
 }
 
+/**
+ * Deux occurrences d'un même mot dont les milieux sont à moins de cet écart sont le même mot
+ * relu par le STT ; au-delà, c'est une vraie répétition (« no, no »), qui dure un mot (~0,3 s).
+ */
+const SAME_WORD_MS = 250;
+/** Mots envoyés gardés en mémoire : largement de quoi couvrir un tour repris. */
+const SENT_KEPT = 60;
+
 const TERMINAL = /[.!?…]["»)\]]?$/;
 const CLAUSE = /[,;:]["»)\]]?$/;
 
@@ -99,11 +110,22 @@ export class CommitGate {
   private prev: Word[] = [];
   /** Nombre de mots figés dans l'énoncé courant (flushés + en tampon). */
   private committedCount = 0;
-  private buf: Word[] = [];
+  /** Mots figés pas encore partis, avec leur position dans l'énoncé (`i`). */
+  private buf: { w: Word; i: number }[] = [];
   private bufStartedAt = 0;
   private bufOrigin = 0;
   /** Instant de première apparition de chaque index de mot de l'énoncé courant. */
   private firstSeen: number[] = [];
+  /**
+   * Derniers mots envoyés, avec leurs horodatages, pour le flux STT en cours. Après une fin de
+   * tour forcée (D22), le STT reprend parfois au tour suivant des mots déjà partis (mesuré) :
+   * un mot de même texte, au même endroit de l'audio, n'est pas envoyé une seconde fois. Le
+   * texte compte autant que l'instant : les horodatages des derniers mots d'une hypothèse sont
+   * provisoires, et une comparaison sur l'instant seul écartait des mots nouveaux (mesuré).
+   */
+  private sent: Word[] = [];
+  /** Une fin de tour a été demandée au STT : le délai de coupe attend son texte définitif. */
+  private holdUntil = 0;
 
   constructor(
     private cfg: CommitConfig = DEFAULT_COMMIT,
@@ -117,10 +139,14 @@ export class CommitGate {
   }
 
   get pendingText(): string {
-    return joinWords(this.buf);
+    return joinWords(this.buf.map((b) => b.w));
   }
   get pendingCount(): number {
     return this.buf.length;
+  }
+  /** Mots de l'énoncé courant pas encore partis en segment, hypothèse non figée comprise. */
+  get unsentCount(): number {
+    return Math.max(0, this.prev.length - (this.committedCount - this.buf.length));
   }
 
   /** Nouvelle hypothèse partielle (complète) de l'énoncé courant. */
@@ -181,8 +207,30 @@ export class CommitGate {
     this.reset();
   }
 
+  /** Nouveau flux STT : ses horodatages repartent de zéro. */
+  newStream(): void {
+    this.sent = [];
+  }
+
+  /** Ce mot est-il déjà parti (même texte, au même endroit de l'audio) ? */
+  private alreadySent(w: Word): boolean {
+    if (w.startMs == null || w.endMs == null) return false;
+    const mid = (w.startMs + w.endMs) / 2;
+    const text = normalize(w.text);
+    return this.sent.some((s) => normalize(s.text) === text && Math.abs((s.startMs! + s.endMs!) / 2 - mid) < SAME_WORD_MS);
+  }
+
+  /**
+   * Une fin de tour vient d'être demandée au STT (D22) : pendant `ms`, le délai de coupe ne
+   * tranche pas la phrase — le texte définitif, qui arrive en ~0,3 s, la coupera à la pause.
+   */
+  holdTimeout(ms: number): void {
+    this.holdUntil = this.now() + ms;
+  }
+
   /** À appeler toutes les ~100 ms : flush anti-famine pour l'orateur qui ne s'arrête jamais. */
   tick(): Segment[] {
+    if (this.now() < this.holdUntil) return [];
     if (this.buf.length >= this.cfg.minWords && this.now() - this.bufStartedAt >= this.cfg.timeoutMs) {
       return [this.flush(this.buf.length, "timeout")];
     }
@@ -196,12 +244,15 @@ export class CommitGate {
   }
 
   private push(words: Word[], firstIdx: number, t: number) {
-    if (!words.length) return;
-    if (!this.buf.length) {
-      this.bufStartedAt = t;
-      this.bufOrigin = this.firstSeen[firstIdx] ?? t;
-    }
-    this.buf.push(...words);
+    words.forEach((w, k) => {
+      // Déjà parti dans un segment : jamais deux fois aux apprenants.
+      if (this.alreadySent(w)) return;
+      if (!this.buf.length) {
+        this.bufStartedAt = t;
+        this.bufOrigin = this.firstSeen[firstIdx + k] ?? t;
+      }
+      this.buf.push({ w, i: firstIdx + k });
+    });
   }
 
   /** Applique les règles de coupe tant qu'elles produisent un segment ; `force` vide le reste. */
@@ -220,18 +271,18 @@ export class CommitGate {
     const n = this.buf.length;
     if (!n) return;
 
-    const iTerm = this.buf.findIndex((w) => TERMINAL.test(w.text));
+    const iTerm = this.buf.findIndex((b) => TERMINAL.test(b.w.text));
     if (iTerm >= 0) return this.flush(iTerm + 1, "punctuation");
 
     if (n >= this.cfg.clauseWords) {
       for (let i = this.cfg.clauseWords - 1; i < n; i++) {
-        if (CLAUSE.test(this.buf[i].text)) return this.flush(i + 1, "clause");
+        if (CLAUSE.test(this.buf[i].w.text)) return this.flush(i + 1, "clause");
       }
     }
 
     if (n >= this.cfg.maxWords) {
       for (let i = this.cfg.maxWords - 1; i >= this.cfg.minWords - 1; i--) {
-        if (CLAUSE.test(this.buf[i].text)) return this.flush(i + 1, "clause");
+        if (CLAUSE.test(this.buf[i].w.text)) return this.flush(i + 1, "clause");
       }
       return this.flush(this.cfg.maxWords, "maxlen");
     }
@@ -239,16 +290,16 @@ export class CommitGate {
   }
 
   private flush(count: number, reason: FlushReason): Segment {
-    // Index, dans l'énoncé, du dernier mot qui part (avant de le retirer du tampon).
-    const lastIdx = this.committedCount - this.buf.length + count - 1;
-    const words = this.buf.splice(0, count);
-    const last = words[words.length - 1];
-    const spoken = last.endMs != null ? this.timing?.spokenAt(last.endMs) : undefined;
-    const tEnd = spoken ?? this.firstSeen[lastIdx] ?? this.now();
+    const entries = this.buf.splice(0, count);
+    const words = entries.map((b) => b.w);
+    const last = entries[entries.length - 1];
+    const spoken = last.w.endMs != null ? this.timing?.spokenAt(last.w.endMs) : undefined;
+    const tEnd = spoken ?? this.firstSeen[last.i] ?? this.now();
+    for (const w of words) if (w.startMs != null && w.endMs != null) this.sent.push(w);
+    if (this.sent.length > SENT_KEPT) this.sent.splice(0, this.sent.length - SENT_KEPT);
     const seg: Segment = { text: joinWords(words), words, tOrigin: this.bufOrigin, tEnd, tEndExact: spoken != null, reason };
     if (this.buf.length) {
-      const firstRemaining = this.committedCount - this.buf.length;
-      this.bufOrigin = this.firstSeen[firstRemaining] ?? this.now();
+      this.bufOrigin = this.firstSeen[this.buf[0].i] ?? this.now();
       this.bufStartedAt = this.now();
     }
     return seg;
@@ -259,5 +310,6 @@ export class CommitGate {
     this.committedCount = 0;
     this.buf = [];
     this.firstSeen = [];
+    this.holdUntil = 0;
   }
 }

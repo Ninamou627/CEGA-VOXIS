@@ -26,7 +26,11 @@ const ORIGIN = originOf(URL);
 const HEALTH = `${ORIGIN}/api/health`;
 // Les apprenants simulés présentent un vrai code de séance (D17), comme de vrais téléphones.
 const CODE = await roomCode(ORIGIN, await adminCookie(ORIGIN));
-/** Pas de la lecture simulée : l'écoute démarre au plus 20 ms après l'instant réel. */
+/**
+ * Cadence de la lecture simulée. Elle avance du temps réellement écoulé : sous Windows, un
+ * minuteur de 20 ms se déclenche toutes les ~31 ms (mesuré), et avancer d'un pas fixe jouait
+ * l'audio à ×0,66, ce qui gonflait la file.
+ */
 const PLAY_STEP_MS = 20;
 
 /** Un segment dans la file d'un apprenant simulé ; `left` : ms restant à jouer à vitesse 1. */
@@ -134,14 +138,18 @@ function startNext(c: Client) {
 
 // La lecture avance, et la vitesse se réajuste toutes les 500 ms, pour tous les apprenants simulés.
 let lastRateAt = 0;
+let lastTick = performance.now();
 setInterval(() => {
   const now = Date.now();
+  const tick = performance.now();
+  const elapsed = tick - lastTick;
+  lastTick = tick;
   const retune = now - lastRateAt >= RATE_EVERY_MS;
   if (retune) lastRateAt = now;
   for (const c of clients) {
     if (retune) c.rate = localRate(queueOf(c), c.serverSpeed);
     if (!c.current) continue;
-    c.current.left -= PLAY_STEP_MS * c.rate;
+    c.current.left -= elapsed * c.rate;
     if (c.current.left <= 0) startNext(c);
   }
 }, PLAY_STEP_MS).unref();

@@ -442,6 +442,53 @@ reconnaissance : la rendre aussi rapide pour les phrases longues que pour les fi
 14/10/2026 au soir ont été faussés par le réseau du poste de mesure (retard d'AssemblyAI de
 3 à 15 s, DeepL hors délai). À refaire depuis le serveur hébergé.
 
+## D22 — Pendant une pause du formateur, on demande au STT de clore le tour
+
+**Décision.** Quand le formateur marque une pause d'au moins 250 ms (audio sous le seuil de
+parole de l'administration) et qu'au moins `minWords` mots attendent, le serveur envoie à
+AssemblyAI `ForceEndpoint` : le tour se clôt, son texte définitif arrive, et ces mots partent
+en segment. Une fois par pause. Pendant l'attente de ce texte (au plus 1 s), le délai de coupe
+ne tranche pas la phrase : sinon il la coupait juste avant la pause, plus lentement.
+
+**Pourquoi.** U3.5 Pro clôt une fin de phrase ~0,4 s après le dernier mot, mais au milieu
+d'une phrase longue il ne marque aucun mot définitif : le segment attendait le délai de coupe,
+~2 s après son dernier mot (D19), et faisait attendre le suivant au téléphone (D21). Mesuré sur
+la fixture : le tour forcé arrive 0,17 à 0,34 s après la commande, 0,2 à 0,4 s après le dernier
+mot ; 88 mots justes sur 88.
+
+**Mesuré de bout en bout** (fixture de 66 s avec pauses, U3.5 Pro, DeepL, voix simulée,
+apprenants fidèles à la page ; reconnaissance = fin prononcée du segment → segment figé) :
+
+| | Avant | Après (délai 2,5 s) | Après (délai 4 s) |
+|---|---|---|---|
+| Reconnaissance, médiane / p95 | 1,09 / 5,4 s | 0,34 / 3,2 s | 0,50 / 5,1 s* |
+| Coupes au délai (lentes, ~2 à 3 s) | 7 sur 17 | 4 sur 17 | 0 sur 12 |
+| Mots perdus ou répétés | 0 | 0 (après correctifs) | 0 |
+
+\* Réseau dégradé pendant ce passage (retard d'AssemblyAI 2,2 s au lieu de 0,9 s) ; les fins
+de phrase et les coupes à la pause y restent à ~0,47 s. Le délai de coupe passe à 4 s par
+défaut : à 2,5 s, il tranchait encore la phrase juste avant sa pause.
+
+**Ce qui reste.** La fin de phrase → voix reste vers 3,5–3,9 s sur ces passages : l'essentiel
+est désormais l'attente au téléphone d'un segment court derrière la voix d'une phrase longue
+(D21). Simulé sur les mêmes arrivées : une voix française plus rapide (×1,1 à ×1,2) ne gagne
+que 0,1 à 0,3 s ; la condensation de Claude (voix ×0,8, traduction +0,55 s) entre −0,4 et
++0,3 s selon le passage. Ces passages utilisent une voix simulée qui parle ~18 % plus
+lentement qu'ElevenLabs (0,38 contre 0,32 s par mot) et une fixture rapide (176 mots/min) :
+la file y est surestimée. La mesure avec la vraie voix reste à faire sur un réseau stable.
+
+**Ce qui a été écarté, et pourquoi.** Forcer à un nombre de mots coupe un mot en deux
+(« partial transfers » + « scripts ») ; la virgule n'est pas un repère (U3.5 n'en affiche pas
+en cours de phrase). Seule une pause garantit qu'aucun mot n'est en cours. D10 écartait un VAD
+maison pour segmenter ; ici le silence ne décide que du moment, le STT reste seul juge du texte.
+
+**Défaut connu et parade.** Si la commande arrive alors que le formateur a repris, AssemblyAI
+glisse parfois le début de la suite dans le tour clos, puis la reprend au tour suivant
+(« …transcripts, and why that matters » puis « And why that matters ») ; et des mots figés
+depuis ses hypothèses peuvent passer au tour suivant. La segmentation retient la fin du
+dernier mot réellement envoyé et n'envoie jamais un mot qui se termine avant : chaque mot part
+une fois, quel que soit le tour qui le porte.
+
 ## Ce que six semaines (au lieu de 48 h) remettent sur la table
 
 Dans l'ordre de valeur : tests automatisés dès le départ (fait) ; multilingue réel

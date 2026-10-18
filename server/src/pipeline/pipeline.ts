@@ -10,6 +10,7 @@ import type { Metrics } from "../metrics";
 import type { Providers, SttStream, Word } from "../providers/types";
 import { TypedEmitter } from "../util/emitter";
 import { AudioClock } from "./audio-clock";
+import { PauseDetector } from "./pause";
 import { CommitGate, DEFAULT_COMMIT, type CommitConfig, type Segment } from "./commit";
 
 /** Réglages de l'administration relus en cours de séance. */
@@ -19,6 +20,8 @@ export interface PipelineTuning {
   contextSegments: number;
   /** Vitesse de base de la voix ; le rattrapage de la dérive s'y multiplie. */
   baseSpeed: number;
+  /** Seuil de parole de l'administration (dBFS) : en dessous, le formateur se tait. */
+  speechThresholdDb: number;
 }
 
 export interface PipelineConfig {
@@ -28,7 +31,16 @@ export interface PipelineConfig {
   tuning?: () => PipelineTuning;
 }
 
-const DEFAULT_TUNING: PipelineTuning = { commit: {}, contextSegments: 2, baseSpeed: 1 };
+const DEFAULT_TUNING: PipelineTuning = { commit: {}, contextSegments: 2, baseSpeed: 1, speechThresholdDb: -35 };
+/**
+ * Silence du formateur au-delà duquel on demande au STT de clore le tour en cours (D22) :
+ * une phrase longue part en morceaux, chacun livré ~0,3 s après son dernier mot, au lieu
+ * d'attendre le délai de coupe (~2 s). Les silences entre deux mots durent moins de 150 ms ;
+ * 200 et 300 ms ont donné le même découpage sur la fixture.
+ */
+const FORCE_PAUSE_MS = 250;
+/** Le texte définitif arrive 0,17 à 0,55 s après la commande (mesuré) : le délai de coupe l'attend. */
+const FORCE_HOLD_MS = 1000;
 /** Cadence à laquelle on demande aux fournisseurs s'ils ont besoin d'être réchauffés (D20). */
 const WARM_EVERY_MS = 5000;
 
@@ -46,6 +58,10 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
   private gate: CommitGate;
   /** Relie les horodatages de mots du STT à l'heure où le formateur les a prononcés. */
   private clock: AudioClock;
+  /** Silences du formateur : le moment où clore un tour sans couper un mot (D22). */
+  private pause: PauseDetector;
+  /** La pause en cours a déjà servi à clore un tour. */
+  private forcedThisPause = false;
   private stt?: SttStream;
   private seq = 0;
   private muted = false;
@@ -65,6 +81,7 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
   ) {
     super();
     this.clock = new AudioClock(cfg.sampleRate);
+    this.pause = new PauseDetector(cfg.sampleRate);
     this.gate = new CommitGate(this.commitConfig(), undefined, { spokenAt: (ms) => this.clock.spokenAt(ms) });
   }
 
@@ -188,6 +205,8 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     );
     // Nouveau flux : ses horodatages repartent de zéro avec la première trame qu'il reçoit.
     this.clock.reset();
+    this.pause.reset();
+    this.gate.newStream();
     this.stt = stream;
     this.restartAttempts = 0;
     if (this.degraded === "stt-lost") this.setDegraded("none", "reconnaissance vocale rétablie");
@@ -218,6 +237,27 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     this.metrics.audio(pcm);
     this.stt.sendAudio(pcm);
     this.clock.push(pcm.byteLength, this.audio.lastAt);
+    this.endTurnOnPause(pcm);
+  }
+
+  /**
+   * Pendant une pause du formateur, et s'il reste au moins `minWords` mots en attente, on
+   * demande au STT de clore le tour : ces mots partent aussitôt, au lieu d'attendre le délai
+   * de coupe. Une fois par pause.
+   */
+  private endTurnOnPause(pcm: Uint8Array) {
+    const silentMs = this.pause.push(pcm, this.tuning.speechThresholdDb);
+    if (silentMs === 0) {
+      this.forcedThisPause = false;
+      return;
+    }
+    if (this.forcedThisPause || silentMs < FORCE_PAUSE_MS || !this.stt?.forceEndpoint) return;
+    const minWords = this.tuning.commit.minWords ?? DEFAULT_COMMIT.minWords;
+    if (this.gate.unsentCount < minWords) return;
+    this.forcedThisPause = true;
+    this.gate.holdTimeout(FORCE_HOLD_MS);
+    this.stt.forceEndpoint();
+    this.metrics.event("endpoint", { words: this.gate.unsentCount, silentMs: Math.round(silentMs) });
   }
 
   get sttOpen(): boolean {
