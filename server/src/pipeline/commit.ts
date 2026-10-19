@@ -85,6 +85,8 @@ export interface Segment {
    * premier son », ce que l'apprenant ressent. À défaut d'horodatage, `tOrigin` (plus tardif).
    */
   tStart: number;
+  /** Fin réelle de la parole, en position du flux STT (recalée sur l'audio) : la pause qui suit s'y lit (D27). */
+  endPos?: number;
   reason: FlushReason;
 }
 
@@ -310,7 +312,7 @@ export class CommitGate {
     const tStart = Math.min(started ?? this.bufOrigin, tEnd);
     for (const w of words) if (w.startMs != null && w.endMs != null) this.sent.push(w);
     if (this.sent.length > SENT_KEPT) this.sent.splice(0, this.sent.length - SENT_KEPT);
-    const seg: Segment = { text: joinWords(words), words, tOrigin: this.bufOrigin, tEnd, tEndExact: spoken != null, tStart, reason };
+    const seg: Segment = { text: joinWords(words), words, tOrigin: this.bufOrigin, tEnd, tEndExact: spoken != null, tStart, endPos, reason };
     if (this.buf.length) {
       this.bufOrigin = this.firstSeen[this.buf[0].i] ?? this.now();
       this.bufStartedAt = this.now();

@@ -63,6 +63,21 @@ const QUICK_PAUSE_MS = 120;
 const QUICK_MIN_SPEECH_MS = 800;
 /** Au-delà de ce qu'il reste à jouer sur les téléphones, un premier morceau court n'avancerait rien. */
 const QUICK_IDLE_MS = 1500;
+/**
+ * Phrase finie ou phrase qui continue (D27). Quand le serveur clôt un tour pendant une pause,
+ * AssemblyAI met un point même là où le formateur avait une virgule, et la voix française
+ * conclut une phrase qui continue. Ni la mélodie de la voix (−3,3 demi-tons en fin de virgule
+ * comme de phrase, voix de synthèse) ni la ponctuation du STT ne les distinguent ; la pause,
+ * mesurée sur l'audio, si : 0 à 800 ms après une virgule, 540 ms et plus après un point, sur
+ * deux cours enregistrés. Le formateur a repris avant 600 ms : la phrase continue.
+ */
+const CONTINUE_PAUSE_MS = 600;
+/** Un segment qui finit sur l'un de ces mots n'est pas fini, quelle que soit la pause. */
+const DANGLING = new Set([
+  "and", "or", "but", "because", "so", "the", "a", "an", "of", "to", "in", "on", "with", "for", "that", "which", "who",
+  "is", "are", "was", "were", "will", "would", "can", "could", "if", "as", "at", "by", "from", "than", "into",
+  "our", "your", "their", "its", "my", "this", "these", "those",
+]);
 /** Cadence à laquelle on demande aux fournisseurs s'ils ont besoin d'être réchauffés (D20). */
 const WARM_EVERY_MS = 5000;
 /**
@@ -444,7 +459,7 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
       this.backlog++;
       const prev = this.chains.get(lang) ?? Promise.resolve();
       const next = prev
-        .then(() => this.process(seq, seg, lang, gapMs, turnStart))
+        .then(() => this.process(seq, seg, lang, gapMs, turnStart, this.streams))
         .catch((error: Error) => this.emit("error", { stage: "mt", error }))
         .finally(() => {
           this.backlog--;
@@ -455,7 +470,22 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     this.emitStatus();
   }
 
-  private async process(seq: number, seg: Segment, lang: Lang, gapMs: number | null, turnStart: boolean) {
+  /**
+   * La phrase continue-t-elle après ce segment (D27) ? Lu au retour de la traduction, ~0,7 s
+   * après le début de la pause : on sait déjà si le formateur a repris. `unknown` si la pause
+   * dure encore sans avoir atteint le seuil, ou si le flux STT a changé depuis.
+   */
+  private sentenceGoesOn(seg: Segment, stream: number): { verdict: "continues" | "ends" | "unknown"; pauseMs: number | null } {
+    const last = (seg.text.toLowerCase().match(/[\p{L}']+/gu) ?? []).at(-1);
+    if (this.cfg.srcLang === "en" && last && DANGLING.has(last)) return { verdict: "continues", pauseMs: null };
+    if (seg.endPos == null || stream !== this.streams) return { verdict: "unknown", pauseMs: null };
+    const p = this.pause.pauseAfter(seg.endPos);
+    if (!p) return { verdict: "unknown", pauseMs: null };
+    if (p.ms < CONTINUE_PAUSE_MS) return { verdict: p.ongoing ? "unknown" : "continues", pauseMs: Math.round(p.ms) };
+    return { verdict: "ends", pauseMs: Math.round(p.ms) };
+  }
+
+  private async process(seq: number, seg: Segment, lang: Lang, gapMs: number | null, turnStart: boolean, stream: number) {
     const ctx = this.context.get(lang) ?? [];
     const t0 = Date.now();
 
@@ -476,6 +506,9 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     }
     const tMt = Date.now();
     this.metrics.stage("mt", tMt - t0);
+    // Le point d'une phrase qui continue redevient une virgule : la voix ne conclut pas (D27).
+    const goesOn = /[.]\s*$/.test(seg.text) ? this.sentenceGoesOn(seg, stream) : { verdict: "unknown" as const, pauseMs: null };
+    if (goesOn.verdict === "continues") text = text.replace(/\.\s*$/, ",");
     this.emit("tr.segment", { seq, lang, text, srcSeq: seq });
 
     ctx.push({ src: seg.text, tgt: text });
@@ -539,6 +572,8 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
         aheadMs,
         predictedMs: tempo?.predictedMs ?? null,
         budgetMs: tempo?.budgetMs ?? null,
+        ending: /[.]\s*$/.test(seg.text) ? goesOn.verdict : null,
+        pauseAfterMs: goesOn.pauseMs,
       });
       if (this.degraded === "text-only") this.setDegraded("none", "synthèse rétablie");
     } catch (error) {

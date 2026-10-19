@@ -420,3 +420,73 @@ describe("Pipeline — la voix suit le débit du formateur (D26)", () => {
     await r.pipeline.stop();
   });
 });
+
+describe("Pipeline — phrase finie ou phrase qui continue (D27)", () => {
+  function endingRoom() {
+    const r = room(true);
+    const fr: string[] = [];
+    r.pipeline.on("tr.segment", (e) => fr.push(e.text));
+    const silence = async (frames: number) => {
+      for (let i = 0; i < frames; i++) {
+        await vi.advanceTimersByTimeAsync(100);
+        r.pipeline.pushAudio(FRAME);
+      }
+    };
+    /** Le texte définitif d'une phrase dite de 0 à 1 500 ms, livré quand le STT le rend. */
+    const final = (last: string) =>
+      r.stt.ev!.onPartial({
+        words: [
+          { text: "Good", startMs: 0, endMs: 400, isFinal: true },
+          { text: "morning", startMs: 450, endMs: 900, isFinal: true },
+          { text: last, startMs: 950, endMs: 1500, isFinal: true },
+        ],
+        isFinal: true,
+      });
+    return { ...r, fr, silence, final };
+  }
+
+  it("le formateur a repris après 400 ms : le point redevient une virgule", async () => {
+    const r = endingRoom();
+    await r.pipeline.start();
+    await r.speak(15);
+    await r.silence(4);
+    await r.speak(3);
+    r.final("everyone.");
+    await vi.advanceTimersByTimeAsync(10);
+    expect(r.fr).toEqual(["fr:Good morning everyone,"]);
+    await r.pipeline.stop();
+  });
+
+  it("une pause d'au moins 600 ms : la phrase est finie, le point reste", async () => {
+    const r = endingRoom();
+    await r.pipeline.start();
+    await r.speak(15);
+    await r.silence(8);
+    r.final("everyone.");
+    await vi.advanceTimersByTimeAsync(10);
+    expect(r.fr).toEqual(["fr:Good morning everyone."]);
+    await r.pipeline.stop();
+  });
+
+  it("pause encore trop courte pour juger : on garde le point du STT", async () => {
+    const r = endingRoom();
+    await r.pipeline.start();
+    await r.speak(15);
+    await r.silence(3);
+    r.final("everyone.");
+    await vi.advanceTimersByTimeAsync(10);
+    expect(r.fr).toEqual(["fr:Good morning everyone."]);
+    await r.pipeline.stop();
+  });
+
+  it("une phrase qui finit sur « the » n'est pas finie, quelle que soit la pause", async () => {
+    const r = endingRoom();
+    await r.pipeline.start();
+    await r.speak(15);
+    await r.silence(8);
+    r.final("the.");
+    await vi.advanceTimersByTimeAsync(10);
+    expect(r.fr).toEqual(["fr:Good morning the,"]);
+    await r.pipeline.stop();
+  });
+});

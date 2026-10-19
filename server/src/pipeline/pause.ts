@@ -100,6 +100,18 @@ export class PauseDetector {
     return s && ms - s.start <= MAX_SNAP_MS ? s.start : ms;
   }
 
+  /**
+   * Le silence qui suit une fin de parole (position du flux, déjà recalée) : sa durée, et s'il
+   * dure encore. 0 si la parole a repris sans silence d'au moins 120 ms ; undefined si cette
+   * position n'a pas encore été entendue.
+   */
+  pauseAfter(endMs: number): { ms: number; ongoing: boolean } | undefined {
+    if (endMs > this.posMs) return undefined;
+    const s = this.silenceAt(endMs + 1);
+    if (!s || s.start > endMs + 40) return { ms: 0, ongoing: false };
+    return { ms: s.end - s.start, ongoing: s.end >= this.posMs };
+  }
+
   /** Début d'un mot selon le STT → vrai début de la parole, si l'horodatage tombe dans un silence. */
   speechStart(ms: number): number {
     const s = this.silenceAt(ms);

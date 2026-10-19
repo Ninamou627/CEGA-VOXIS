@@ -677,6 +677,41 @@ période, au-delà de ×1,2 pour 7 % et 23 % des segments (la seconde période a
 de 1 à 8 mots) : la voix de ce cours est plus rapide que le formateur. Au-delà de ×1,2, il
 faudrait dire moins (condenser la traduction), ce que DeepL ne fait pas.
 
+## D27 — Une phrase qui continue ne se conclut pas : la pause décide de la virgule
+
+**Constat.** Quand le serveur clôt un tour pendant une pause (D22, D25), AssemblyAI met un
+point même là où le formateur avait une virgule (« Good morning everyone. » puis « And
+welcome… ») : la voix française descend comme en fin de phrase, puis repart. Sur deux cours
+enregistrés, 45 à 47 % des segments finis par un point étaient en réalité des phrases qui
+continuaient.
+
+**Ce qui ne marche pas.** La mélodie de la voix : en fin de virgule comme en fin de phrase,
+elle descend de 3,3 demi-tons en médiane (48 segments, voix de synthèse). La probabilité de fin
+de tour d'AssemblyAI : pour U3.5 Pro, elle vaut 0 ou 1 (documentation), rien de plus que la fin
+de tour elle-même. La pause lue sur les horodatages du STT : ils débordent dans les pauses (D25).
+
+**Ce qui marche.** La pause mesurée sur l'audio : 0 à 800 ms après une virgule, 540 ms et plus
+après un point. **Décision** : au retour de la traduction (~0,7 s après le début de la pause),
+si le formateur a repris en moins de 600 ms, ou si le segment finit sur un mot qui appelle une
+suite (« and », « the », « to »…), le point final de la traduction devient une virgule ; la voix
+ne conclut pas, et l'enchaînement d'ElevenLabs (texte précédent) se fait sur une virgule. Pause
+encore en cours et plus courte que 600 ms : le point reste. Aucune attente ajoutée.
+
+**Mesuré (19/10/2026, AssemblyAI et DeepL réels, comparé au texte lu).**
+
+| Fins de segment justes (point ou virgule) | Avant | Après |
+|---|---|---|
+| Cours à 15 prises de parole, 38 segments | 55 % | 97 % (16 virgules rendues, aucune à tort) |
+| Cours continu à l'allure variable, 43 segments | 53 % | 84 % (15 rendues, 2 à tort, 5 manquées) |
+
+Une décision sur 81 était encore indécise au retour de la traduction. Les deux virgules mises
+à tort suivent des fins de phrase où la voix rapide a raccourci sa pause (0 et 550 ms).
+
+**Limites.** Voix de synthèse : ses pauses de virgule et de fin de phrase sont plus régulières
+que celles d'un formateur ; le seuil de 600 ms est à vérifier sur son enregistrement. Que la
+virgule fasse bien remonter la voix d'ElevenLabs est à vérifier à l'écoute (crédits). Le texte
+anglais affiché garde la ponctuation d'AssemblyAI.
+
 ## Ce que six semaines (au lieu de 48 h) remettent sur la table
 
 Dans l'ordre de valeur : tests automatisés dès le départ (fait) ; multilingue réel

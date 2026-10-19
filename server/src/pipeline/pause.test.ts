@@ -84,3 +84,29 @@ describe("PauseDetector — mots du STT recalés sur l'audio (D25)", () => {
     expect(p.speechStart(1000)).toBe(1000);
   });
 });
+
+describe("PauseDetector — la pause qui suit une phrase (D27)", () => {
+  it("donne la durée d'une pause terminée", () => {
+    const p = new PauseDetector(16000);
+    p.push(frame(1000, true), -35);
+    p.push(frame(400, false), -35);
+    p.push(frame(500, true), -35);
+    expect(p.pauseAfter(1000)).toEqual({ ms: 400, ongoing: false });
+  });
+
+  it("dit qu'une pause dure encore", () => {
+    const p = new PauseDetector(16000);
+    p.push(frame(1000, true), -35);
+    p.push(frame(300, false), -35);
+    expect(p.pauseAfter(1000)).toEqual({ ms: 300, ongoing: true });
+  });
+
+  it("0 quand la parole a repris sans vrai silence, rien pour une position pas encore entendue", () => {
+    const p = new PauseDetector(16000);
+    p.push(frame(1000, true), -35);
+    p.push(frame(60, false), -35);
+    p.push(frame(500, true), -35);
+    expect(p.pauseAfter(1000)).toEqual({ ms: 0, ongoing: false });
+    expect(p.pauseAfter(5000)).toBeUndefined();
+  });
+});
