@@ -293,7 +293,7 @@ export function App() {
       setDropped((d) => d + 1);
       return;
     }
-    const meta: SegmentMeta = { seq: h.seq, tOrigin: h.tOrigin, durMs: h.durMs, text: h.text, lang: h.lang };
+    const meta: SegmentMeta = { seq: h.seq, tOrigin: h.tOrigin, durMs: h.durMs, text: h.text, lang: h.lang, pauseMs: h.pauseMs };
     envelope(bytes)
       .then((env) => {
         const m = envelopes.current;
@@ -513,7 +513,8 @@ export function App() {
   }
 
   const floorBusyByOther = floor.state === "question" && floor.who !== hello?.participantId;
-  const rate = Math.round(serverSpeed.current * localRate * 100) / 100;
+  // Le rattrapage du téléphone lui-même : la vitesse de synthèse suit désormais le formateur (D26).
+  const rate = localRate;
   const studioPhase: StudioPhase = asking ? (askPaused ? "paused" : "recording") : askStatus;
   // Le studio est un écran plein : flèche retour dans l'en-tête, pas de boutons flottants.
   const studio = sheet === "ask";

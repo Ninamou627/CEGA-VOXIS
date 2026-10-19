@@ -22,6 +22,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { MPEGDecoder } from "mpg123-decoder";
 // Le .env de la racine du dépôt (clés AssemblyAI et Anthropic pour --stt et --judge).
 import "../src/config";
+import { PauseDetector } from "../src/pipeline/pause";
 import { AssemblyAiStt } from "../src/providers/stt/assemblyai";
 import {
   analyzeFrames,
@@ -109,6 +110,15 @@ async function measure(dir: string) {
   const source = await decode(path.join(dir, "source.wav"));
   const frames = analyzeFrames(source);
   const thr = speechThreshold(frames);
+  // Les mots du STT débordent dans les pauses (D25) : bornes recalées sur l'audio, comme au serveur.
+  const pause = new PauseDetector(source.sampleRate);
+  const pcm = new Uint8Array(readFileSync(path.join(dir, "source.wav"))).subarray(44);
+  const step = (source.sampleRate / 10) * 2;
+  for (let i = 0; i < pcm.length; i += step) pause.push(pcm.subarray(i, Math.min(pcm.length, i + step)), -35);
+  for (const s of srcs.values()) {
+    if (s.startMs != null) s.startMs = pause.speechStart(s.startMs);
+    if (s.endMs != null) s.endMs = pause.speechEnd(s.endMs);
+  }
 
   const seqs = [...srcs.keys()].filter((s) => tgts.has(s) && srcs.get(s)!.startMs != null).sort((a, b) => a - b);
   const results: SegmentResult[] = [];

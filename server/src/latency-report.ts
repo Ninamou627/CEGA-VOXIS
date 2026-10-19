@@ -200,6 +200,8 @@ export interface Report {
   minutes: { minute: number; n: number; total: number | null; wait: number | null }[];
   driftMsPerMin: number | null;
   voiceRatio: number | null;
+  /** Vitesse de synthèse appliquée aux segments : 10e centile, médiane, 90e centile. */
+  speed: { p10: number | null; p50: number | null; p90: number | null };
   /** De quoi juger si la mesure est exploitable. */
   health: {
     sttLag: Quantiles;
@@ -246,6 +248,11 @@ export function analyze(events: LogEvent[], from = -Infinity, to = Infinity): Re
     minutes,
     driftMsPerMin: driftPerMinute(rows),
     voiceRatio: voiceRatio(rows),
+    speed: (() => {
+      const v = rows.map((r) => r.speed).filter((x): x is number => x != null).sort((a, b) => a - b);
+      const at = (p: number) => (v.length ? v[Math.min(v.length - 1, Math.floor(p * v.length))] : null);
+      return { p10: at(0.1), p50: at(0.5), p90: at(0.9) };
+    })(),
     health: {
       sttLag: quantiles(inRange.filter((e) => e.type === "commit").map((e) => num(e.sttLagMs)).filter((v): v is number => v != null)),
       loopLagMaxMs: maxOf("loopLagMaxMs"),

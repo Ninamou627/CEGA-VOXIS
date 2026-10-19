@@ -34,7 +34,10 @@ export interface PipelineStatus {
   backlog: number;
   muted: boolean;
   degraded: DegradedMode;
-  /** Vitesse de synthèse courante (1 = normale). > 1 = rattrapage de la dérive en cours. */
+  /**
+   * Vitesse de synthèse du dernier segment (1 = normale). Elle suit le débit du formateur
+   * (D26) ou, réglage « constant », la vitesse de base et le rattrapage de la dérive.
+   */
   speed: number;
 }
 
@@ -180,6 +183,8 @@ export interface AudioHeader {
   text: string;
   /** "question" = audio d'une question d'apprenant, destiné au formateur. */
   kind?: "translation" | "question";
+  /** Silence du formateur avant ce segment (ms) : le téléphone en garde une partie (D26). */
+  pauseMs?: number;
   /** Question : faux pour une question écrite, que le formateur lance lui-même. */
   autoplay?: boolean;
 }

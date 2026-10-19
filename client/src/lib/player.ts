@@ -1,3 +1,5 @@
+import { keptPauseMs } from "../../../shared/playback";
+
 /**
  * Lecteur de segments audio, avec deux implémentations derrière la même interface :
  *
@@ -18,6 +20,8 @@ export interface SegmentMeta {
   lang: string;
   /** Réécoute : ne pas envoyer d'ack (fausserait la mesure bout-en-bout). */
   replay?: boolean;
+  /** Silence du formateur avant ce segment : une partie en est gardée à l'écoute (D26). */
+  pauseMs?: number;
 }
 
 /** Ce qui joue en ce moment et où on en est, pour l'onde qui suit la voix. */
@@ -129,7 +133,11 @@ export class WebAudioPlayer implements Player {
     // slice() : decodeAudioData détache le buffer, et la charge utile est une vue sur la trame.
     const buf = await ctx.decodeAudioData(bytes.slice().buffer);
     const now = ctx.currentTime;
-    const start = Math.max(now + 0.03, this.nextTime);
+    // Une partie de la pause du formateur, tant que le retard reste faible (D26).
+    const late = Math.max(0, this.nextTime - now) * 1000;
+    const silent = this.nextTime > 0 ? Math.max(0, now - this.nextTime) * 1000 : Infinity;
+    const pause = meta.replay ? 0 : keptPauseMs(meta.pauseMs, silent, late) / 1000;
+    const start = Math.max(now + 0.03, Math.max(now, this.nextTime) + pause);
     const src = ctx.createBufferSource();
     src.buffer = buf;
     src.connect(this.gain);
@@ -231,8 +239,12 @@ export class ElementPlayer implements Player {
   onStart?: (meta: SegmentMeta) => void;
   private els: HTMLAudioElement[] = [new Audio(), new Audio()];
   private i = 0;
-  private queue: { url: string; meta: SegmentMeta }[] = [];
+  /** `at` : arrivée dans la file, pour savoir combien de temps le segment a attendu. */
+  private queue: { url: string; meta: SegmentMeta; at: number }[] = [];
   private busy = false;
+  /** Fin du segment précédent, et pause en cours avant le suivant (D26). */
+  private lastEndedAt = 0;
+  private pauseTimer?: number;
   private current?: { meta: SegmentMeta; startedAt: number };
   private muted = false;
   private volume = 1;
@@ -277,7 +289,7 @@ export class ElementPlayer implements Player {
   async enqueue(bytes: Uint8Array, mime: string, meta: SegmentMeta): Promise<void> {
     // slice() : la charge utile est une vue sur la trame WebSocket, on copie dans un ArrayBuffer propre.
     const url = URL.createObjectURL(new Blob([bytes.slice().buffer as ArrayBuffer], { type: mime }));
-    this.queue.push({ url, meta });
+    this.queue.push({ url, meta, at: performance.now() });
     if (!this.busy) this.next();
   }
 
@@ -289,6 +301,22 @@ export class ElementPlayer implements Player {
       return;
     }
     this.busy = true;
+    // Une partie de la pause du formateur, tant que le segment n'a pas trop attendu (D26).
+    const now = performance.now();
+    const silent = this.lastEndedAt ? now - this.lastEndedAt : Infinity;
+    const pause = item.meta.replay ? 0 : keptPauseMs(item.meta.pauseMs, silent, now - item.at);
+    if (pause > 0) {
+      this.current = undefined;
+      this.pauseTimer = window.setTimeout(() => {
+        this.pauseTimer = undefined;
+        this.play(item);
+      }, pause);
+      return;
+    }
+    this.play(item);
+  }
+
+  private play(item: { url: string; meta: SegmentMeta; at: number }) {
     const el = this.els[this.i];
     this.i ^= 1;
     el.muted = this.muted;
@@ -304,6 +332,7 @@ export class ElementPlayer implements Player {
       el.onended = null;
       el.onerror = null;
       URL.revokeObjectURL(item.url);
+      this.lastEndedAt = performance.now();
       this.next();
     };
     el.onended = done;
@@ -321,6 +350,8 @@ export class ElementPlayer implements Player {
   }
 
   flush(): void {
+    if (this.pauseTimer) clearTimeout(this.pauseTimer);
+    this.pauseTimer = undefined;
     for (const q of this.queue) URL.revokeObjectURL(q.url);
     this.queue = [];
     for (const el of this.els) {

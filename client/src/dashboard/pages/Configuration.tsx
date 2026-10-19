@@ -41,6 +41,11 @@ const ENDPOINTING = [
   { value: "max_accuracy" as const, label: "Précise", title: "Attend d'être sûr : phrases entières, un peu plus de latence" },
 ];
 
+const TEMPO = [
+  { value: "follow" as const, label: "Suit le formateur", title: "Chaque phrase dite dans le temps que le formateur a mis à la dire : la voix ne prend pas de retard" },
+  { value: "fixed" as const, label: "Constant", title: "Une vitesse fixe, accélérée seulement quand les téléphones prennent du retard" },
+];
+
 const QUICK_START = [
   { value: "on" as const, label: "Au premier blanc", title: "Après ~3 mots, au premier blanc entre deux mots : la salle entend plus tôt" },
   { value: "off" as const, label: "À la première pause", title: "Après ~4 mots, à la première pause d'un quart de seconde : morceau plus long" },
@@ -441,7 +446,25 @@ export function Configuration({ conf, value, dirty, micDb, onChange, onSave, onD
             </div>
           </Field>
 
-          <Field label="Vitesse" help="Vitesse de base de la voix. Le rattrapage automatique de la dérive s'y ajoute, jusqu'à ×1,2." applies="live" changed={changed("voice.speed")}>
+          <Field
+            label="Débit"
+            help="Qui suit le formateur : chaque phrase est dite dans le temps qu'il a mis à la dire, la voix accélère et ralentit avec lui, et les téléphones ne prennent pas de retard. Constant : une vitesse fixe, accélérée seulement quand le retard s'installe."
+            applies="live"
+            changed={changed("voice.followTempo")}
+          >
+            <Segmented value={v.followTempo ? "follow" : "fixed"} onChange={(x) => set("voice", { followTempo: x === "follow" })} options={TEMPO} />
+          </Field>
+
+          <Field
+            label="Vitesse"
+            help={
+              v.followTempo
+                ? "Multiplie le débit calculé, entre ×0,85 et ×1,2. En dessous de ×1, la voix prend du retard sur le formateur."
+                : "Vitesse de base de la voix. Le rattrapage automatique de la dérive s'y ajoute, jusqu'à ×1,2."
+            }
+            applies="live"
+            changed={changed("voice.speed")}
+          >
             <Slider value={v.speed} min={0.8} max={1.2} step={0.05} onChange={(x) => set("voice", { speed: x })} format={(x) => `×${dec(x, 2)}`} ends={["posée", "rapide"]} />
           </Field>
 

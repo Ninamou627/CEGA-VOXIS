@@ -621,6 +621,62 @@ mot sur une occlusion ou une consonne faible de plus de 120 ms.
 mettre un point par AssemblyAI là où le formateur avait une virgule (« Good morning
 everyone. » puis « And welcome… ») : la voix française conclut une phrase qui continue.
 
+## D26 — La voix suit le débit du formateur ; le téléphone garde une partie de ses pauses
+
+**Constat.** La vitesse de la voix était fixe (réglage de l'administration), accélérée par
+paliers quand la file des téléphones grandissait. Elle ignorait l'allure du formateur, et le
+retard s'installait avant d'être rattrapé : avec la voix à ×0,85 le 19/10/2026, une minute de
+parole donnait 1 min 13 s de voix (D24). Quand un téléphone avait du retard, les segments
+s'enchaînaient sans blanc : les pauses du formateur disparaissaient justement quand il
+parlait vite.
+
+**Décision.**
+
+1. Chaque segment est dit dans le temps que le formateur a mis à le dire, pause qui le précède
+   comprise (au plus 0,6 s ; rien après une prise de parole), moins la moitié de la voix déjà
+   en attente sur les téléphones (`pipeline/tempo.ts`). La durée de la voix se prévoit par son
+   débit, appris segment après segment : ElevenLabs en français dit 17 caractères par seconde
+   à ×1 (médiane de 398 segments réels, p10 14, p90 19,4), et sa durée suit l'inverse de la
+   vitesse demandée. Vitesse bornée entre ×0,85 et ×1,2 (plafond d'ElevenLabs) ; le réglage
+   « Vitesse » de l'administration la multiplie. Réglage « Débit » (Configuration → Voix) :
+   « Suit le formateur » par défaut, ou « Constant » pour revenir à l'ancienne règle.
+2. Le téléphone garde 40 % d'une pause du formateur d'au moins 0,4 s (350 ms au plus), tant
+   qu'il a moins de 1,5 s de retard (`shared/playback.ts`, les deux lecteurs et les apprenants
+   simulés).
+3. Le téléphone rattrape sa propre file même quand la synthèse est rapide, sans que le débit
+   effectif (synthèse × lecture) dépasse ×1,3. Avant, il n'accélérait pas si le serveur l'avait
+   déjà fait — ce qui n'a plus de sens quand la vitesse de synthèse suit le formateur.
+4. Les libellés « Rattrapage de la dérive ×1,15 » et « Vitesse de la voix ×1,00 » montraient
+   le rattrapage automatique comme si c'était la vitesse réglée : ils disent maintenant la
+   vitesse du dernier segment, et l'écran apprenant n'annonce un rattrapage que quand le
+   téléphone accélère lui-même.
+5. La voix simulée parle au débit mesuré d'ElevenLabs (17 car./s à ×1) au lieu de ~440 ms par
+   mot : 18 % plus lente, elle ne tenait pas une parole continue même à ×1,2. Les mesures de
+   file faites avec elle (D21, D23) étaient pessimistes.
+
+**Mesuré (19/10/2026, cours continu de 144 s à l'allure variable — passages rapides et lents,
+voix Windows « Zira » ; AssemblyAI et DeepL réels, voix simulée au débit d'ElevenLabs, 3
+apprenants simulés ; un passage par configuration).**
+
+| | Avant (constant, sans pauses gardées) | Après |
+|---|---|---|
+| Début de parole → son, médiane / p95 | 5,0 / 9,3 s | 4,5 / 7,3 s |
+| Fin de phrase → son, médiane / p95 | 2,1 / 8,1 s | 1,8 / 6,1 s |
+| Le débit de la voix suit celui du formateur (corrélation par segment) | 0,32 | 0,53 |
+| Durée de la voix / durée du formateur (médiane par segment) | 1,08 | 1,01 |
+| Pauses de plus de 0,5 s retrouvées à l'écoute | 43 % | 63 % |
+| Pente du retard | +0,6 s/min | +0,6 s/min |
+
+Les pauses gardées coûtent ~0,3 s de médiane (5,3 s avec vitesse constante et pauses gardées).
+
+**Limite.** Le retard grandit encore dans les passages où le formateur va plus vite que ce
+que la voix peut suivre à ×1,2 : dans ce cours, la vitesse est au plafond pour plus de la
+moitié des segments, et le retard reprend à la 3e minute, dans le passage rapide. Sur la séance
+réelle du 19/10, la vitesse qu'il aurait fallu est de ×0,81 et ×0,98 en médiane selon la
+période, au-delà de ×1,2 pour 7 % et 23 % des segments (la seconde période avec des segments
+de 1 à 8 mots) : la voix de ce cours est plus rapide que le formateur. Au-delà de ×1,2, il
+faudrait dire moins (condenser la traduction), ce que DeepL ne fait pas.
+
 ## Ce que six semaines (au lieu de 48 h) remettent sur la table
 
 Dans l'ordre de valeur : tests automatisés dès le départ (fait) ; multilingue réel

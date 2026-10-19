@@ -57,8 +57,13 @@ const SpeechSchema = z
 const VoiceSchema = z.object({
   /** Voix par défaut par langue (identifiants ElevenLabs). */
   defaults: z.record(LangSchema, z.string().max(64)),
-  /** Vitesse de base ; le rattrapage de la dérive s'y multiplie. */
+  /**
+   * Vitesse de la voix. Quand elle suit le débit du formateur, elle multiplie la vitesse
+   * calculée pour chaque segment ; sinon, c'est la vitesse de base du rattrapage de la dérive.
+   */
   speed: z.number().min(0.8).max(1.2),
+  /** Chaque segment dit dans le temps que le formateur a mis à le dire (D26). */
+  followTempo: z.boolean(),
   /** Ton : 0 expressif … 1 posé et régulier. */
   stability: z.number().min(0).max(1),
   /** Exagération du style de la voix ; 0 = neutre, le plus sûr pour de l'interprétation. */

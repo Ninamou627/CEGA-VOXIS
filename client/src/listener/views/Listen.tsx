@@ -21,7 +21,7 @@ export interface AudioState {
   dropped: number;
   /** Bout-en-bout p50 mesuré par la salle (ms), ou null avant la première mesure. */
   e2eMs: number | null;
-  /** Vitesse effective de la voix (serveur × lecture locale) ; > 1 = rattrapage de la dérive. */
+  /** Accélération de la lecture par le téléphone ; > 1 = il rattrape son retard. */
   rate: number;
 }
 
@@ -102,7 +102,7 @@ export function Listen(p: ListenProps) {
           : a.paused
             ? { icon: "pause_circle", text: "Écoute en pause", cls: "text-on-surface-variant" }
             : a.rate > 1
-              ? { icon: "speed", text: `Rattrapage de la dérive ×${a.rate.toFixed(2).replace(".", ",")}`, cls: "text-tertiary" }
+              ? { icon: "speed", text: `Rattrapage du retard ×${a.rate.toFixed(2).replace(".", ",")}`, cls: "text-tertiary" }
               : { icon: "headphones", text: "Traduction en direct active", cls: "text-secondary animate-pulse" };
 
   const queueTone = a.queueMs > 5000 ? "text-error" : a.queueMs > 2500 ? "text-tertiary" : "text-on-surface-variant";

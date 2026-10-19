@@ -11,6 +11,7 @@ import type { Providers, SttStream, Word } from "../providers/types";
 import { TypedEmitter } from "../util/emitter";
 import { AudioClock } from "./audio-clock";
 import { PauseDetector } from "./pause";
+import { Tempo } from "./tempo";
 import { CommitGate, DEFAULT_COMMIT, type CommitConfig, type Segment } from "./commit";
 
 /** Réglages de l'administration relus en cours de séance. */
@@ -18,8 +19,13 @@ export interface PipelineTuning {
   commit: Partial<CommitConfig>;
   /** Segments précédents fournis au traducteur pour la continuité. */
   contextSegments: number;
-  /** Vitesse de base de la voix ; le rattrapage de la dérive s'y multiplie. */
+  /**
+   * Vitesse de la voix choisie par l'administration. Quand la voix suit le débit du formateur,
+   * elle multiplie la vitesse calculée ; sinon, le rattrapage de la dérive s'y multiplie.
+   */
   baseSpeed: number;
+  /** Chaque segment dit dans le temps que le formateur a mis à le dire (D26). */
+  followTempo: boolean;
   /** Seuil de parole de l'administration (dBFS) : en dessous, le formateur se tait. */
   speechThresholdDb: number;
   /** Premier morceau d'une prise de parole coupé au premier blanc entre deux mots (D25). */
@@ -33,7 +39,7 @@ export interface PipelineConfig {
   tuning?: () => PipelineTuning;
 }
 
-const DEFAULT_TUNING: PipelineTuning = { commit: {}, contextSegments: 2, baseSpeed: 1, speechThresholdDb: -35, quickStart: true };
+const DEFAULT_TUNING: PipelineTuning = { commit: {}, contextSegments: 2, baseSpeed: 1, followTempo: true, speechThresholdDb: -35, quickStart: true };
 /**
  * Silence du formateur au-delà duquel on demande au STT de clore le tour en cours (D22) :
  * une phrase longue part en morceaux, chacun livré ~0,3 s après son dernier mot, au lieu
@@ -89,7 +95,19 @@ export interface PipelineEvents extends Record<string, unknown> {
   /** Une trame transmise au STT, telle quelle. */
   "stt.audio": { pcm: Uint8Array };
   "tr.segment": { seq: number; lang: Lang; text: string; srcSeq: number; untranslated?: boolean };
-  audio: { seq: number; lang: Lang; mime: string; durMs: number; tOrigin: number; srcSeq: number; text: string; bytes: Uint8Array; voice?: string };
+  audio: {
+    seq: number;
+    lang: Lang;
+    mime: string;
+    durMs: number;
+    tOrigin: number;
+    srcSeq: number;
+    text: string;
+    bytes: Uint8Array;
+    voice?: string;
+    /** Silence du formateur avant ce segment, que le téléphone reprend en partie (D26). */
+    pauseMs?: number;
+  };
   degraded: { mode: DegradedMode; reason: string };
   status: PipelineStatus;
   error: { stage: "stt" | "mt" | "tts"; error: Error };
@@ -122,6 +140,8 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
   private turnOpen = true;
   /** Par langue, l'heure estimée où les téléphones auront fini de jouer ce qui leur a été envoyé. */
   private roomFreeAt = new Map<Lang, number>();
+  /** Débit de la voix traduite, appris segment après segment (D26). */
+  private tempo = new Tempo();
 
   constructor(
     private readonly providers: Providers,
@@ -165,11 +185,11 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
   }
 
   /**
-   * Rattrapage de la dérive (§09 de la revue). La langue cible est plus longue que la
-   * source ; sans parade, la file des clients grandit dès que l'orateur ne fait pas de
-   * pause. Quand la file médiane mesurée dans les acks s'allonge, la voix accélère :
-   * inaudible sous 1,15, temporaire au-delà. Le plafond dur (8 s, côté client) reste
-   * le dernier recours.
+   * Rattrapage de la dérive (§09 de la revue), quand la voix ne suit pas le débit du formateur.
+   * La langue cible est plus longue que la source ; sans parade, la file des clients grandit
+   * dès que l'orateur ne fait pas de pause. Quand la file médiane mesurée dans les acks
+   * s'allonge, la voix accélère : inaudible sous 1,15, temporaire au-delà. Le plafond dur
+   * (8 s, côté client) reste le dernier recours.
    */
   private speedForQueue(queueMs: number | null): number {
     if (queueMs == null || queueMs < 2000) return 1;
@@ -424,7 +444,7 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
       this.backlog++;
       const prev = this.chains.get(lang) ?? Promise.resolve();
       const next = prev
-        .then(() => this.process(seq, seg, lang))
+        .then(() => this.process(seq, seg, lang, gapMs, turnStart))
         .catch((error: Error) => this.emit("error", { stage: "mt", error }))
         .finally(() => {
           this.backlog--;
@@ -435,7 +455,7 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     this.emitStatus();
   }
 
-  private async process(seq: number, seg: Segment, lang: Lang) {
+  private async process(seq: number, seg: Segment, lang: Lang, gapMs: number | null, turnStart: boolean) {
     const ctx = this.context.get(lang) ?? [];
     const t0 = Date.now();
 
@@ -465,19 +485,42 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
 
     try {
       const queueMs = this.metrics.snapshot().queueP50Ms;
-      const drift = this.speedForQueue(queueMs);
-      if (drift !== this.speed) {
-        this.speed = drift;
-        this.metrics.event("speed", { speed: drift, queueMs });
+      const aheadMs = Math.max(0, (this.roomFreeAt.get(lang) ?? 0) - Date.now());
+      const sourceMs = seg.tEnd - seg.tStart;
+      let speed: number;
+      let tempo: { predictedMs: number; budgetMs: number } | undefined;
+      if (this.tuning.followTempo) {
+        // Le segment dans le temps du formateur, file des téléphones comprise (D26).
+        // Après un long silence, la pause n'appartient pas au temps du segment : la salle l'a déjà eue.
+        const d = this.tempo.speedFor(lang, { chars: text.length, sourceMs, gapMs: turnStart ? null : gapMs, aheadMs, preference: this.tuning.baseSpeed });
+        speed = d.speed;
+        tempo = d;
+      } else {
+        // La vitesse choisie par l'administration, et le rattrapage de la dérive par-dessus.
+        const drift = this.speedForQueue(queueMs);
+        speed = Math.min(1.2, Math.max(0.7, this.tuning.baseSpeed * drift));
+      }
+      if (speed !== this.speed) {
+        this.speed = speed;
         this.emitStatus();
       }
-      // La vitesse choisie par l'administration, et le rattrapage de la dérive par-dessus.
-      const speed = Math.min(1.2, Math.max(0.7, this.tuning.baseSpeed * drift));
       const a = await this.providers.tts.synthesize({ text, lang, speed, continuation: true });
       const tTts = Date.now();
       this.metrics.stage("tts", tTts - tMt);
+      this.tempo.learn(lang, text.length, a.durMs, speed);
       this.roomFreeAt.set(lang, Math.max(this.roomFreeAt.get(lang) ?? 0, tTts) + a.durMs);
-      this.emit("audio", { seq, lang, mime: a.mime, durMs: a.durMs, tOrigin: seg.tOrigin, srcSeq: seq, text, bytes: a.audio, voice: a.voice });
+      this.emit("audio", {
+        seq,
+        lang,
+        mime: a.mime,
+        durMs: a.durMs,
+        tOrigin: seg.tOrigin,
+        srcSeq: seq,
+        text,
+        bytes: a.audio,
+        voice: a.voice,
+        pauseMs: gapMs != null ? Math.max(0, Math.round(gapMs)) : undefined,
+      });
       this.metrics.event("segment", {
         seq,
         lang,
@@ -491,6 +534,11 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
         speed,
         voice: a.voice ?? null,
         queueMs,
+        sourceMs,
+        gapMs,
+        aheadMs,
+        predictedMs: tempo?.predictedMs ?? null,
+        budgetMs: tempo?.budgetMs ?? null,
       });
       if (this.degraded === "text-only") this.setDegraded("none", "synthèse rétablie");
     } catch (error) {

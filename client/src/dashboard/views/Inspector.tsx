@@ -172,7 +172,7 @@ function measuresOf(id: StageId, sig: Signals, conf?: SettingsResponse): Row[] {
     case "tts":
       return [
         { label: "Moteur", value: engineName(pl?.tts, pl?.degraded === "backup-tts" ? "backup" : "primary") ?? "—", title: pl?.tts, tone: pl?.degraded === "backup-tts" ? "warn" : undefined },
-        { label: "Vitesse actuelle", value: pl ? `×${dec(pl.speed)}` : "—", tone: pl && pl.speed > 1 ? "warn" : undefined, title: "Au-dessus de ×1, la voix rattrape la dérive" },
+        { label: "Vitesse actuelle", value: pl ? `×${dec(pl.speed)}` : "—", tone: pl && pl.speed >= 1.2 ? "warn" : undefined, title: "Vitesse du dernier segment dit ; à ×1,2, la voix ne peut plus accélérer" },
         { label: "Temps médian", value: st?.stages.ttsP50 != null ? delay(st.stages.ttsP50) : "—", title: "Du texte au premier son, sur la dernière minute" },
         { label: "En attente", value: pl ? `${pl.backlog} seg.` : "—" },
         { label: "Dits aujourd'hui", value: today ? num(today.voice.n) : "—" },

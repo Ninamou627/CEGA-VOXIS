@@ -91,6 +91,8 @@ console.log("\nAu fil de la séance (médianes par minute) :");
 for (const m of r.minutes) console.log(`  minute ${String(m.minute + 1).padStart(2)} : début de parole → son ${s(m.total).padStart(7)} · envoi et file ${s(m.wait).padStart(7)}  (${m.n} seg.)`);
 if (r.driftMsPerMin != null) console.log(`Le décalage ressenti varie de ${r.driftMsPerMin >= 0 ? "+" : ""}${s(r.driftMsPerMin)} par minute.`);
 if (r.voiceRatio != null) console.log(`Voix traduite / parole du formateur : ${r.voiceRatio.toFixed(2).replace(".", ",")}${r.voiceRatio > 1 ? " — au-dessus de 1, la file des téléphones grandit" : ""}`);
+const x = (v: number | null) => (v == null ? "—" : `×${v.toFixed(2).replace(".", ",")}`);
+if (r.speed.p50 != null) console.log(`Vitesse de la voix : ${x(r.speed.p50)} en médiane (de ${x(r.speed.p10)} à ${x(r.speed.p90)} pour 80 % des segments)`);
 
 const h = r.health;
 console.log("\nFiabilité de la mesure :");

@@ -90,6 +90,7 @@ export function attachWs(wss: WebSocketServer, ctx: WsContext): void {
       srcSeq: e.srcSeq,
       text: e.text,
       kind: "translation",
+      pauseMs: e.pauseMs,
     };
     const frame = encodeFrame(header, e.bytes);
     room.broadcastBinary(frame, (p) => p.role === "listener" && p.lang === e.lang);

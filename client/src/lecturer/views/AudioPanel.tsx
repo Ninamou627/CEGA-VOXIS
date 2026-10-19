@@ -145,7 +145,7 @@ export function AudioPanel(p: AudioPanelProps) {
           <Tile label="Décalage p95" value={p.stats?.e2eP95 != null ? delay(p.stats.e2eP95) : "—"} />
           <Tile label="File max" value={p.stats?.queueMaxMs != null ? delay(p.stats.queueMaxMs) : "—"} tone={p.stats?.queueMaxMs != null && p.stats.queueMaxMs > 4000 ? "text-tertiary" : ""} />
           <Tile label="En attente" value={pl ? `${pl.backlog} segment${pl.backlog > 1 ? "s" : ""}` : "—"} />
-          <Tile label="Vitesse voix" value={pl ? `×${pl.speed.toFixed(2).replace(".", ",")}` : "—"} tone={pl && pl.speed > 1 ? "text-tertiary" : ""} />
+          <Tile label="Vitesse voix" value={pl ? `×${pl.speed.toFixed(2).replace(".", ",")}` : "—"} tone={pl && pl.speed >= 1.2 ? "text-tertiary" : ""} />
           <Tile label="Serveur" value={p.stats ? `${Math.floor(p.stats.uptimeS / 60)} min` : "—"} />
         </div>
       </div>

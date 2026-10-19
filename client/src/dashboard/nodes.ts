@@ -118,7 +118,7 @@ export function nodeViews(sig: Signals, stages: StageState[], conf?: SettingsRes
           stage: s,
           bars: "voice",
           lines: [voice ?? engine ?? "—"],
-          badge: pl ? { text: `×${pl.speed.toFixed(2).replace(".", ",")}`, title: pl.speed > 1 ? "Vitesse de la voix, rattrapage de la dérive compris" : "Vitesse de la voix" } : undefined,
+          badge: pl ? { text: `×${pl.speed.toFixed(2).replace(".", ",")}`, title: "Vitesse de la voix, dernier segment dit" } : undefined,
           satellites: byLang.slice(0, 3).map(([l, n]) => ({ text: String(n), title: `${n} apprenant${n > 1 ? "s" : ""} à l'écoute en ${LANGS[l].nameFr}` })),
         };
       }

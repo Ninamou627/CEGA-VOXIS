@@ -215,7 +215,7 @@ function forcingRoom(opts: { quickStart?: boolean; ttsDurMs?: number } = {}) {
       },
     };
     const voice: TtsProvider = { name: "fake-tts", synthesize: async () => ({ audio: new Uint8Array(1), mime: "audio/mpeg", durMs: opts.ttsDurMs ?? 1000 }) };
-    const tuning = () => ({ commit: {}, contextSegments: 2, baseSpeed: 1, speechThresholdDb: -35, quickStart: opts.quickStart ?? false });
+    const tuning = () => ({ commit: {}, contextSegments: 2, baseSpeed: 1, followTempo: true, speechThresholdDb: -35, quickStart: opts.quickStart ?? false });
     const pipeline = new Pipeline({ stt, mt, tts: voice }, { srcLang: "en", targetLangs: ["fr"], sampleRate: 16000, tuning }, new Metrics());
     const push = async (frames: number, loud: boolean) => {
       for (let i = 0; i < frames; i++) {
@@ -361,6 +361,62 @@ describe("Pipeline — mots recalés sur l'audio (D25)", () => {
       isFinal: false,
     });
     expect(r.commits[0].tEnd).toBe(T0 + 600);
+    await r.pipeline.stop();
+  });
+});
+
+describe("Pipeline — la voix suit le débit du formateur (D26)", () => {
+  function tempoRoom(followTempo: boolean) {
+    const stt = new FakeStt(true);
+    const speeds: number[] = [];
+    // 17 car./s à ×1, comme ElevenLabs en français : la durée suit l'inverse de la vitesse.
+    const voice: TtsProvider = {
+      name: "fake-tts",
+      synthesize: async (r) => {
+        speeds.push(r.speed ?? 1);
+        return { audio: new Uint8Array(1), mime: "audio/mpeg", durMs: Math.round((r.text.length / 17 / (r.speed ?? 1)) * 1000) };
+      },
+    };
+    const tuning = () => ({ commit: {}, contextSegments: 2, baseSpeed: 1, followTempo, speechThresholdDb: -35, quickStart: false });
+    const pipeline = new Pipeline({ stt, mt, tts: voice }, { srcLang: "en", targetLangs: ["fr"], sampleRate: 16000, tuning }, new Metrics());
+    const audio: { pauseMs?: number }[] = [];
+    pipeline.on("audio", (e) => audio.push(e));
+    const speak = async (frames: number) => {
+      for (let i = 0; i < frames; i++) {
+        await vi.advanceTimersByTimeAsync(100);
+        pipeline.pushAudio(LOUD);
+      }
+    };
+    /** La même phrase (« fr: » + 60 caractères), dite en `ms` à partir de `at` (position du flux). */
+    const say = (at: number, ms: number) => {
+      const words = Array.from({ length: 6 }, (_, i) => ({ text: i === 5 ? "abcdefghi." : "abcdefghi", startMs: at + (i * ms) / 6, endMs: at + ((i + 1) * ms) / 6 - 20, isFinal: true }));
+      stt.ev!.onPartial({ words, isFinal: true });
+    };
+    return { pipeline, speeds, audio, speak, say };
+  }
+
+  it("la même phrase dite plus vite par le formateur est dite plus vite par la voix", async () => {
+    const r = tempoRoom(true);
+    await r.pipeline.start();
+    await r.speak(120);
+    r.say(0, 4000); // dite en 4 s
+    await vi.advanceTimersByTimeAsync(5000);
+    r.say(4300, 3000); // la même, en 3 s, après 300 ms de pause
+    await vi.advanceTimersByTimeAsync(10);
+    expect(r.speeds[1]).toBeGreaterThan(r.speeds[0]);
+    expect(r.audio[1].pauseMs).toBe(320); // la pause du formateur (le dernier mot finissait à 3 980 ms) part avec le segment
+    await r.pipeline.stop();
+  });
+
+  it("réglage « constant » : la vitesse de base, quelle que soit l'allure du formateur", async () => {
+    const r = tempoRoom(false);
+    await r.pipeline.start();
+    await r.speak(120);
+    r.say(0, 4000);
+    await vi.advanceTimersByTimeAsync(5000);
+    r.say(4300, 3000);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(r.speeds).toEqual([1, 1]);
     await r.pipeline.stop();
   });
 });

@@ -106,6 +106,7 @@ const pipeline = new Pipeline(
         commit: commitConfig(s),
         contextSegments: s.translation.contextSegments,
         baseSpeed: s.voice.speed,
+        followTempo: s.voice.followTempo,
         speechThresholdDb: s.speech.speechThresholdDb,
         quickStart: s.speech.quickStart,
       };

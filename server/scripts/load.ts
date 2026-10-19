@@ -10,12 +10,14 @@
  * Il se reconnecte s'il est coupé. Toutes les 10 s, un rapport :
  * clients, trames, débit, égalité du fan-out, santé du serveur (/api/health).
  *
+ * LOAD_PAUSES=off : enchaîne les segments sans les pauses gardées (D26), pour mesurer l'avant.
+ *
  * Mesure le serveur et le fan-out sur boucle locale — PAS le Wi-Fi de salle.
  * À faire tourner pendant qu'un formateur (ou `npm run replay`) alimente le pipeline.
  */
 import WebSocket from "ws";
 import { decodeFrame } from "../../shared/framing";
-import { localRate, MAX_AGE_MS, MAX_QUEUE_MS, RATE_EVERY_MS } from "../../shared/playback";
+import { keptPauseMs, localRate, MAX_AGE_MS, MAX_QUEUE_MS, RATE_EVERY_MS } from "../../shared/playback";
 import type { AudioHeader, ServerEvent } from "../../shared/protocol";
 import { adminCookie, originOf, roomCode } from "./session";
 
@@ -32,12 +34,19 @@ const CODE = await roomCode(ORIGIN, await adminCookie(ORIGIN));
  * l'audio à ×0,66, ce qui gonflait la file.
  */
 const PLAY_STEP_MS = 20;
+/** Pauses du formateur gardées à l'écoute (D26), comme la page apprenant. */
+const KEEP_PAUSES = process.env.LOAD_PAUSES !== "off";
 
 /** Un segment dans la file d'un apprenant simulé ; `left` : ms restant à jouer à vitesse 1. */
 interface Item {
   seq: number;
   tOrigin: number;
   left: number;
+  /** Silence du formateur avant ce segment, et arrivée dans la file (pause gardée, D26). */
+  pauseMs?: number;
+  at: number;
+  /** Pause restant à marquer avant de jouer (ms). */
+  wait?: number;
 }
 
 interface Client {
@@ -56,6 +65,8 @@ interface Client {
   serverSpeed: number;
   /** Horloge serveur − horloge locale (hello). */
   clockOffset: number;
+  /** Fin du segment précédent (horloge locale). */
+  lastEndedAt: number;
   lastSeq: number;
   gaps: number; // seq manqués
 }
@@ -71,6 +82,7 @@ const clients: Client[] = Array.from({ length: N }, (_, id) => ({
   rate: 1,
   serverSpeed: 1,
   clockOffset: 0,
+  lastEndedAt: 0,
   lastSeq: 0,
   gaps: 0,
 }));
@@ -109,7 +121,7 @@ function connect(c: Client, attempt = 0) {
       c.dropped++;
       return;
     }
-    c.queue.push({ seq: header.seq, tOrigin: header.tOrigin, left: header.durMs });
+    c.queue.push({ seq: header.seq, tOrigin: header.tOrigin, left: header.durMs, pauseMs: header.pauseMs, at: Date.now() });
     if (!c.current) startNext(c);
   });
   ws.on("close", () => {
@@ -129,9 +141,21 @@ function queueOf(c: Client): number {
   return (c.queue.reduce((a, q) => a + q.left, 0) + (c.current?.left ?? 0)) / c.rate;
 }
 
-/** Le segment suivant commence : ack avec la file vue à cet instant, comme la page. */
+/** Le segment suivant commence, après la pause gardée s'il y en a une (comme ElementPlayer). */
 function startNext(c: Client) {
   c.current = c.queue.shift();
+  if (!c.current) return;
+  const now = Date.now();
+  const pause = KEEP_PAUSES ? keptPauseMs(c.current.pauseMs, c.lastEndedAt ? now - c.lastEndedAt : Infinity, now - c.current.at) : 0;
+  if (pause > 0) {
+    c.current.wait = pause;
+    return;
+  }
+  ack(c);
+}
+
+/** Début effectif de l'écoute : ack avec la file vue à cet instant, comme la page. */
+function ack(c: Client) {
   if (!c.current || c.ws?.readyState !== WebSocket.OPEN) return;
   c.ws.send(JSON.stringify({ t: "ack", seq: c.current.seq, tOrigin: c.current.tOrigin, queueMs: queueOf(c) }));
 }
@@ -149,8 +173,16 @@ setInterval(() => {
   for (const c of clients) {
     if (retune) c.rate = localRate(queueOf(c), c.serverSpeed);
     if (!c.current) continue;
+    if (c.current.wait) {
+      c.current.wait = Math.max(0, c.current.wait - elapsed);
+      if (!c.current.wait) ack(c);
+      continue;
+    }
     c.current.left -= elapsed * c.rate;
-    if (c.current.left <= 0) startNext(c);
+    if (c.current.left <= 0) {
+      c.lastEndedAt = Date.now();
+      startNext(c);
+    }
   }
 }, PLAY_STEP_MS).unref();
 

@@ -48,7 +48,7 @@ export function defaultsFrom(cfg: Config): Settings {
       keyterms: cfg.STT_KEYTERMS.join(", "),
       prompt: cfg.STT_PROMPT ?? "",
     },
-    voice: { defaults, speed: 1, stability: 0.5, style: 0, listenerVolume: 100 },
+    voice: { defaults, speed: 1, followTempo: true, stability: 0.5, style: 0, listenerVolume: 100 },
     voices: [],
   };
 }

@@ -68,7 +68,7 @@ export function Trends({ history, stats }: { history: Sample[]; stats?: StatsPay
           { k: "Traduction", v: sg?.mtP50 != null ? delay(sg.mtP50) : "—", hint: "appel au moteur" },
           { k: "Synthèse", v: sg?.ttsP50 != null ? delay(sg.ttsP50) : "—", hint: "texte → premier son" },
           { k: "En attente", v: pl ? `${pl.backlog} seg.` : "—", hint: "segments pas encore dits" },
-          { k: "Vitesse de la voix", v: pl ? `×${pl.speed.toFixed(2).replace(".", ",")}` : "—", hint: pl && pl.speed > 1 ? "rattrapage de la dérive" : "vitesse de base" },
+          { k: "Vitesse de la voix", v: pl ? `×${pl.speed.toFixed(2).replace(".", ",")}` : "—", hint: pl && pl.speed >= 1.2 ? "au maximum : le formateur va plus vite" : "dernier segment dit" },
         ].map((x) => (
           <div key={x.k} className="min-w-0">
             <dt className="text-xs text-on-surface-variant">{x.k}</dt>
