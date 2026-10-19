@@ -63,7 +63,7 @@ export async function startMic(onFrame: (pcm: ArrayBuffer, level: number) => voi
   const settings = track?.getSettings() ?? {};
   const ctx = new AudioContext({ sampleRate: 16000 });
   // Le paramètre de version évite qu'un navigateur garde en cache une ancienne version du worklet.
-  await ctx.audioWorklet.addModule("/pcm-worklet.js?v=2");
+  await ctx.audioWorklet.addModule("/pcm-worklet.js?v=3");
   const source = ctx.createMediaStreamSource(stream);
   // Gain après le contrôle automatique du navigateur : ce que le serveur reçoit, et ce que mesure le vumètre.
   const gain = ctx.createGain();

@@ -40,6 +40,11 @@ const SpeechSchema = z
     clauseWords: z.number().int().min(4).max(30),
     maxWords: z.number().int().min(8).max(40),
     segmentTimeoutMs: z.number().int().min(800).max(6000),
+    /**
+     * Premier morceau d'une prise de parole coupé au premier blanc entre deux mots, plutôt qu'à
+     * la première pause : la salle entend plus tôt, sur un morceau plus court (D25).
+     */
+    quickStart: z.boolean(),
     /** Vocabulaire de la formation, séparé par des virgules. */
     keyterms: z.string().max(4000),
     /** Description de la séance pour la reconnaissance (en anglais, ≤ 1500 caractères). */

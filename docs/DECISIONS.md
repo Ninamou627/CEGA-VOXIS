@@ -572,6 +572,55 @@ optimiste. La prosodie mesurée (syllabes écrites, hauteur par YIN) compare des
 qualité perçue : une écoute à l'aveugle reste nécessaire. L'accentuation n'est mesurée que chez le
 formateur : la voix traduite n'a pas de mots datés (étape D).
 
+## D25 — Le premier morceau d'une prise de parole part au premier blanc ; la mesure suit l'audio
+
+**Constat.** Au début d'une prise de parole, plus de la moitié du délai ressenti est le temps
+que met le formateur à dire le premier segment (2,7 s en médiane le 19/10/2026, D24). Le
+segment se clôt à une pause d'au moins 250 ms après 1,2 s de parole (D22, D23).
+
+**Décision.**
+
+1. Quand le formateur reprend après au moins 1,5 s de silence, et que les téléphones ont moins
+   de 1,5 s à jouer, le premier morceau part au premier blanc d'au moins 120 ms après 0,8 s
+   de parole. Ensuite, les règles ordinaires. Réglage « Premier morceau d'une prise de
+   parole » dans Configuration → Parole (« Au premier blanc » par défaut, ou « À la première
+   pause » pour revenir à D23).
+2. La page formateur envoie des trames de 50 ms (le minimum d'AssemblyAI) au lieu de 100 :
+   le serveur ne peut demander la fin d'un tour qu'à la réception d'une trame, et un blanc de
+   150 ms n'est vu en entier, pendant qu'il dure, qu'avec des trames plus courtes que lui. Le
+   rejeu suit la même cadence, calée sur le temps réellement écoulé : un minuteur de 50 ms se
+   déclenche toutes les ~62 ms sous Windows, ce qui étirait les silences de 25 %.
+3. Les instants de début et de fin d'un segment sont recalés sur l'audio. U3.5 Pro place la
+   fin du dernier mot avant une pause dans le silence qui suit, et le début du premier mot
+   après une pause dans le silence qui précède (vrai silence à −80 dB sur l'enregistrement).
+   Mesuré sur deux rejeux (92 segments) : la fin de **chaque** segment était datée 0,24 s
+   après la fin réelle de la parole (médiane), le début de la moitié d'entre eux 0,27 à 0,46 s
+   trop tôt. Le recalage est borné à 0,7 s : au-delà, c'est le seuil de parole qui se trompe
+   (une voix plus faible que lui passerait pour un long silence).
+
+**Conséquence sur les mesures.** Les « fin de phrase → voix » publiées jusqu'à D23 étaient
+optimistes d'environ 0,24 s ; les « début de parole → son » de D24, pessimistes d'environ 0,3
+à 0,5 s sur les segments qui suivent une pause. Toute comparaison avec un chiffre antérieur
+doit en tenir compte.
+
+**Pourquoi 120 ms.** Sur l'enregistrement mesuré, l'occlusion du « p » de « pipeline » dure
+100 ms, un blanc entre deux mots (« handles | partial ») 140 à 160 ms.
+
+**Mesuré (19/10/2026, cours synthétique de 147 s en 15 prises de parole, voix Windows « Zira »,
+AssemblyAI et DeepL réels, voix simulée, réglage désactivé puis activé, même code).** La
+coupe rapide s'est déclenchée 11 fois sur 15, sans couper de mot. Mais le premier segment n'a
+pas raccourci (2,3 s puis 2,4 s en médiane), et le premier son non plus (4,4 s puis 4,3 s,
+dans le bruit de mesure). Cette voix n'a presque pas de blanc de plus de 120 ms à l'intérieur
+d'une phrase (6 contre 71 entre 60 et 120 ms) ; ses virgules durent 420 ms et déclenchaient
+déjà les règles existantes. La coupe rapide s'est donc surtout déclenchée en fin de phrase,
+~130 ms avant l'ancienne règle. **Le gain dépend des micro-pauses d'une vraie voix : il reste
+à mesurer sur l'enregistrement du formateur** (RECORD_DIR, D24), comme le risque de couper un
+mot sur une occlusion ou une consonne faible de plus de 120 ms.
+
+**Vu en passant (pour l'étape D).** Chaque fin de tour forcée — celles de D22 comprises — fait
+mettre un point par AssemblyAI là où le formateur avait une virgule (« Good morning
+everyone. » puis « And welcome… ») : la voix française conclut une phrase qui continue.
+
 ## Ce que six semaines (au lieu de 48 h) remettent sur la table
 
 Dans l'ordre de valeur : tests automatisés dès le départ (fait) ; multilingue réel

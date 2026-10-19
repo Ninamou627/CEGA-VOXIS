@@ -41,6 +41,11 @@ const ENDPOINTING = [
   { value: "max_accuracy" as const, label: "Précise", title: "Attend d'être sûr : phrases entières, un peu plus de latence" },
 ];
 
+const QUICK_START = [
+  { value: "on" as const, label: "Au premier blanc", title: "Après ~3 mots, au premier blanc entre deux mots : la salle entend plus tôt" },
+  { value: "off" as const, label: "À la première pause", title: "Après ~4 mots, à la première pause d'un quart de seconde : morceau plus long" },
+];
+
 const dec = (x: number, digits = 1) => x.toFixed(digits).replace(".", ",");
 const db = (x: number) => `${x > 0 ? "+" : x < 0 ? "−" : ""}${Math.abs(x)} dB`;
 
@@ -340,6 +345,15 @@ export function Configuration({ conf, value, dirty, micDb, onChange, onSave, onD
             <Sub label="Délai de coupe — au-delà, le segment en cours part même inachevé">
               <Slider value={sp.segmentTimeoutMs} min={800} max={6000} step={100} onChange={(x) => set("speech", { segmentTimeoutMs: x })} format={(x) => `${dec(x / 1000)} s`} />
             </Sub>
+          </Field>
+
+          <Field
+            label="Premier morceau d'une prise de parole"
+            help="Quand le formateur se met à parler, la salle n'entend rien tant que ce morceau n'est pas dit. Au premier blanc : il part plus tôt, mais plus court."
+            applies="live"
+            changed={changed("speech.quickStart")}
+          >
+            <Segmented value={sp.quickStart ? "on" : "off"} onChange={(x) => set("speech", { quickStart: x === "on" })} options={QUICK_START} />
           </Field>
 
           <Field

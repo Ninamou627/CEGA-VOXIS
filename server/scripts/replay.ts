@@ -52,7 +52,8 @@ while (off + 8 <= wav.length) {
 if (!data) throw new Error("chunk data absent");
 if (bits !== 16 || channels !== 1) throw new Error(`attendu PCM 16 bits mono, reçu ${bits} bits / ${channels} canaux`);
 
-const FRAME_MS = 100;
+/** Comme la page formateur (pcm-worklet.js). */
+const FRAME_MS = 50;
 const frameBytes = (sampleRate * 2 * FRAME_MS) / 1000;
 console.log(`fixture : ${(data.length / (sampleRate * 2)).toFixed(1)} s à ${sampleRate} Hz — ${Math.ceil(data.length / frameBytes)} trames`);
 
@@ -61,11 +62,14 @@ const ws = new WebSocket(url, { rejectUnauthorized: false, headers: { cookie } }
 ws.on("open", () => {
   ws.send(JSON.stringify({ t: "join", role: "lecturer", sampleRate, ua: "replay" }));
   let pos = 0;
-  // Une trame par tick, jamais de rattrapage : les STT temps réel refusent l'audio
-  // envoyé plus vite que le réel (AssemblyAI ferme avec le code 3007). Si le timer
-  // prend du retard, le rejeu est un peu plus lent que le réel — acceptable.
+  const t0 = performance.now();
+  // Cadence du temps réellement écoulé : une trame part quand son audio a fini d'être « dit »,
+  // jamais avant (AssemblyAI ferme avec le code 3007 si l'audio arrive plus vite que le réel).
+  // Une trame par tick de minuteur jouait l'audio trop lentement sous Windows (un minuteur de
+  // 50 ms se déclenche toutes les ~62 ms), ce qui étirait les silences entre les mots.
   const timer = setInterval(() => {
-    if (pos < data!.length) {
+    const due = ((performance.now() - t0) / FRAME_MS) * frameBytes;
+    while (pos < data!.length && pos + frameBytes <= due) {
       ws.send(data!.subarray(pos, pos + frameBytes), { binary: true });
       pos += frameBytes;
     }
@@ -74,7 +78,7 @@ ws.on("open", () => {
       console.log("fixture terminée, fermeture dans 5 s");
       setTimeout(() => ws.close(), 5000);
     }
-  }, FRAME_MS);
+  }, 10);
 });
 ws.on("message", (raw, isBinary) => {
   if (isBinary) return;

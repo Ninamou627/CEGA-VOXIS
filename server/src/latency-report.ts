@@ -208,6 +208,8 @@ export interface Report {
     degraded: { t: number; mode: string; reason: string }[];
     settings: { t: number; changed: string[] }[];
     endpoints: number;
+    /** Dont les premiers morceaux de prise de parole, coupés au premier blanc (D25). */
+    quickEndpoints: number;
   };
 }
 
@@ -251,6 +253,7 @@ export function analyze(events: LogEvent[], from = -Infinity, to = Infinity): Re
       degraded: inRange.filter((e) => e.type === "degraded").map((e) => ({ t: e.t, mode: String(e.mode), reason: String(e.reason ?? "") })),
       settings: inRange.filter((e) => e.type === "settings").map((e) => ({ t: e.t, changed: (e.changed as string[]) ?? [] })),
       endpoints: inRange.filter((e) => e.type === "endpoint").length,
+      quickEndpoints: inRange.filter((e) => e.type === "endpoint" && e.quick === true).length,
     },
   };
 }

@@ -4,8 +4,15 @@ import type { MtProvider, SttEvents, SttProvider, TtsProvider } from "../provide
 import { Pipeline } from "./pipeline";
 
 const T0 = 1_000_000;
-/** Une trame de 100 ms à 16 kHz, PCM 16 bits mono. */
+/** Une trame de 100 ms de silence à 16 kHz, PCM 16 bits mono. */
 const FRAME = new Uint8Array(3200);
+/** 100 ms de parole : un ton à −24 dBFS. */
+const LOUD = (() => {
+  const b = new Uint8Array(3200);
+  const v = new DataView(b.buffer);
+  for (let i = 0; i < 1600; i++) v.setInt16(i * 2, Math.round(3000 * Math.sin((2 * Math.PI * 440 * i) / 16000)), true);
+  return b;
+})();
 
 class FakeStt implements SttProvider {
   readonly name = "fake-stt";
@@ -35,7 +42,7 @@ function room(finalWords = true) {
   const speak = async (frames: number) => {
     for (let i = 0; i < frames; i++) {
       await vi.advanceTimersByTimeAsync(100);
-      pipeline.pushAudio(FRAME);
+      pipeline.pushAudio(LOUD);
     }
   };
   return { stt, metrics, pipeline, commits, audio, speak };
@@ -194,16 +201,8 @@ describe("Pipeline — connexions chaudes (D20)", () => {
   });
 });
 
-describe("Pipeline — fin de tour forcée pendant une pause (D22)", () => {
-  /** Ton à −24 dBFS : le formateur parle. */
-  const LOUD = (() => {
-    const b = new Uint8Array(3200);
-    const v = new DataView(b.buffer);
-    for (let i = 0; i < 1600; i++) v.setInt16(i * 2, Math.round(3000 * Math.sin((2 * Math.PI * 440 * i) / 16000)), true);
-    return b;
-  })();
-
-  function forcingRoom() {
+/** Une salle dont le STT accepte les fins de tour demandées ; `quickStart` : coupe rapide (D25). */
+function forcingRoom(opts: { quickStart?: boolean; ttsDurMs?: number } = {}) {
     const forced: number[] = [];
     const stt: SttProvider & { ev?: SttEvents } = {
       name: "fake-stt",
@@ -215,7 +214,9 @@ describe("Pipeline — fin de tour forcée pendant une pause (D22)", () => {
         return "";
       },
     };
-    const pipeline = new Pipeline({ stt, mt, tts }, { srcLang: "en", targetLangs: ["fr"], sampleRate: 16000 }, new Metrics());
+    const voice: TtsProvider = { name: "fake-tts", synthesize: async () => ({ audio: new Uint8Array(1), mime: "audio/mpeg", durMs: opts.ttsDurMs ?? 1000 }) };
+    const tuning = () => ({ commit: {}, contextSegments: 2, baseSpeed: 1, speechThresholdDb: -35, quickStart: opts.quickStart ?? false });
+    const pipeline = new Pipeline({ stt, mt, tts: voice }, { srcLang: "en", targetLangs: ["fr"], sampleRate: 16000, tuning }, new Metrics());
     const push = async (frames: number, loud: boolean) => {
       for (let i = 0; i < frames; i++) {
         await vi.advanceTimersByTimeAsync(100);
@@ -224,8 +225,9 @@ describe("Pipeline — fin de tour forcée pendant une pause (D22)", () => {
     };
     const words = (n: number) => ({ words: Array.from({ length: n }, (_, i) => ({ text: `w${i}`, startMs: i * 300, endMs: i * 300 + 250 })), isFinal: false });
     return { stt, pipeline, forced, push, words };
-  }
+}
 
+describe("Pipeline — fin de tour forcée pendant une pause (D22)", () => {
   it("clôt le tour une fois par pause, après au moins 1,2 s de parole", async () => {
     const r = forcingRoom();
     await r.pipeline.start();
@@ -273,6 +275,92 @@ describe("Pipeline — fin de tour forcée pendant une pause (D22)", () => {
     await r.push(5, true);
     await r.push(3, false);
     expect(r.forced).toHaveLength(0);
+    await r.pipeline.stop();
+  });
+});
+
+describe("Pipeline — premier morceau d'une prise de parole (D25)", () => {
+  it("coupe au premier blanc de 120 ms après 0,8 s de parole, puis revient aux règles ordinaires", async () => {
+    const r = forcingRoom({ quickStart: true });
+    await r.pipeline.start();
+    await r.push(9, true); // 0,9 s : « So today we »
+    await r.push(1, false); // 100 ms : l'occlusion d'un « p », pas encore un blanc
+    expect(r.forced).toHaveLength(0);
+    await r.push(1, false); // 200 ms : un blanc entre deux mots
+    expect(r.forced).toHaveLength(1);
+    await r.push(9, true);
+    await r.push(2, false); // même blanc : la prise de parole a déjà son premier morceau
+    expect(r.forced).toHaveLength(1);
+    await r.push(4, true);
+    await r.push(3, false); // 1,3 s de parole et une vraie pause : règle ordinaire
+    expect(r.forced).toHaveLength(2);
+    await r.pipeline.stop();
+  });
+
+  it("une nouvelle prise de parole, après 1,5 s de silence, a de nouveau son premier morceau rapide", async () => {
+    const r = forcingRoom({ quickStart: true });
+    await r.pipeline.start();
+    await r.push(9, true);
+    await r.push(2, false);
+    expect(r.forced).toHaveLength(1);
+    await r.push(16, false); // la salle a tout entendu
+    await r.push(9, true);
+    await r.push(2, false);
+    expect(r.forced).toHaveLength(2);
+    await r.pipeline.stop();
+  });
+
+  it("pas de coupe rapide quand les téléphones ont encore à jouer : elle n'avancerait rien", async () => {
+    const r = forcingRoom({ quickStart: true, ttsDurMs: 5000 });
+    await r.pipeline.start();
+    await r.push(9, true);
+    await r.push(2, false);
+    expect(r.forced).toHaveLength(1);
+    const w = (text: string, startMs: number) => ({ text, startMs, endMs: startMs + 300, isFinal: true });
+    r.stt.ev!.onPartial({ words: [w("So", 0), w("today.", 400)], isFinal: true });
+    await r.push(16, false); // 5 s de voix envoyées : il en reste plus de 1,5 s à jouer
+    await r.push(9, true);
+    await r.push(2, false);
+    expect(r.forced).toHaveLength(1);
+    await r.push(4, true);
+    await r.push(3, false);
+    expect(r.forced).toHaveLength(2); // règle ordinaire
+    await r.pipeline.stop();
+  });
+
+  it("une fin de tour reçue pendant un long silence ne prive pas la prise de parole suivante", async () => {
+    const r = forcingRoom({ quickStart: true });
+    await r.pipeline.start();
+    await r.push(13, true);
+    await r.push(3, false);
+    expect(r.forced).toHaveLength(1);
+    await r.push(16, false);
+    r.stt.ev!.onUtteranceEnd(); // le texte définitif de la phrase d'avant arrive en retard
+    await r.push(9, true);
+    await r.push(2, false);
+    expect(r.forced).toHaveLength(2);
+    await r.pipeline.stop();
+  });
+});
+
+describe("Pipeline — mots recalés sur l'audio (D25)", () => {
+  it("date la fin d'un segment à la fin réelle de la parole, pas à l'horodatage du STT", async () => {
+    const r = room();
+    await r.pipeline.start();
+    await r.speak(6); // parole de T0 à T0 + 600
+    for (let i = 0; i < 4; i++) {
+      await vi.advanceTimersByTimeAsync(100);
+      r.pipeline.pushAudio(FRAME); // puis silence
+    }
+    // Le STT fait finir « world. » à 800 ms, dans le silence : la parole s'est arrêtée à 600.
+    r.stt.ev!.onPartial({
+      words: [
+        { text: "hello", startMs: 100, endMs: 400, isFinal: true },
+        { text: "world.", startMs: 450, endMs: 800, isFinal: true },
+      ],
+      isFinal: false,
+    });
+    expect(r.commits[0].tEnd).toBe(T0 + 600);
     await r.pipeline.stop();
   });
 });

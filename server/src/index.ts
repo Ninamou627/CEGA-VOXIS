@@ -102,7 +102,13 @@ const pipeline = new Pipeline(
     sampleRate: 16000,
     tuning: () => {
       const s = settings();
-      return { commit: commitConfig(s), contextSegments: s.translation.contextSegments, baseSpeed: s.voice.speed, speechThresholdDb: s.speech.speechThresholdDb };
+      return {
+        commit: commitConfig(s),
+        contextSegments: s.translation.contextSegments,
+        baseSpeed: s.voice.speed,
+        speechThresholdDb: s.speech.speechThresholdDb,
+        quickStart: s.speech.quickStart,
+      };
     },
   },
   metrics,

@@ -45,3 +45,42 @@ describe("PauseDetector — parole depuis la dernière coupe", () => {
     expect(p.speechSinceCut).toBe(200);
   });
 });
+
+describe("PauseDetector — mots du STT recalés sur l'audio (D25)", () => {
+  /** 1 s de parole, 400 ms de silence, 1 s de parole. */
+  function spoken() {
+    const p = new PauseDetector(16000);
+    p.push(frame(1000, true), -35);
+    p.push(frame(400, false), -35);
+    p.push(frame(1000, true), -35);
+    return p;
+  }
+
+  it("une fin de mot placée dans le silence qui suit revient à la fin de la parole", () => {
+    expect(spoken().speechEnd(1300)).toBe(1000);
+  });
+
+  it("un début de mot placé dans le silence qui précède avance au début de la parole", () => {
+    expect(spoken().speechStart(1100)).toBe(1400);
+  });
+
+  it("un horodatage dans la parole ne bouge pas", () => {
+    expect(spoken().speechEnd(800)).toBe(800);
+    expect(spoken().speechStart(1600)).toBe(1600);
+  });
+
+  it("la pause en cours compte pour la fin du dernier mot", () => {
+    const p = new PauseDetector(16000);
+    p.push(frame(1000, true), -35);
+    p.push(frame(300, false), -35);
+    expect(p.speechEnd(1200)).toBe(1000);
+  });
+
+  it("ne recale pas de plus de 0,7 s : une voix sous le seuil n'est pas un silence", () => {
+    const p = new PauseDetector(16000);
+    p.push(frame(3000, false), -35); // le STT entend des mots que le seuil prend pour du silence
+    p.push(frame(100, true), -35);
+    expect(p.speechEnd(2500)).toBe(2500);
+    expect(p.speechStart(1000)).toBe(1000);
+  });
+});

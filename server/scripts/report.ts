@@ -97,7 +97,7 @@ console.log("\nFiabilité de la mesure :");
 console.log(`  texte du STT reçu ${s(h.sttLag.p50)} après la parole (p95 ${s(h.sttLag.p95)})${(h.sttLag.p50 ?? 0) > 3000 ? " — anormal : réseau du poste ou du fournisseur" : ""}`);
 if (h.loopLagMaxMs != null) console.log(`  serveur bloqué au plus ${h.loopLagMaxMs} ms${h.loopLagMaxMs > 200 ? " — poste surchargé" : ""}`);
 if (h.sttBacklogMaxMs != null) console.log(`  audio en attente d'envoi au plus ${s(h.sttBacklogMaxMs)}${h.sttBacklogMaxMs > 1000 ? " — connexion montante saturée" : ""}`);
-console.log(`  ${h.endpoints} fins de tour demandées pendant une pause`);
+console.log(`  ${h.endpoints} fins de tour demandées pendant une pause, dont ${h.quickEndpoints} au premier blanc d'une prise de parole`);
 const timeline = [
   ...h.degraded.map((d) => ({ t: d.t, line: `${d.mode.padEnd(10)} ${d.reason.slice(0, 110)}` })),
   ...h.settings.map((c) => ({ t: c.t, line: `réglages : ${c.changed.join(", ")}` })),

@@ -32,6 +32,10 @@ export type FlushReason = "punctuation" | "clause" | "maxlen" | "timeout" | "sil
  */
 export interface AudioTiming {
   spokenAt(audioMs: number): number | undefined;
+  /** Recale la fin d'un mot sur la fin réelle de la parole (silence qui suit), si elle est connue. */
+  speechEnd?(audioMs: number): number;
+  /** Recale le début d'un mot sur le début réel de la parole (silence qui précède). */
+  speechStart?(audioMs: number): number;
 }
 
 export interface CommitConfig {
@@ -298,9 +302,11 @@ export class CommitGate {
     const entries = this.buf.splice(0, count);
     const words = entries.map((b) => b.w);
     const last = entries[entries.length - 1];
-    const spoken = last.w.endMs != null ? this.timing?.spokenAt(last.w.endMs) : undefined;
+    const endPos = last.w.endMs != null ? (this.timing?.speechEnd?.(last.w.endMs) ?? last.w.endMs) : undefined;
+    const spoken = endPos != null ? this.timing?.spokenAt(endPos) : undefined;
     const tEnd = spoken ?? this.firstSeen[last.i] ?? this.now();
-    const started = words[0].startMs != null ? this.timing?.spokenAt(words[0].startMs) : undefined;
+    const startPos = words[0].startMs != null ? (this.timing?.speechStart?.(words[0].startMs) ?? words[0].startMs) : undefined;
+    const started = startPos != null ? this.timing?.spokenAt(startPos) : undefined;
     const tStart = Math.min(started ?? this.bufOrigin, tEnd);
     for (const w of words) if (w.startMs != null && w.endMs != null) this.sent.push(w);
     if (this.sent.length > SENT_KEPT) this.sent.splice(0, this.sent.length - SENT_KEPT);

@@ -1,6 +1,10 @@
 /**
- * Convertit le flux micro (Float32) en trames PCM 16 bits de 100 ms.
- * Le contexte audio est créé à 16 kHz : 1600 échantillons par trame.
+ * Convertit le flux micro (Float32) en trames PCM 16 bits de 50 ms.
+ * Le contexte audio est créé à 16 kHz : 800 échantillons par trame.
+ *
+ * 50 ms, le minimum d'AssemblyAI : le serveur ne peut demander la fin d'un tour qu'à la
+ * réception d'une trame, et un blanc de 150 ms entre deux mots n'est vu en entier qu'avec
+ * des trames plus courtes que lui (D25).
  *
  * Attention au transfert : une fois `frame.buffer` transféré au thread principal,
  * `frame.length` vaut 0. La taille est donc gardée à part.
@@ -8,7 +12,7 @@
 class PcmWorklet extends AudioWorkletProcessor {
   constructor() {
     super();
-    this.size = Math.round(sampleRate / 10);
+    this.size = Math.round(sampleRate / 20);
     this.frame = new Int16Array(this.size);
     this.n = 0;
   }

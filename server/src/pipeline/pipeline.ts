@@ -22,6 +22,8 @@ export interface PipelineTuning {
   baseSpeed: number;
   /** Seuil de parole de l'administration (dBFS) : en dessous, le formateur se tait. */
   speechThresholdDb: number;
+  /** Premier morceau d'une prise de parole coupé au premier blanc entre deux mots (D25). */
+  quickStart: boolean;
 }
 
 export interface PipelineConfig {
@@ -31,7 +33,7 @@ export interface PipelineConfig {
   tuning?: () => PipelineTuning;
 }
 
-const DEFAULT_TUNING: PipelineTuning = { commit: {}, contextSegments: 2, baseSpeed: 1, speechThresholdDb: -35 };
+const DEFAULT_TUNING: PipelineTuning = { commit: {}, contextSegments: 2, baseSpeed: 1, speechThresholdDb: -35, quickStart: true };
 /**
  * Silence du formateur au-delà duquel on demande au STT de clore le tour en cours (D22) :
  * une phrase longue part en morceaux, chacun livré ~0,3 s après son dernier mot, au lieu
@@ -43,6 +45,18 @@ const FORCE_PAUSE_MS = 250;
 const FORCE_HOLD_MS = 1000;
 /** Parole minimale depuis la dernière coupe avant d'en demander une autre : ~4 mots. */
 const MIN_SPEECH_MS = 1200;
+/**
+ * Premier morceau d'une prise de parole (D25). La salle n'entend rien tant que le premier
+ * segment n'est pas dit : 2,7 s en médiane le 19/10/2026, plus de la moitié du délai ressenti.
+ * Il part donc au premier blanc entre deux mots (120 ms : un « p » au milieu d'un mot en dure
+ * 100, un blanc entre deux mots 140 à 160 sur l'enregistrement mesuré), après ~3 mots.
+ * Ensuite, les règles ordinaires : quand la salle écoute déjà, couper plus court ne fait rien
+ * entendre plus tôt et prive la traduction de contexte.
+ */
+const QUICK_PAUSE_MS = 120;
+const QUICK_MIN_SPEECH_MS = 800;
+/** Au-delà de ce qu'il reste à jouer sur les téléphones, un premier morceau court n'avancerait rien. */
+const QUICK_IDLE_MS = 1500;
 /** Cadence à laquelle on demande aux fournisseurs s'ils ont besoin d'être réchauffés (D20). */
 const WARM_EVERY_MS = 5000;
 /**
@@ -104,6 +118,10 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
   private streams = 0;
   /** Fin prononcée du segment précédent, depuis le démarrage du micro. */
   private prevEnd?: number;
+  /** Une prise de parole commence : son premier morceau n'est pas encore coupé. */
+  private turnOpen = true;
+  /** Par langue, l'heure estimée où les téléphones auront fini de jouer ce qui leur a été envoyé. */
+  private roomFreeAt = new Map<Lang, number>();
 
   constructor(
     private readonly providers: Providers,
@@ -113,7 +131,11 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     super();
     this.clock = new AudioClock(cfg.sampleRate);
     this.pause = new PauseDetector(cfg.sampleRate);
-    this.gate = new CommitGate(this.commitConfig(), undefined, { spokenAt: (ms) => this.clock.spokenAt(ms) });
+    this.gate = new CommitGate(this.commitConfig(), undefined, {
+      spokenAt: (ms) => this.clock.spokenAt(ms),
+      speechEnd: (ms) => this.pause.speechEnd(ms),
+      speechStart: (ms) => this.pause.speechStart(ms),
+    });
   }
 
   private get tuning(): PipelineTuning {
@@ -164,6 +186,7 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     if (this.started) return;
     this.started = true;
     this.prevEnd = undefined;
+    this.turnOpen = true;
     this.metrics.micReset();
     this.emit("mic", { on: true });
     // Les connexions vers la traduction et la voix s'ouvrent pendant que le STT se connecte,
@@ -223,6 +246,8 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
           this.handle(this.gate.onUtteranceEnd());
           // Le STT a clos le tour de lui-même : la parole se recompte à partir d'ici.
           this.pause.cut();
+          // Une fin de tour reçue pendant un long silence clôt la parole d'avant, pas la prochaine.
+          if (this.pause.silence < TURN_GAP_MS) this.turnOpen = false;
         },
         onDiscard: () => {
           if (this.stt !== stream) return;
@@ -290,14 +315,29 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
       this.forcedThisPause = false;
       return;
     }
-    if (this.forcedThisPause || silentMs < FORCE_PAUSE_MS || !this.stt?.forceEndpoint) return;
+    // Un silence assez long pour que la salle ait tout entendu : la prochaine parole ouvre une
+    // prise de parole, et seule elle compte pour son premier morceau.
+    if (silentMs >= TURN_GAP_MS && !this.turnOpen) {
+      this.turnOpen = true;
+      this.pause.cut();
+    }
+    if (this.forcedThisPause || !this.stt?.forceEndpoint) return;
+    const quick = this.turnOpen && this.tuning.quickStart && this.roomIdleSoon();
+    if (silentMs < (quick ? QUICK_PAUSE_MS : FORCE_PAUSE_MS)) return;
     const speechMs = this.pause.speechSinceCut;
-    if (speechMs < MIN_SPEECH_MS) return;
+    if (speechMs < (quick ? QUICK_MIN_SPEECH_MS : MIN_SPEECH_MS)) return;
     this.forcedThisPause = true;
+    this.turnOpen = false;
     this.pause.cut();
     this.gate.holdTimeout(FORCE_HOLD_MS);
     this.stt.forceEndpoint();
-    this.metrics.event("endpoint", { speechMs: Math.round(speechMs), words: this.gate.unsentCount, silentMs: Math.round(silentMs) });
+    this.metrics.event("endpoint", { speechMs: Math.round(speechMs), words: this.gate.unsentCount, silentMs: Math.round(silentMs), quick });
+  }
+
+  /** Les téléphones auront fini, ou presque, quand le premier morceau sera prêt. */
+  private roomIdleSoon(): boolean {
+    const busyUntil = Math.max(0, ...this.roomFreeAt.values());
+    return this.backlog === 0 && busyUntil - Date.now() < QUICK_IDLE_MS;
   }
 
   get sttOpen(): boolean {
@@ -341,6 +381,8 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     const gapMs = this.prevEnd != null ? seg.tStart - this.prevEnd : null;
     const turnStart = gapMs == null || gapMs > TURN_GAP_MS;
     this.prevEnd = Math.max(this.prevEnd ?? 0, seg.tEnd);
+    // Le premier segment de la prise de parole est parti, par quelque chemin que ce soit.
+    if (turnStart) this.turnOpen = false;
     this.emit("src.commit", {
       seq,
       text: seg.text,
@@ -434,6 +476,7 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
       const a = await this.providers.tts.synthesize({ text, lang, speed, continuation: true });
       const tTts = Date.now();
       this.metrics.stage("tts", tTts - tMt);
+      this.roomFreeAt.set(lang, Math.max(this.roomFreeAt.get(lang) ?? 0, tTts) + a.durMs);
       this.emit("audio", { seq, lang, mime: a.mime, durMs: a.durMs, tOrigin: seg.tOrigin, srcSeq: seq, text, bytes: a.audio, voice: a.voice });
       this.metrics.event("segment", {
         seq,
