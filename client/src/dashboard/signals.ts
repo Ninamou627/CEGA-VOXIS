@@ -188,6 +188,41 @@ export function computeAlerts(sig: Signals): Alert[] {
       break;
   }
 
+  // Plusieurs étages en échec ensemble : la cause commune est la connexion du poste, pas des
+  // pannes indépendantes chez trois fournisseurs (séance du 19/10/2026 : aucun incident chez eux).
+  const failing = (["stt", "mt", "tts"] as const).filter((stage) => recentError(sig, stage));
+  if (failing.length >= 2) {
+    const names = failing.map((stage) => STAGE_NAME[stage].toLowerCase());
+    const list = names.length > 1 ? `${names.slice(0, -1).join(", ")} et ${names[names.length - 1]}` : names[0];
+    out.push({
+      id: "network",
+      severity: "crit",
+      title: "Réseau du poste instable",
+      detail: `${list[0].toUpperCase()}${list.slice(1)} échouent en même temps : la cause commune est la connexion de ce PC. Passez en filaire ou sur un autre réseau.`,
+      to: "supervision",
+    });
+  }
+  const backlog = h?.audio.sttBacklogMs ?? 0;
+  if (lecturer && backlog > 1000)
+    out.push({
+      id: "uplink",
+      severity: backlog > 3000 ? "crit" : "warn",
+      title: `La voix du formateur part avec ${delay(backlog)} de retard`,
+      detail: "La connexion montante du PC ne suit pas : la reconnaissance reçoit la parole en retard.",
+      to: "supervision",
+      stage: "stt",
+    });
+  const sttLag = st?.stages.sttLagP50 ?? null;
+  if (sttLag != null && sttLag > 3000)
+    out.push({
+      id: "stt-lag",
+      severity: "warn",
+      title: `Le texte reconnu arrive ${delay(sttLag)} après la parole`,
+      detail: "Médiane de la dernière minute ; d'habitude autour d'une seconde. Réseau du poste ou du fournisseur de reconnaissance.",
+      to: "supervision",
+      stage: "stt",
+    });
+
   const end = st?.endP50 ?? null;
   if (end != null && end > 1000)
     out.push({ id: "e2e", severity: end > 2000 ? "crit" : "warn", title: `Latence élevée : ${delay(end)}`, detail: "De la fin de la phrase à la voix, médiane sur la dernière minute ; la cible est 1 s.", to: "supervision" });

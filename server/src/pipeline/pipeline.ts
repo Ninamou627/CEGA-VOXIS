@@ -45,10 +45,35 @@ const FORCE_HOLD_MS = 1000;
 const MIN_SPEECH_MS = 1200;
 /** Cadence à laquelle on demande aux fournisseurs s'ils ont besoin d'être réchauffés (D20). */
 const WARM_EVERY_MS = 5000;
+/**
+ * Silence entre deux segments au-delà duquel le second ouvre une nouvelle prise de parole :
+ * la salle n'entend plus rien, et ce qui compte est le temps avant le premier son.
+ */
+const TURN_GAP_MS = 1500;
 
 export interface PipelineEvents extends Record<string, unknown> {
   "src.partial": { text: string };
-  "src.commit": { seq: number; text: string; tOrigin: number; tEnd: number; reason: string; confidence?: number };
+  "src.commit": {
+    seq: number;
+    text: string;
+    tOrigin: number;
+    tEnd: number;
+    /** Début prononcé du premier mot (horloge serveur). */
+    tStart: number;
+    /** Premier segment d'une prise de parole. */
+    turnStart: boolean;
+    reason: string;
+    confidence?: number;
+    /** Flux STT qui a reconnu le segment, et ses mots datés dans ce flux (enregistreur). */
+    stream: number;
+    words: Word[];
+  };
+  /** Le micro du formateur démarre ou s'arrête. */
+  mic: { on: boolean };
+  /** Un flux STT vient de s'ouvrir : ses horodatages partent de la prochaine trame. */
+  "stt.stream": { stream: number };
+  /** Une trame transmise au STT, telle quelle. */
+  "stt.audio": { pcm: Uint8Array };
   "tr.segment": { seq: number; lang: Lang; text: string; srcSeq: number; untranslated?: boolean };
   audio: { seq: number; lang: Lang; mime: string; durMs: number; tOrigin: number; srcSeq: number; text: string; bytes: Uint8Array; voice?: string };
   degraded: { mode: DegradedMode; reason: string };
@@ -75,6 +100,10 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
   private degradedReason = "";
   private started = false;
   private speed = 1;
+  /** Flux STT ouverts depuis le lancement : chacun a ses propres horodatages. */
+  private streams = 0;
+  /** Fin prononcée du segment précédent, depuis le démarrage du micro. */
+  private prevEnd?: number;
 
   constructor(
     private readonly providers: Providers,
@@ -134,7 +163,9 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
   async start(): Promise<void> {
     if (this.started) return;
     this.started = true;
+    this.prevEnd = undefined;
     this.metrics.micReset();
+    this.emit("mic", { on: true });
     // Les connexions vers la traduction et la voix s'ouvrent pendant que le STT se connecte,
     // et restent chaudes pendant les pauses du formateur (D20).
     this.warmProviders(true);
@@ -166,6 +197,7 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     // zéro, sans hériter des mots (ni de leurs instants) de cette prise.
     this.handle(this.gate.onUtteranceEnd());
     await s?.close();
+    this.emit("mic", { on: false });
     this.emitStatus();
   }
 
@@ -213,6 +245,7 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     this.pause.reset();
     this.gate.newStream();
     this.stt = stream;
+    this.emit("stt.stream", { stream: ++this.streams });
     this.restartAttempts = 0;
     if (this.degraded === "stt-lost") this.setDegraded("none", "reconnaissance vocale rétablie");
   }
@@ -241,6 +274,7 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     this.audio.forwarded++;
     this.metrics.audio(pcm);
     this.stt.sendAudio(pcm);
+    this.emit("stt.audio", { pcm });
     this.clock.push(pcm.byteLength, this.audio.lastAt);
     this.endTurnOnPause(pcm);
   }
@@ -270,6 +304,16 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     return Boolean(this.stt);
   }
 
+  /**
+   * Audio en attente d'envoi vers le STT (ms). Au-delà d'une seconde, la connexion montante
+   * du poste ne suit plus : la reconnaissance reçoit la parole en retard, quoi qu'il arrive
+   * ensuite chez le fournisseur.
+   */
+  get sttBacklogMs(): number {
+    const bytes = this.stt?.backlogBytes?.() ?? 0;
+    return Math.round((bytes / 2 / this.cfg.sampleRate) * 1000);
+  }
+
   setMuted(muted: boolean): void {
     if (this.muted === muted) return;
     this.muted = muted;
@@ -293,22 +337,42 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     // Confiance moyenne du moteur de reconnaissance sur les mots du segment, s'il la donne.
     const conf = seg.words.map((w) => w.confidence).filter((c): c is number => typeof c === "number");
     const confidence = conf.length ? conf.reduce((a, b) => a + b, 0) / conf.length : undefined;
-    this.emit("src.commit", { seq, text: seg.text, tOrigin: seg.tOrigin, tEnd: seg.tEnd, reason: seg.reason, confidence });
+    // Le formateur se taisait avant ce segment : il ouvre une prise de parole.
+    const gapMs = this.prevEnd != null ? seg.tStart - this.prevEnd : null;
+    const turnStart = gapMs == null || gapMs > TURN_GAP_MS;
+    this.prevEnd = Math.max(this.prevEnd ?? 0, seg.tEnd);
+    this.emit("src.commit", {
+      seq,
+      text: seg.text,
+      tOrigin: seg.tOrigin,
+      tEnd: seg.tEnd,
+      tStart: seg.tStart,
+      turnStart,
+      reason: seg.reason,
+      confidence,
+      stream: this.streams,
+      words: seg.words,
+    });
     this.metrics.stage("commit", tCommit - seg.tOrigin);
     // Fin prononcée → segment figé : la part de la reconnaissance dans la latence de D19.
     this.metrics.stage("endCommit", tCommit - seg.tEnd);
-    this.metrics.segmentEnd(seq, seg.tOrigin, seg.tEnd);
+    this.metrics.segmentEnd(seq, { tOrigin: seg.tOrigin, tEnd: seg.tEnd, tStart: seg.tStart, turnStart });
     // Retard d'affichage du STT : du premier mot prononcé à sa première apparition.
     const first = seg.words[0]?.endMs;
     const firstSpoken = first != null ? this.clock.spokenAt(first) : undefined;
+    const sttLagMs = firstSpoken != null ? seg.tOrigin - firstSpoken : null;
+    if (sttLagMs != null) this.metrics.stage("sttLag", sttLagMs);
     this.metrics.event("commit", {
-      sttLagMs: firstSpoken != null ? seg.tOrigin - firstSpoken : null,
+      sttLagMs,
       seq,
       tOrigin: seg.tOrigin,
       commitMs: tCommit - seg.tOrigin,
       tEnd: seg.tEnd,
       endCommitMs: tCommit - seg.tEnd,
       tEndExact: seg.tEndExact,
+      tStart: seg.tStart,
+      turnStart,
+      gapMs,
       words: seg.words.length,
       reason: seg.reason,
       confidence: confidence != null ? Math.round(confidence * 1000) / 1000 : null,

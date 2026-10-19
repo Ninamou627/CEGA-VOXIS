@@ -68,13 +68,32 @@ describe("Pipeline — latence fin de phrase → voix (D19)", () => {
     expect(r.audio).toHaveLength(1);
 
     await vi.advanceTimersByTimeAsync(290); // le téléphone commence à jouer 300 ms après le figement
-    const { e2eMs, endMs } = r.metrics.ack("p1", r.audio[0].seq, r.audio[0].tOrigin, 0);
+    const { e2eMs, endMs, startMs } = r.metrics.ack("p1", r.audio[0].seq, r.audio[0].tOrigin, 0);
     expect(endMs).toBe(1300 - 800); // fin de « world. » (T0 + 800) → écoute (T0 + 1300)
     expect(e2eMs).toBe(300); // depuis la première apparition de « hello » (T0 + 1000)
+    expect(startMs).toBe(1300 - 100); // début prononcé de « hello » (T0 + 100) : ce que ressent la salle
 
     const snap = r.metrics.snapshot();
     expect(snap.endP50).toBe(500);
+    expect(snap.startP50).toBe(1200);
+    expect(snap.firstP50).toBe(1200); // premier segment depuis l'ouverture du micro : une prise de parole
+    expect(snap.firstN).toBe(1);
     expect(snap.stages.endCommitP50).toBe(200); // fin prononcée → segment figé
+    expect(snap.stages.sttLagP50).toBe(1000 - 400); // « hello » fini à T0 + 400, reçu à T0 + 1000
+    await r.pipeline.stop();
+  });
+
+  it("ne compte comme prise de parole que le segment qui suit un silence de plus de 1,5 s", async () => {
+    const r = room();
+    const turns: boolean[] = [];
+    r.pipeline.on("src.commit", (e) => turns.push(e.turnStart));
+    await r.pipeline.start();
+    await r.speak(60);
+    const w = (text: string, startMs: number) => ({ text, startMs, endMs: startMs + 300, isFinal: true });
+    r.stt.ev!.onPartial({ words: [w("one.", 100)], isFinal: false });
+    r.stt.ev!.onPartial({ words: [w("one.", 100), w("two.", 1000)], isFinal: false }); // 0,6 s après « one. »
+    r.stt.ev!.onPartial({ words: [w("one.", 100), w("two.", 1000), w("three.", 3000)], isFinal: false }); // 1,7 s après
+    expect(turns).toEqual([true, false, true]);
     await r.pipeline.stop();
   });
 

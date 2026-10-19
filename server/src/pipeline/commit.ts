@@ -76,6 +76,11 @@ export interface Segment {
    */
   tEnd: number;
   tEndExact: boolean;
+  /**
+   * Horloge serveur (ms) du début prononcé du premier mot : le départ du « début de parole →
+   * premier son », ce que l'apprenant ressent. À défaut d'horodatage, `tOrigin` (plus tardif).
+   */
+  tStart: number;
   reason: FlushReason;
 }
 
@@ -295,9 +300,11 @@ export class CommitGate {
     const last = entries[entries.length - 1];
     const spoken = last.w.endMs != null ? this.timing?.spokenAt(last.w.endMs) : undefined;
     const tEnd = spoken ?? this.firstSeen[last.i] ?? this.now();
+    const started = words[0].startMs != null ? this.timing?.spokenAt(words[0].startMs) : undefined;
+    const tStart = Math.min(started ?? this.bufOrigin, tEnd);
     for (const w of words) if (w.startMs != null && w.endMs != null) this.sent.push(w);
     if (this.sent.length > SENT_KEPT) this.sent.splice(0, this.sent.length - SENT_KEPT);
-    const seg: Segment = { text: joinWords(words), words, tOrigin: this.bufOrigin, tEnd, tEndExact: spoken != null, reason };
+    const seg: Segment = { text: joinWords(words), words, tOrigin: this.bufOrigin, tEnd, tEndExact: spoken != null, tStart, reason };
     if (this.buf.length) {
       this.bufOrigin = this.firstSeen[this.buf[0].i] ?? this.now();
       this.bufStartedAt = this.now();

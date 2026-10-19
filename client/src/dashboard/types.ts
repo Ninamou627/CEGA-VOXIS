@@ -27,6 +27,8 @@ export interface Health {
     bytes: number;
     lastFrameAgoMs: number | null;
     sttOpen: boolean;
+    /** Audio en attente d'envoi vers la reconnaissance (ms) : la connexion montante du poste. */
+    sttBacklogMs?: number;
     started: boolean;
     micDb: number | null;
   };
@@ -71,6 +73,8 @@ export interface Sample {
   e2eP95: number | null;
   /** Latence fin de phrase → voix (D19). */
   endP50: number | null;
+  /** Début de parole → voix : le décalage que l'apprenant ressent. */
+  startP50: number | null;
   queueMaxMs: number | null;
   listeners: number;
   micDb: number | null;

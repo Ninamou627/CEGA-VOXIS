@@ -46,6 +46,11 @@ export interface SttStream {
    * (~0,2 s chez AssemblyAI). Appelé pendant une pause du formateur (D22).
    */
   forceEndpoint?(): void;
+  /**
+   * Octets d'audio pas encore partis vers le fournisseur. Quand la connexion montante du poste
+   * sature, ils s'accumulent ici : c'est le signe que le retard vient du réseau local.
+   */
+  backlogBytes?(): number;
   close(): Promise<void>;
 }
 

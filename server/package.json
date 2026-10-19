@@ -13,6 +13,8 @@
     "check": "tsx scripts/check-providers.ts",
     "voices": "tsx scripts/voices.ts",
     "load": "tsx scripts/load.ts",
+    "report": "tsx scripts/report.ts",
+    "prosody": "tsx scripts/prosody.ts",
     "cert:dev": "tsx scripts/dev-cert.ts",
     "cert:domain": "tsx scripts/domain-cert.ts"
   },
@@ -34,6 +36,7 @@
     "@types/node": "^22.0.0",
     "@types/pg": "^8.23.1",
     "@types/ws": "^8.5.12",
+    "mpg123-decoder": "^1.0.3",
     "typescript": "^5.6.0",
     "vitest": "^3.0.0"
   }

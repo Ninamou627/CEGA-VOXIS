@@ -19,6 +19,7 @@ import { Metrics } from "./metrics";
 import { Pipeline } from "./pipeline/pipeline";
 import { lanIp, lanIps, origin } from "./net";
 import { makeProviders } from "./providers";
+import { SessionRecorder } from "./recorder";
 import { Room } from "./room";
 import { clientSettings, commitConfig, defaultsFrom, SettingsStore } from "./settings";
 import { Totals } from "./totals";
@@ -119,6 +120,23 @@ store.on("change", ({ settings: s, changed }) => {
   app.log.info({ changed }, "réglages modifiés depuis l'administration");
 });
 
+// Enregistrement de la séance (désactivé par défaut) : de quoi la rejouer et la mesurer.
+const recorder = cfg.RECORD_DIR ? new SessionRecorder(repoPath(cfg.RECORD_DIR), 16000, app.log) : undefined;
+if (recorder) {
+  /** La voix du dernier segment arrive après l'arrêt du micro : on la laisse s'écrire. */
+  let stopTimer: NodeJS.Timeout | undefined;
+  pipeline.on("mic", ({ on }) => {
+    clearTimeout(stopTimer);
+    if (on) recorder.start();
+    else stopTimer = setTimeout(() => recorder.stop(), 15_000);
+  });
+  pipeline.on("stt.stream", ({ stream }) => recorder.stream(stream));
+  pipeline.on("stt.audio", ({ pcm }) => recorder.audio(pcm));
+  pipeline.on("src.commit", (e) => recorder.segment(e));
+  pipeline.on("audio", (e) => recorder.voice(e));
+  metrics.onFirstPlay = (seq, at) => recorder.played(seq, at);
+}
+
 // Disponibilité : chaque seconde de séance compte, et la part où la voix pouvait être servie.
 setInterval(() => {
   const inSession = pipeline.isStarted;
@@ -194,14 +212,29 @@ function publicUrl(ip = lanIp()): string {
 let lastCpu = process.cpuUsage();
 let lastCpuAt = process.hrtime.bigint();
 let loopLagMaxMs = 0;
+/** Même mesure pour le journal, remise à zéro à chaque relevé (le tableau de bord a la sienne). */
+const logged = { loopLagMaxMs: 0, sttBacklogMaxMs: 0 };
 {
   let expected = performance.now() + 100;
   setInterval(() => {
     const now = performance.now();
-    loopLagMaxMs = Math.max(loopLagMaxMs, now - expected);
+    const lag = now - expected;
+    loopLagMaxMs = Math.max(loopLagMaxMs, lag);
+    logged.loopLagMaxMs = Math.max(logged.loopLagMaxMs, lag);
+    logged.sttBacklogMaxMs = Math.max(logged.sttBacklogMaxMs, pipeline.sttBacklogMs);
     expected = now + 100;
-  }, 100);
+  }, 100).unref();
 }
+/**
+ * Toutes les 5 s de séance, de quoi attribuer une séance instable après coup : un serveur
+ * bloqué (poste surchargé) ou de l'audio qui n'arrive pas à partir (connexion montante saturée)
+ * ne sont pas des pannes de fournisseur.
+ */
+setInterval(() => {
+  if (pipeline.isStarted) metrics.event("health", { loopLagMaxMs: Math.round(logged.loopLagMaxMs), sttBacklogMaxMs: logged.sttBacklogMaxMs });
+  logged.loopLagMaxMs = 0;
+  logged.sttBacklogMaxMs = 0;
+}, 5000).unref();
 function processHealth() {
   const cpu = process.cpuUsage(lastCpu);
   const now = process.hrtime.bigint();
@@ -234,6 +267,7 @@ app.get("/api/health", async () => ({
     bytes: pipeline.audio.bytes,
     lastFrameAgoMs: pipeline.audio.lastAt ? Date.now() - pipeline.audio.lastAt : null,
     sttOpen: pipeline.sttOpen,
+    sttBacklogMs: pipeline.sttBacklogMs,
     started: pipeline.isStarted,
     micDb: metrics.snapshot().micDb,
   },
@@ -272,6 +306,7 @@ app.log.info(
     screenUrl: `${publicUrl()}/screen`,
     tls: publicHttps,
     tlsBy: tls ? "serveur" : publicHttps ? "reverse proxy" : "aucun",
+    record: cfg.RECORD_DIR ?? null,
   },
   "salle ouverte",
 );
@@ -292,6 +327,7 @@ for (const sig of ["SIGINT", "SIGTERM"] as const) {
   process.on(sig, async () => {
     app.log.info("arrêt…");
     await pipeline.stop().catch(() => {});
+    recorder?.stop();
     totals.close();
     metrics.close();
     await app.close();

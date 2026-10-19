@@ -56,6 +56,11 @@ const EnvSchema = z.object({
   TOTALS_FILE: z.string().default("data/totals.json"),
   /** Installeurs de l'application Windows et flux de mise à jour (D18). */
   DOWNLOAD_DIR: z.string().default("data/telechargements"),
+  /**
+   * Enregistrement des séances pour les rejouer et les mesurer (recorder.ts). Vide : rien
+   * n'est enregistré. Enregistrer la voix du formateur demande son accord.
+   */
+  RECORD_DIR: optional,
 
   STT_PROVIDER: z.enum(["mock", "assemblyai", "deepgram"]).default("mock"),
   MT_PROVIDER: z.enum(["mock", "anthropic", "deepl"]).default("mock"),

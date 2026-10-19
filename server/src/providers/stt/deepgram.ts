@@ -101,6 +101,7 @@ export class DeepgramStt implements SttProvider {
       sendAudio: (pcm) => {
         if (ws.readyState === ws.OPEN) ws.send(pcm);
       },
+      backlogBytes: () => ws.bufferedAmount,
       close: async () => {
         closed = true;
         clearInterval(keepAlive);

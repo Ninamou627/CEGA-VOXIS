@@ -189,7 +189,7 @@ const timer = setInterval(async () => {
   const h = await health();
   const p = h?.process ?? {};
   const s = h?.stats ?? {};
-  rows.push({ ...r, cpu: p.cpuPercent, rss: p.rssMb, lag: p.loopLagMaxMs, e2e: s.e2eP50, e2e95: s.e2eP95, end: s.endP50, end95: s.endP95, qmax: s.queueMaxMs });
+  rows.push({ ...r, cpu: p.cpuPercent, rss: p.rssMb, lag: p.loopLagMaxMs, e2e: s.e2eP50, e2e95: s.e2eP95, end: s.endP50, end95: s.endP95, start: s.startP50, start95: s.startP95, first: s.firstP50, qmax: s.queueMaxMs });
   console.log(
     `t=${String(r.t).padStart(3)}s  clients ${String(r.connected).padStart(3)}/${N}  trames/client ${r.min}–${r.max}` +
       `  ${r.mbps} Mbit/s  sautés ${r.dropped}  reconnexions ${r.reconnects}  trous ${r.gaps}` +
@@ -209,7 +209,8 @@ const timer = setInterval(async () => {
     console.log(`segments sautés ${last.dropped} · trous de séquence ${last.gaps} · reconnexions ${last.reconnects}`);
     console.log(`serveur : CPU max ${cpuMax} % · RSS ${last.rss} Mo · retard de boucle max ${lagMax} ms`);
     console.log(`fin de phrase → voix p50 ${last.end ?? "—"} ms · p95 ${last.end95 ?? "—"} ms`);
-    console.log(`décalage ressenti (premier mot → voix) p50 ${last.e2e ?? "—"} ms · p95 ${last.e2e95 ?? "—"} ms · file max ${last.qmax ?? "—"} ms`);
+    console.log(`début de parole → voix p50 ${last.start ?? "—"} ms · p95 ${last.start95 ?? "—"} ms · premier son d'une prise de parole p50 ${last.first ?? "—"} ms`);
+    console.log(`premier mot reconnu → voix p50 ${last.e2e ?? "—"} ms · p95 ${last.e2e95 ?? "—"} ms · file max ${last.qmax ?? "—"} ms`);
     setTimeout(() => process.exit(0), 500);
   }
 }, 10_000);

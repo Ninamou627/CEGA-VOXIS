@@ -244,6 +244,7 @@ export class AssemblyAiStt implements SttProvider {
       forceEndpoint: () => {
         if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: "ForceEndpoint" }));
       },
+      backlogBytes: () => ws.bufferedAmount,
       close: async () => {
         closed = true;
         if (ignoredTurns) console.info(`[assemblyai] ${ignoredTurns} tour(s) écarté(s) : autre langue que « ${opts.lang} »`);

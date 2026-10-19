@@ -58,6 +58,9 @@ latence — est donc exercé pour de vrai, sans dépenser un centime.
 | Administration : vue d'ensemble (5 indicateurs), supervision en temps réel, qualité (4 piliers mesurés), gestion des voix ElevenLabs, configuration globale appliquée à chaud, séance (QR, checklist, questions, journal) — D15 | `client/src/dashboard`, `server/src/admin.ts`, `server/src/settings.ts`, `server/src/totals.ts` | ✅ |
 | Écran de salle pour le projecteur (QR en grand avant la séance, sous-titres géants, questions en bandeau, réglages à la souris et au clavier) | `client/src/screen` | ✅ |
 | Rejeu d'une fixture WAV dans le pipeline | `server/scripts/replay.ts` | ✅ |
+| Enregistrement des séances (voix du formateur, segments, voix traduite, écoutes), désactivé par défaut | `server/src/recorder.ts` | ✅ |
+| Rapport de latence d'une séance : du début de parole au premier son, étage par étage, et fiabilité de la mesure (D24) | `server/src/latency-report.ts`, `server/scripts/report.ts` | ✅ |
+| Fidélité de la voix traduite : débit, hauteur, énergie, intonation, pauses, intelligibilité, qualité (D24) | `server/src/prosody.ts`, `server/scripts/prosody.ts` | ✅ |
 
 ## Commandes
 
@@ -70,6 +73,8 @@ npm start            # serveur seul, sert client/dist
 npm run replay -- fixtures/formateur-10min.wav   # rejoue une fixture comme si c'était le micro
 npm run check        # valide les fournisseurs du .env en 30 s (écrit fixtures/check-tts.mp3)
 npm run load -- 50 80   # 50 apprenants simulés pendant 80 s (serveur + fan-out, pas le Wi-Fi)
+npm run report -- server/metrics.jsonl --from 15:58 --to 16:15   # d'où vient le délai d'une séance
+npm run prosody -- data/enregistrements/<séance> [<autre séance>] [--stt] [--judge]   # fidélité de la voix
 ```
 
 Test de charge du 16/09/2026, serveur isolé avec simulateurs (audio WAV non compressé,
@@ -177,3 +182,9 @@ Enregistrez 10 minutes du formateur (WAV, 16 kHz, mono, 16 bits) dans `fixtures/
 rejouez-les avec `npm run replay`. Chaque comparaison de moteur ou de réglage de
 segmentation se fait sur cette fixture, avec les chiffres de `metrics.jsonl` — jamais en
 parlant dans le micro, qui ne dit jamais deux fois la même chose au même rythme.
+
+Avec `RECORD_DIR=data/enregistrements` dans le `.env` (et l'accord du formateur), chaque
+démarrage du micro est enregistré : `source.wav` se rejoue tel quel, et `npm run prosody`
+compare la voix du formateur et la voix traduite segment par segment (D24). `npm run report`
+décompose le délai d'une séance, réelle ou rejouée, et dit si la mesure est exploitable :
+un réseau qui renvoie le texte avec 15 s de retard ne juge pas un réglage.

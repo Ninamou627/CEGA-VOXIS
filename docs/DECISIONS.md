@@ -520,6 +520,58 @@ réglage se change dans Configuration → Voix.
 **Reste à mesurer** : la latence avec la vraie voix ElevenLabs, sur un réseau stable (serveur
 hébergé) — le réseau du poste de mesure a faussé un passage sur deux.
 
+## D24 — Mesurer ce que la salle ressent : du début de la parole au premier son
+
+**Constat (séance réelle du 19/10/2026, voix du formateur, vrais moteurs, un PC et un iPhone).**
+« Il faut environ 5 s avant d'entendre la traduction » : le journal le confirme. Pour le premier
+segment d'une prise de parole, du premier mot prononcé au premier son : 5,1 s en médiane avec
+Claude Opus 5 (15 cas), 4,3 s avec DeepL (10 cas). Environ 60 % de ce délai est le temps que met
+le formateur à prononcer ce premier segment (2,7 s, 5 mots) ; le reste : reconnaissance 0,3 s,
+traduction 0,85 s (Claude) ou 0,3 s (DeepL), voix 0,3 s. En parole continue, la file des
+téléphones grandit : attente médiane de 0,9 s à 3,8 s (p95 7,5 s) au fil de la séance ; avec la
+voix réglée à ×0,85, la voix traduite a duré 1,22 fois la parole du formateur.
+
+**Décision : de quoi mesurer avant de changer quoi que ce soit (étape A).**
+
+- Deux indicateurs : `start`, du début prononcé du premier mot d'un segment au début de son
+  écoute, et `first`, le même pour le premier segment d'une prise de parole (après plus de
+  1,5 s de silence). Le « décalage ressenti » du tableau de bord partait jusqu'ici du premier mot
+  *reçu* du STT : il omettait son retard d'affichage (~1 s avec U3.5 Pro) et la durée du mot.
+- `npm run report` décompose une séance depuis son journal, étage par étage, au début d'une prise
+  de parole et en parole continue, minute par minute, et dit si la mesure est exploitable.
+- `RECORD_DIR` enregistre chaque démarrage du micro (désactivé par défaut : il faut l'accord du
+  formateur) : `source.wav` se rejoue tel quel, les mots y sont placés exactement, la voix
+  traduite de chaque segment et sa première écoute sont gardées.
+- `npm run prosody` compare la voix du formateur et la voix traduite : débit, étendue de la
+  hauteur et de l'énergie (corrélations d'un segment à l'autre), questions qui montent,
+  affirmations qui descendent, pauses gardées, rapport de durée ; avec `--stt`, la voix traduite
+  relue par AssemblyAI (intelligibilité) ; avec `--judge`, Claude note fidélité et fluidité.
+- Un événement `health` toutes les 5 s de séance (retard de boucle du serveur, audio en attente
+  d'envoi vers le STT), et trois alertes : « Réseau du poste instable » (au moins deux étages en
+  échec ensemble), « La voix du formateur part avec X de retard », « Le texte reconnu arrive X
+  après la parole ».
+
+**Pourquoi ces alertes.** Séance de test du 19/10/2026 (15:58–16:14, réglages par défaut) :
+reconnaissance, traduction et voix « en panne » ou « instables » en même temps. Aucun incident
+ce jour-là chez AssemblyAI, Anthropic ni ElevenLabs (pages de statut). Le texte du STT est arrivé
+jusqu'à 44 s après la parole, AssemblyAI a fermé la connexion (1006), Anthropic, DeepL et
+ElevenLabs ont dépassé leurs délais ; 32 voix produites n'ont jamais été jouées, arrivées sur le
+téléphone plus vieilles que 8 s. Mesuré ensuite depuis le même poste : résolution DNS de 0,7 à
+1,7 s, poignées de main TLS jusqu'à 5,6 s. Le tableau de bord désignait trois fournisseurs ; la
+cause commune était la connexion du poste.
+
+**Vérifié** sur deux rejeux de la fixture de 66 s (U3.5 Pro réel, traduction et voix simulées,
+3 apprenants simulés, enregistrement activé) : le rapport, l'enregistrement et la comparaison de
+prosodie s'enchaînent. La fixture ne contient que 3 prises de parole : leur premier son a valu
+5,9 s puis 3,4 s d'un passage à l'autre, trop peu pour juger un réglage. Les comparaisons des
+étapes suivantes se feront sur l'enregistrement réel du formateur (3 à 5 minutes).
+
+**Limites.** Le début du premier mot vient des horodatages du STT reliés à l'heure de réception
+de l'audio : il est en retard de l'aller simple micro → serveur, la mesure est donc légèrement
+optimiste. La prosodie mesurée (syllabes écrites, hauteur par YIN) compare des variations, pas une
+qualité perçue : une écoute à l'aveugle reste nécessaire. L'accentuation n'est mesurée que chez le
+formateur : la voix traduite n'a pas de mots datés (étape D).
+
 ## Ce que six semaines (au lieu de 48 h) remettent sur la table
 
 Dans l'ordre de valeur : tests automatisés dès le départ (fait) ; multilingue réel

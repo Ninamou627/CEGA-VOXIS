@@ -22,6 +22,8 @@
     "check": "npm run check -w server --",
     "voices": "npm run voices -w server --",
     "load": "npm run load -w server --",
+    "report": "npm run report -w server --",
+    "prosody": "npm run prosody -w server --",
     "cert:dev": "npm run cert:dev -w server --",
     "cert:domain": "npm run cert:domain -w server --",
     "db:up": "docker compose up -d --wait db",

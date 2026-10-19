@@ -350,6 +350,7 @@ export function App() {
               e2eP50: e.stats.e2eP50,
               e2eP95: e.stats.e2eP95,
               endP50: e.stats.endP50,
+              startP50: e.stats.startP50,
               queueMaxMs: e.stats.queueMaxMs,
               listeners: e.stats.listeners,
               micDb: e.stats.micDb,

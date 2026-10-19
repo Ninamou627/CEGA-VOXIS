@@ -8,11 +8,17 @@
  *   - `end` : de la fin prononcée du segment au début de son écoute. C'est l'objectif du
  *     projet (moins d'une seconde) : ce que le système ajoute une fois la phrase dite.
  *   - `e2e` : du premier mot reconnu du segment au début de son écoute. Il contient en plus
- *     le temps que le formateur met à dire le segment : c'est le décalage ressenti.
+ *     le temps que le formateur met à dire le segment.
+ *   - `start` : du début prononcé du premier mot au début de l'écoute. C'est le décalage que
+ *     l'apprenant ressent : `e2e`, plus le retard d'affichage du STT et la durée du premier mot.
+ *     Compté à part pour le premier segment d'une prise de parole (`first`) : le formateur
+ *     commence à parler, combien de temps avant que la salle entende quelque chose ?
  */
 import { createWriteStream, type WriteStream } from "node:fs";
 
 const WINDOW_MS = 60_000;
+/** Une prise de parole commence quelques fois par minute : sa fenêtre est plus longue. */
+const FIRST_WINDOW_MS = 300_000;
 /** Segments dont on garde la fin prononcée, le temps que leurs acks arrivent. */
 const KEEP_SEGMENTS = 500;
 
@@ -27,22 +33,37 @@ function percentile(values: number[], p: number): number | null {
  * Étages : `commit` va de la première apparition d'un mot au segment figé, `endCommit` de
  * la fin prononcée du segment au segment figé (la part de la reconnaissance dans `end`).
  */
-export type StageName = "commit" | "endCommit" | "mt" | "tts";
+export type StageName = "commit" | "endCommit" | "mt" | "tts" | "sttLag";
 
 export interface AckLatency {
   /** Premier mot reconnu → début d'écoute. */
   e2eMs: number;
   /** Fin prononcée → début d'écoute ; null si le segment n'est plus connu (redémarrage). */
   endMs: number | null;
+  /** Début prononcé → début d'écoute ; null si le segment n'est plus connu. */
+  startMs: number | null;
+}
+
+/** Ce qu'on retient d'un segment figé, le temps que ses acks arrivent. */
+export interface SegmentTimes {
+  tOrigin: number;
+  tEnd: number;
+  tStart: number;
+  /** Premier segment d'une prise de parole (le formateur se taisait avant). */
+  turnStart: boolean;
 }
 
 export class Metrics {
   private stream?: WriteStream;
   private e2e: { t: number; ms: number }[] = [];
   private end: { t: number; ms: number }[] = [];
+  private start: { t: number; ms: number }[] = [];
+  private first: { t: number; ms: number }[] = [];
   /** seq → instants du segment, pour dater les acks qui le concernent. */
-  private segments = new Map<number, { tOrigin: number; tEnd: number }>();
-  private stages: Record<StageName, { t: number; ms: number }[]> = { commit: [], endCommit: [], mt: [], tts: [] };
+  private segments = new Map<number, SegmentTimes & { played: boolean }>();
+  private stages: Record<StageName, { t: number; ms: number }[]> = { commit: [], endCommit: [], mt: [], tts: [], sttLag: [] };
+  /** Premier ack d'un segment : le moment où la salle a commencé à l'entendre (enregistreur). */
+  onFirstPlay?: (seq: number, at: number) => void;
   /** Seuil de « parole » (dBFS) : en dessous, le micro reçoit du silence. Réglable dans l'administration. */
   speechDb = -35;
   private queues = new Map<string, { t: number; ms: number }>();
@@ -61,9 +82,9 @@ export class Metrics {
     this.stream?.write(line + "\n");
   }
 
-  /** Un segment vient d'être figé : on retient sa fin prononcée jusqu'aux acks. */
-  segmentEnd(seq: number, tOrigin: number, tEnd: number): void {
-    this.segments.set(seq, { tOrigin, tEnd });
+  /** Un segment vient d'être figé : on retient ses instants prononcés jusqu'aux acks. */
+  segmentEnd(seq: number, times: SegmentTimes): void {
+    this.segments.set(seq, { ...times, played: false });
     if (this.segments.size > KEEP_SEGMENTS) this.segments.delete(this.segments.keys().next().value!);
   }
 
@@ -74,12 +95,21 @@ export class Metrics {
     // Le tOrigin renvoyé par le client doit être celui du segment : un seq d'un autre
     // processus (serveur redémarré) ne doit pas fabriquer une mesure.
     const seg = this.segments.get(seq);
-    const endMs = seg && seg.tOrigin === tOrigin ? now - seg.tEnd : null;
+    const known = seg && seg.tOrigin === tOrigin ? seg : undefined;
+    const endMs = known ? now - known.tEnd : null;
+    const startMs = known ? now - known.tStart : null;
     this.e2e.push({ t: now, ms: e2eMs });
     if (endMs != null) this.end.push({ t: now, ms: endMs });
+    if (startMs != null) this.start.push({ t: now, ms: startMs });
+    // Le premier son d'une prise de parole : le premier téléphone qui le joue.
+    if (known && !known.played) {
+      known.played = true;
+      if (known.turnStart) this.first.push({ t: now, ms: startMs! });
+      this.onFirstPlay?.(seq, now);
+    }
     this.queues.set(participantId, { t: now, ms: queueMs });
-    this.event("ack", { participantId, seq, e2eMs, endMs, queueMs });
-    return { e2eMs, endMs };
+    this.event("ack", { participantId, seq, e2eMs, endMs, startMs, queueMs });
+    return { e2eMs, endMs, startMs };
   }
 
   forget(participantId: string): void {
@@ -122,6 +152,10 @@ export class Metrics {
     const e2e = this.e2e.map((s) => s.ms);
     this.end = this.end.filter((s) => s.t >= cutoff);
     const end = this.end.map((s) => s.ms);
+    this.start = this.start.filter((s) => s.t >= cutoff);
+    const start = this.start.map((s) => s.ms);
+    this.first = this.first.filter((s) => s.t >= now - FIRST_WINDOW_MS);
+    const first = this.first.map((s) => s.ms);
     const queues = [...this.queues.values()].filter((q) => q.t >= cutoff).map((q) => q.ms);
     const recent = this.mic.filter((m) => m.t >= now - 2000);
     const stage = (name: StageName) => {
@@ -137,7 +171,11 @@ export class Metrics {
       e2eMean: e2e.length ? Math.round(e2e.reduce((a, b) => a + b, 0) / e2e.length) : null,
       endP50: percentile(end, 50),
       endP95: percentile(end, 95),
-      stages: { commitP50: stage("commit"), endCommitP50: stage("endCommit"), mtP50: stage("mt"), ttsP50: stage("tts") },
+      startP50: percentile(start, 50),
+      startP95: percentile(start, 95),
+      firstP50: percentile(first, 50),
+      firstN: first.length,
+      stages: { commitP50: stage("commit"), endCommitP50: stage("endCommit"), mtP50: stage("mt"), ttsP50: stage("tts"), sttLagP50: stage("sttLag") },
       queueP50Ms: percentile(queues, 50),
       queueMaxMs: queues.length ? Math.round(Math.max(...queues)) : null,
       micDb: recent.length ? Math.round(Math.max(...recent.map((m) => m.db))) : null,

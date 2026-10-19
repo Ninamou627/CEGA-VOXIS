@@ -56,11 +56,23 @@ export interface StatsPayload {
   endP50: number | null;
   endP95: number | null;
   /**
+   * Ce que l'apprenant ressent, même fenêtre : du début prononcé du premier mot d'un segment
+   * au début de son écoute.
+   */
+  startP50: number | null;
+  startP95: number | null;
+  /**
+   * Le même délai pour le premier segment de chaque prise de parole (le formateur se taisait
+   * avant), sur cinq minutes : combien de temps avant que la salle entende quelque chose.
+   */
+  firstP50: number | null;
+  firstN: number;
+  /**
    * Temps médian de chaque étage sur la même fenêtre (ms) : de la première apparition
    * d'un mot à son commit (reconnaissance), de la fin prononcée au commit, traduction,
-   * synthèse.
+   * synthèse, et retard d'affichage du STT (premier mot prononcé → première apparition).
    */
-  stages: { commitP50: number | null; endCommitP50: number | null; mtP50: number | null; ttsP50: number | null };
+  stages: { commitP50: number | null; endCommitP50: number | null; mtP50: number | null; ttsP50: number | null; sttLagP50: number | null };
   /** Profondeur de file audio côté clients (ms). L'indicateur de dérive. */
   queueP50Ms: number | null;
   queueMaxMs: number | null;

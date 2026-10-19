@@ -84,7 +84,9 @@ ws.on("message", (raw, isBinary) => {
   if (e.t === "stats" && e.stats.e2eP50 != null)
     console.log(
       `   (fin de phrase → voix p50 ${e.stats.endP50 ?? "—"} ms · p95 ${e.stats.endP95 ?? "—"} ms` +
-        ` · décalage ressenti p50 ${e.stats.e2eP50} ms · file max ${e.stats.queueMaxMs} ms)`,
+        ` · début de parole → voix p50 ${e.stats.startP50 ?? "—"} ms` +
+        ` · premier son d'une prise de parole ${e.stats.firstP50 ?? "—"} ms (${e.stats.firstN ?? 0})` +
+        ` · file max ${e.stats.queueMaxMs} ms)`,
     );
   if (e.t === "error") console.error("erreur :", e.msg);
 });
