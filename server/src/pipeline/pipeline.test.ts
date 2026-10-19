@@ -207,7 +207,7 @@ describe("Pipeline — fin de tour forcée pendant une pause (D22)", () => {
     return { stt, pipeline, forced, push, words };
   }
 
-  it("clôt le tour une fois par pause, quand au moins 4 mots attendent", async () => {
+  it("clôt le tour une fois par pause, après au moins 1,2 s de parole", async () => {
     const r = forcingRoom();
     await r.pipeline.start();
     await r.push(20, true);
@@ -218,18 +218,41 @@ describe("Pipeline — fin de tour forcée pendant une pause (D22)", () => {
     expect(r.forced).toHaveLength(1);
     await r.push(10, false); // la même pause ne force qu'une fois
     expect(r.forced).toHaveLength(1);
-    await r.push(5, true); // il reprend, puis se tait de nouveau
+    await r.push(5, true); // il reprend 0,5 s puis se tait : trop peu de parole pour couper
+    await r.push(3, false);
+    expect(r.forced).toHaveLength(1);
+    await r.push(10, true); // il reprend, assez longtemps cette fois
     await r.push(3, false);
     expect(r.forced).toHaveLength(2);
     await r.pipeline.stop();
   });
 
-  it("ne coupe pas pour moins de 4 mots en attente", async () => {
+  it("ne coupe pas après moins de 1,2 s de parole", async () => {
     const r = forcingRoom();
     await r.pipeline.start();
     await r.push(10, true);
     r.stt.ev!.onPartial(r.words(3));
     await r.push(10, false);
+    expect(r.forced).toHaveLength(0);
+    await r.pipeline.stop();
+  });
+
+  it("coupe même quand le STT, en retard, n'a encore livré aucun mot", async () => {
+    const r = forcingRoom();
+    await r.pipeline.start();
+    await r.push(20, true); // 2 s de parole, aucune hypothèse reçue
+    await r.push(3, false);
+    expect(r.forced).toHaveLength(1);
+    await r.pipeline.stop();
+  });
+
+  it("une fin de tour du STT lui-même remet le compteur de parole à zéro", async () => {
+    const r = forcingRoom();
+    await r.pipeline.start();
+    await r.push(20, true);
+    r.stt.ev!.onUtteranceEnd(); // le STT a clos la phrase de lui-même
+    await r.push(5, true);
+    await r.push(3, false);
     expect(r.forced).toHaveLength(0);
     await r.pipeline.stop();
   });

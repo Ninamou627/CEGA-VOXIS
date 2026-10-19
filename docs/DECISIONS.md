@@ -445,9 +445,11 @@ reconnaissance : la rendre aussi rapide pour les phrases longues que pour les fi
 ## D22 — Pendant une pause du formateur, on demande au STT de clore le tour
 
 **Décision.** Quand le formateur marque une pause d'au moins 250 ms (audio sous le seuil de
-parole de l'administration) et qu'au moins `minWords` mots attendent, le serveur envoie à
-AssemblyAI `ForceEndpoint` : le tour se clôt, son texte définitif arrive, et ces mots partent
-en segment. Une fois par pause. Pendant l'attente de ce texte (au plus 1 s), le délai de coupe
+parole de l'administration) après au moins 1,2 s de parole depuis la dernière coupe (~4 mots),
+le serveur envoie à AssemblyAI `ForceEndpoint` : le tour se clôt, son texte définitif arrive,
+et ces mots partent en segment. Une fois par pause. La parole se mesure sur l'audio, pas sur
+les mots du STT : quand AssemblyAI prend 2 s de retard, ses mots ne sont pas encore arrivés à
+la pause, et une première version qui exigeait 4 mots reçus laissait passer la phrase entière. Pendant l'attente de ce texte (au plus 1 s), le délai de coupe
 ne tranche pas la phrase : sinon il la coupait juste avant la pause, plus lentement.
 
 **Pourquoi.** U3.5 Pro clôt une fin de phrase ~0,4 s après le dernier mot, mais au milieu
@@ -488,6 +490,35 @@ glisse parfois le début de la suite dans le tour clos, puis la reprend au tour 
 depuis ses hypothèses peuvent passer au tour suivant. La segmentation retient la fin du
 dernier mot réellement envoyé et n'envoie jamais un mot qui se termine avant : chaque mot part
 une fois, quel que soit le tour qui le porte.
+
+## D23 — L'attente au téléphone : couper toutes les phrases longues, puis une voix à ×1,15
+
+**Constat.** Une fois les phrases longues reconnues aussi vite que les fins de phrase (D22),
+il restait ~2 s d'attente au téléphone : un segment attend que la voix française du précédent
+ait fini, et le français est plus long que l'anglais.
+
+**Ce qui a été fait, et mesuré** (fixture de 66 s avec pauses, U3.5 Pro, DeepL, voix simulée,
+apprenants fidèles à la page) :
+
+1. La coupe à la pause se décide sur la parole entendue (D22) : les 5 phrases longues sont
+   coupées à leur pause, contre 2 sur 4 au passage précédent ; reconnaissance médiane / p95
+   0,24 / 0,76 s ; fin de phrase → voix médiane / p95 de 3,7 / 8,6 s à **3,0 / 4,4 s**.
+2. Vitesse de base de la voix à ×1,15 (réglage Voix de l'administration ; ElevenLabs plafonne
+   à ×1,2, d'où une marge laissée au rattrapage de la dérive) : attente au téléphone médiane de
+   **2,1 s à 0,6 s** mesurée. La fin de phrase → voix de ce passage (4,1 s) n'est pas
+   comparable : 3 traductions DeepL sur 14 y ont dépassé 1 s (jusqu'à 4,9 s, réseau du poste),
+   et chacune a bloqué les segments suivants.
+
+**Simulé** sur les arrivées du passage 1, avec des durées ramenées au débit d'ElevenLabs
+(la voix simulée est ~18 % plus lente) : fin de phrase → voix médiane / p95 de 2,0 / 3,0 s
+tel quel, **1,8 / 2,5 s** avec la voix à ×1,15, 1,6 / 2,2 s à ×1,2. Accélérer en plus la
+lecture sur le téléphone (×1,3 dès qu'un segment attend) n'ajoute presque rien.
+
+**À vérifier à l'oreille** : une voix à ×1,15 doit rester naturelle pour les apprenants. Le
+réglage se change dans Configuration → Voix.
+
+**Reste à mesurer** : la latence avec la vraie voix ElevenLabs, sur un réseau stable (serveur
+hébergé) — le réseau du poste de mesure a faussé un passage sur deux.
 
 ## Ce que six semaines (au lieu de 48 h) remettent sur la table
 

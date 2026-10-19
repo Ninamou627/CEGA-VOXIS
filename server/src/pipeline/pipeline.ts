@@ -41,6 +41,8 @@ const DEFAULT_TUNING: PipelineTuning = { commit: {}, contextSegments: 2, baseSpe
 const FORCE_PAUSE_MS = 250;
 /** Le texte définitif arrive 0,17 à 0,55 s après la commande (mesuré) : le délai de coupe l'attend. */
 const FORCE_HOLD_MS = 1000;
+/** Parole minimale depuis la dernière coupe avant d'en demander une autre : ~4 mots. */
+const MIN_SPEECH_MS = 1200;
 /** Cadence à laquelle on demande aux fournisseurs s'ils ont besoin d'être réchauffés (D20). */
 const WARM_EVERY_MS = 5000;
 
@@ -185,7 +187,10 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
           }
         },
         onUtteranceEnd: () => {
-          if (this.stt === stream) this.handle(this.gate.onUtteranceEnd());
+          if (this.stt !== stream) return;
+          this.handle(this.gate.onUtteranceEnd());
+          // Le STT a clos le tour de lui-même : la parole se recompte à partir d'ici.
+          this.pause.cut();
         },
         onDiscard: () => {
           if (this.stt !== stream) return;
@@ -241,8 +246,8 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
   }
 
   /**
-   * Pendant une pause du formateur, et s'il reste au moins `minWords` mots en attente, on
-   * demande au STT de clore le tour : ces mots partent aussitôt, au lieu d'attendre le délai
+   * Pendant une pause du formateur, après au moins ~4 mots de parole depuis la dernière coupe,
+   * on demande au STT de clore le tour : ces mots partent aussitôt, au lieu d'attendre le délai
    * de coupe. Une fois par pause.
    */
   private endTurnOnPause(pcm: Uint8Array) {
@@ -252,12 +257,13 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
       return;
     }
     if (this.forcedThisPause || silentMs < FORCE_PAUSE_MS || !this.stt?.forceEndpoint) return;
-    const minWords = this.tuning.commit.minWords ?? DEFAULT_COMMIT.minWords;
-    if (this.gate.unsentCount < minWords) return;
+    const speechMs = this.pause.speechSinceCut;
+    if (speechMs < MIN_SPEECH_MS) return;
     this.forcedThisPause = true;
+    this.pause.cut();
     this.gate.holdTimeout(FORCE_HOLD_MS);
     this.stt.forceEndpoint();
-    this.metrics.event("endpoint", { words: this.gate.unsentCount, silentMs: Math.round(silentMs) });
+    this.metrics.event("endpoint", { speechMs: Math.round(speechMs), words: this.gate.unsentCount, silentMs: Math.round(silentMs) });
   }
 
   get sttOpen(): boolean {

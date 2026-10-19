@@ -32,3 +32,16 @@ describe("PauseDetector", () => {
     expect(p.push(frame(100, true), -10)).toBe(100); // le ton à −24 dBFS est sous −10 dBFS
   });
 });
+
+describe("PauseDetector — parole depuis la dernière coupe", () => {
+  it("compte la parole, et repart de zéro à chaque coupe", () => {
+    const p = new PauseDetector(16000);
+    p.push(frame(300, true), -35);
+    p.push(frame(100, false), -35);
+    expect(p.speechSinceCut).toBe(300);
+    p.cut();
+    expect(p.speechSinceCut).toBe(0);
+    p.push(frame(200, true), -35);
+    expect(p.speechSinceCut).toBe(200);
+  });
+});

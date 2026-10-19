@@ -9,8 +9,24 @@
  */
 export class PauseDetector {
   private silentMs = 0;
+  /** Parole entendue depuis la dernière coupe (ms). */
+  private speechMs = 0;
 
   constructor(private readonly sampleRate: number) {}
+
+  /**
+   * Parole depuis la dernière coupe. Jugée sur l'audio, pas sur l'hypothèse du STT : quand
+   * le STT prend du retard (2 s mesurées), ses mots n'ont pas encore été vus à la pause, et
+   * une condition sur eux laissait passer la phrase entière d'un bloc.
+   */
+  get speechSinceCut(): number {
+    return this.speechMs;
+  }
+
+  /** Une coupe vient d'avoir lieu (fin de tour demandée, ou fin de tour du STT). */
+  cut(): void {
+    this.speechMs = 0;
+  }
 
   /** Une trame PCM 16 bits mono ; renvoie la durée du silence en cours à la fin de la trame (ms). */
   push(pcm: Uint8Array, thresholdDb: number): number {
@@ -26,13 +42,18 @@ export class PauseDetector {
       }
       const rms = Math.sqrt(sum / (end - start));
       const db = rms > 0 ? 20 * Math.log10(rms / 32768) : -100;
-      if (db < thresholdDb) this.silentMs += ((end - start) * 1000) / this.sampleRate;
-      else this.silentMs = 0;
+      const ms = ((end - start) * 1000) / this.sampleRate;
+      if (db < thresholdDb) this.silentMs += ms;
+      else {
+        this.silentMs = 0;
+        this.speechMs += ms;
+      }
     }
     return this.silentMs;
   }
 
   reset(): void {
     this.silentMs = 0;
+    this.speechMs = 0;
   }
 }
