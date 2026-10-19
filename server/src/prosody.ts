@@ -300,3 +300,68 @@ export function wordErrorRate(reference: string, hypothesis: string): number {
   }
   return prev[hyp.length] / ref.length;
 }
+
+/**
+ * La même analyse que `analyzeFrames`, au fil de l'audio reçu (D28). Analyser d'un bloc les
+ * 2 s d'un segment coûte ~60 ms de calcul, pendant lesquelles le serveur ne diffuse plus rien
+ * aux téléphones ; trame par trame, chaque réception de 50 ms n'en coûte qu'une fraction.
+ * Audio PCM 16 bits mono à 16 kHz ; positions en ms du flux STT, comme les mots du fournisseur.
+ */
+export class LiveProsody {
+  private buf = new Float32Array(0);
+  /** Position, en échantillons, du premier échantillon de `buf` dans le flux. */
+  private offset = 0;
+  private frames: Frame[] = [];
+  private readonly hop: number;
+  private readonly win: number;
+  /** Échantillons nécessaires devant une fenêtre pour en chercher la hauteur. */
+  private readonly need: number;
+
+  constructor(
+    private readonly sampleRate = ANALYSIS_RATE,
+    /** Fenêtres gardées : un segment se décrit quelques secondes après sa fin. */
+    private readonly keepMs = 120_000,
+  ) {
+    this.hop = Math.round((sampleRate * HOP_MS) / 1000);
+    this.win = Math.round(sampleRate * 0.03);
+    this.need = this.win + Math.ceil(sampleRate / F0_MIN) + 1;
+  }
+
+  push(pcm: Uint8Array): void {
+    const n = pcm.byteLength >> 1;
+    const view = new DataView(pcm.buffer, pcm.byteOffset, n * 2);
+    const merged = new Float32Array(this.buf.length + n);
+    merged.set(this.buf);
+    for (let i = 0; i < n; i++) merged[this.buf.length + i] = view.getInt16(i * 2, true) / 32768;
+    this.buf = merged;
+    let start = 0;
+    while (start + this.need <= this.buf.length) {
+      let sum = 0;
+      for (let i = start; i < start + this.hop; i++) sum += this.buf[i] * this.buf[i];
+      const rms = Math.sqrt(sum / this.hop);
+      const db = rms > 0 ? 20 * Math.log10(rms) : -100;
+      const t = ((this.offset + start + this.hop / 2) / this.sampleRate) * 1000;
+      this.frames.push({ t, db, f0: db > -50 ? yin(this.buf, start, this.win, this.sampleRate) : null });
+      start += this.hop;
+    }
+    if (start) {
+      this.buf = this.buf.slice(start);
+      this.offset += start;
+    }
+    const oldest = (this.offset / this.sampleRate) * 1000 - this.keepMs;
+    let drop = 0;
+    while (drop < this.frames.length && this.frames[drop].t < oldest) drop++;
+    if (drop) this.frames.splice(0, drop);
+  }
+
+  /** Fenêtres analysées entre deux positions du flux (ms). */
+  between(startMs: number, endMs: number): Frame[] {
+    return this.frames.filter((f) => f.t >= startMs && f.t < endMs);
+  }
+
+  reset(): void {
+    this.buf = new Float32Array(0);
+    this.offset = 0;
+    this.frames = [];
+  }
+}

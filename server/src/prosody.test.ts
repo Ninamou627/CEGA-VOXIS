@@ -88,3 +88,25 @@ describe("débit, corrélation, intelligibilité", () => {
     expect(wordErrorRate("Le principe est simple.", "le principe est très simple")).toBe(0.25);
   });
 });
+
+describe("LiveProsody — la même analyse, au fil de l'audio (D28)", () => {
+  it("donne les mêmes fenêtres que l'analyse d'un bloc, trame de 50 ms après trame", async () => {
+    const { LiveProsody } = await import("./prosody");
+    const pcm = voice([{ ms: 600, hz: (t) => 140 + 80 * t }, { ms: 300 }, { ms: 900, hz: (t) => 220 - 60 * t }, { ms: 200 }]);
+    const whole = analyzeFrames(pcm);
+    const live = new LiveProsody(SR);
+    const bytes = new Uint8Array(pcm.samples.length * 2);
+    const v = new DataView(bytes.buffer);
+    pcm.samples.forEach((x, i) => v.setInt16(i * 2, Math.round(x * 32767), true));
+    for (let i = 0; i < bytes.length; i += 1600) live.push(bytes.subarray(i, Math.min(bytes.length, i + 1600)));
+    const got = live.between(0, 1e9);
+    // Les dernières fenêtres attendent l'audio qui suit ; toutes les autres sont identiques.
+    expect(got.length).toBeGreaterThan(whole.length - 15);
+    for (let i = 0; i < got.length; i++) {
+      expect(got[i].t).toBeCloseTo(whole[i].t, 6);
+      expect(got[i].db).toBeCloseTo(whole[i].db, 1); // l'audio repasse par des entiers 16 bits
+      if (whole[i].f0 == null) expect(got[i].f0).toBeNull();
+      else expect(got[i].f0!).toBeCloseTo(whole[i].f0!, 0);
+    }
+  });
+});

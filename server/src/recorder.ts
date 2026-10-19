@@ -35,6 +35,8 @@ export interface RecordedSegment {
   turnStart: boolean;
   stream: number;
   words: Word[];
+  /** La voix du formateur sur le segment (D28), telle que le serveur l'a décrite. */
+  prosody?: unknown;
 }
 
 export interface RecordedVoice {
@@ -116,6 +118,7 @@ export class SessionRecorder {
       startMs: words[0]?.startMs ?? null,
       endMs: words[words.length - 1]?.endMs ?? null,
       words,
+      prosody: s.prosody ?? null,
     });
   }
 

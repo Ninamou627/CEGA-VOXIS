@@ -712,6 +712,39 @@ que celles d'un formateur ; le seuil de 600 ms est à vérifier sur son enregist
 virgule fasse bien remonter la voix d'ElevenLabs est à vérifier à l'écoute (crédits). Le texte
 anglais affiché garde la ponctuation d'AssemblyAI.
 
+## D28 — La voix du formateur décrite en direct, segment par segment
+
+**Pourquoi.** Pour que la voix traduite rende l'expressivité du formateur (D3), il faut d'abord
+la mesurer pendant qu'il parle : animée ou posée, plus rapide ou plus lente que d'habitude,
+montant à la fin, et les mots qu'il met en relief.
+
+**Décision.**
+
+1. La hauteur (YIN) et l'énergie sont analysées au fil de l'audio reçu, par fenêtres de 20 ms
+   (`LiveProsody`, même calcul que l'analyse hors ligne de D24). Analyser d'un bloc les 2 s d'un
+   segment coûterait ~60 ms, pendant lesquelles le serveur ne diffuserait plus rien.
+2. Chaque segment est décrit entre ses bornes réelles (recalées sur l'audio, D25) et comparé
+   aux habitudes du formateur depuis le démarrage du micro (`pipeline/voice-profile.ts`) :
+   hauteur, étendue de la mélodie, énergie, débit en syllabes par seconde, mouvement final ;
+   « animée » quand mélodie et énergie dépassent nettement l'habitude, « posée » en dessous ;
+   un mot est « mis en relief » quand il est nettement plus fort ou plus aigu que ses mots
+   habituels. Rien n'est jugé avant ~8 segments (~20 s de parole). Chaque mesure a une
+   dispersion minimale (un demi-ton, un décibel, un tiers de syllabe par seconde) : une voix
+   très régulière rendait sinon le moindre écart invisible.
+3. La description part avec le segment (`src.commit`), dans le journal et dans l'enregistrement :
+   elle ne change encore rien à la voix traduite.
+
+**Mesuré (19/10/2026).** Coût : 2,9 % d'un cœur, 1,45 ms par trame de 50 ms en médiane ; retard
+médian de la boucle du serveur 14 ms en rejeu, contre 16 ms avant. Analyse au fil de l'audio
+identique à l'analyse d'un bloc (test). Sur le cours continu dont l'allure est connue, le débit
+mesuré range les passages : lents 4,0 syllabes/s (écart à l'habitude −1,05), normaux 5,8
+(−0,11), rapides 9,6 (+1,81). Les 3 questions finissent à +0,1 demi-ton en médiane, les autres
+phrases à −3,3.
+
+**Limites.** Voix de synthèse : elle ne met rien en relief volontairement et ne varie pas
+d'expressivité ; « animée », « posée » et les mots en relief (7 % des mots ici) restent à juger
+sur l'enregistrement du formateur. Trois questions ne font pas une mesure.
+
 ## Ce que six semaines (au lieu de 48 h) remettent sur la table
 
 Dans l'ordre de valeur : tests automatisés dès le départ (fait) ; multilingue réel

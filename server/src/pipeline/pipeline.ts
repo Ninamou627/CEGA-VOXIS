@@ -12,6 +12,8 @@ import { TypedEmitter } from "../util/emitter";
 import { AudioClock } from "./audio-clock";
 import { PauseDetector } from "./pause";
 import { Tempo } from "./tempo";
+import { LiveProsody } from "../prosody";
+import { VoiceProfile, type SegmentProsody } from "./voice-profile";
 import { CommitGate, DEFAULT_COMMIT, type CommitConfig, type Segment } from "./commit";
 
 /** Réglages de l'administration relus en cours de séance. */
@@ -102,6 +104,8 @@ export interface PipelineEvents extends Record<string, unknown> {
     /** Flux STT qui a reconnu le segment, et ses mots datés dans ce flux (enregistreur). */
     stream: number;
     words: Word[];
+    /** La voix du formateur sur ce segment, comparée à ses habitudes (D28). */
+    prosody?: SegmentProsody;
   };
   /** Le micro du formateur démarre ou s'arrête. */
   mic: { on: boolean };
@@ -157,6 +161,10 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
   private roomFreeAt = new Map<Lang, number>();
   /** Débit de la voix traduite, appris segment après segment (D26). */
   private tempo = new Tempo();
+  /** Hauteur et énergie de la voix du formateur, analysées au fil de l'audio (D28). */
+  private live: LiveProsody;
+  /** Ses habitudes depuis le démarrage du micro, auxquelles chaque segment se compare. */
+  private voice: VoiceProfile;
 
   constructor(
     private readonly providers: Providers,
@@ -166,6 +174,8 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     super();
     this.clock = new AudioClock(cfg.sampleRate);
     this.pause = new PauseDetector(cfg.sampleRate);
+    this.live = new LiveProsody(cfg.sampleRate);
+    this.voice = new VoiceProfile(cfg.srcLang);
     this.gate = new CommitGate(this.commitConfig(), undefined, {
       spokenAt: (ms) => this.clock.spokenAt(ms),
       speechEnd: (ms) => this.pause.speechEnd(ms),
@@ -222,6 +232,7 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     this.started = true;
     this.prevEnd = undefined;
     this.turnOpen = true;
+    this.voice = new VoiceProfile(this.cfg.srcLang);
     this.metrics.micReset();
     this.emit("mic", { on: true });
     // Les connexions vers la traduction et la voix s'ouvrent pendant que le STT se connecte,
@@ -303,6 +314,7 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     // Nouveau flux : ses horodatages repartent de zéro avec la première trame qu'il reçoit.
     this.clock.reset();
     this.pause.reset();
+    this.live.reset();
     this.gate.newStream();
     this.stt = stream;
     this.emit("stt.stream", { stream: ++this.streams });
@@ -334,6 +346,7 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     this.audio.forwarded++;
     this.metrics.audio(pcm);
     this.stt.sendAudio(pcm);
+    this.live.push(pcm);
     this.emit("stt.audio", { pcm });
     this.clock.push(pcm.byteLength, this.audio.lastAt);
     this.endTurnOnPause(pcm);
@@ -418,6 +431,11 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     this.prevEnd = Math.max(this.prevEnd ?? 0, seg.tEnd);
     // Le premier segment de la prise de parole est parti, par quelque chemin que ce soit.
     if (turnStart) this.turnOpen = false;
+    // La voix du formateur sur ce segment (D28) : l'audio du flux en cours, entre ses bornes réelles.
+    const prosody =
+      seg.startPos != null && seg.endPos != null
+        ? this.voice.describe(this.live.between(seg.startPos, seg.endPos), seg.startPos, seg.endPos, seg.words, seg.text, this.tuning.speechThresholdDb)
+        : undefined;
     this.emit("src.commit", {
       seq,
       text: seg.text,
@@ -429,6 +447,7 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
       confidence,
       stream: this.streams,
       words: seg.words,
+      prosody,
     });
     this.metrics.stage("commit", tCommit - seg.tOrigin);
     // Fin prononcée → segment figé : la part de la reconnaissance dans la latence de D19.
@@ -453,6 +472,17 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
       words: seg.words.length,
       reason: seg.reason,
       confidence: confidence != null ? Math.round(confidence * 1000) / 1000 : null,
+      voice: prosody
+        ? {
+            arousal: prosody.arousal,
+            rate: prosody.rate,
+            rateZ: prosody.rateZ,
+            rangeZ: prosody.rangeZ,
+            energyZ: prosody.energyZ,
+            finalMoveSt: prosody.finalMoveSt,
+            emphasized: prosody.emphasized,
+          }
+        : null,
     });
 
     for (const lang of this.cfg.targetLangs) {
