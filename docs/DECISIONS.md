@@ -745,6 +745,49 @@ phrases à −3,3.
 d'expressivité ; « animée », « posée » et les mots en relief (7 % des mots ici) restent à juger
 sur l'enregistrement du formateur. Trois questions ne font pas une mesure.
 
+## D29 — L'expressivité ne passe pas par ElevenLabs : ce qui marche, ce qui ne marche pas
+
+**Question.** Quels leviers d'ElevenLabs font réellement passer dans la voix française ce que
+D28 mesure chez le formateur (phrase animée ou posée, mot en relief, question) ? Mesuré avec
+l'analyse de prosodie (D24) sur la voix produite, le 20/10/2026, voix prédéfinie « Sarah »
+(vérifiée en français ; l'offre gratuite refuse par l'API les voix de la bibliothèque, dont
+les voix françaises du compte : erreur 402).
+
+| Levier | Résultat | Suite |
+|---|---|---|
+| Vitesse (`speed`) | respectée par Flash v2.5 et Turbo v2.5 ; **ignorée** par v4 Turbo et v3 Conversational (même durée à ×1 et ×1,2) | les modèles expressifs sont incompatibles avec D26 : écartés |
+| Point d'interrogation | la fin monte de 1,4 à 3,1 demi-tons de plus qu'avec un point (4 paires) | déjà fourni par AssemblyAI ; ajouter « ? » sur une voix montante ne ferait que des erreurs (2 cas sur 100 segments, tous deux faux) |
+| Virgule (D27) | sur la vraie voix en séance : fin à +0,4 demi-ton après une virgule (18 segments), −1,1 après un point (23) | confirmé |
+| Stabilité (0,2 → 0,8) | aucune tendance : l'étendue de la mélodie varie plus d'une génération à l'autre qu'avec le réglage | pas de correspondance « animée → stabilité » |
+| Majuscules (« TRÈS ») | mot de même durée, moins ressorti en énergie (+3,1 au lieu de +4,8 dB ; +1,3 au lieu de +5,9) | pas d'accentuation par les majuscules |
+| Indications « [excited] » (v3/v4) | non testées : ces modèles ignorent la vitesse | — |
+
+Latence d'un segment de ~80 caractères, connexion ouverte : ~0,3 s pour Flash et Turbo ;
+0,5 à 0,6 s pour v4 Turbo.
+
+**Avant / après avec la vraie voix (cours continu de 144 s, AssemblyAI, DeepL, ElevenLabs
+Turbo v2.5 ; « avant » = code de D25, « après » = D26 + D27 + D28 ; un passage chacun).**
+
+| | Avant | Après |
+|---|---|---|
+| Début de parole → son, médiane / p95 | 4,8 / 7,1 s | 4,4 / 6,9 s |
+| Pente du retard | +0,7 s/min | +0,5 s/min |
+| Le débit de la voix suit celui du formateur (corrélation) | 0,18 | 0,56 |
+| L'étendue de la mélodie suit (corrélation) | −0,10 | 0,34 |
+| L'énergie suit (corrélation) | −0,16 | −0,21 |
+| Pauses de plus de 0,5 s retrouvées à l'écoute | 41 % | 68 % |
+| Mots mal relus par un STT (intelligibilité) | 7 % | 9 % |
+
+Coût de l'étape : 3 485 crédits ElevenLabs sur 10 000.
+
+**Conclusion.** Avec ElevenLabs, ce qui passe du formateur à la voix est le débit (D26), les
+pauses (D26) et la ponctuation (D27). Ni l'animation d'une phrase ni l'accent d'un mot n'ont de
+levier fiable sur les modèles qui respectent la vitesse. Les rendre demanderait un moteur dont
+la prosodie se commande de façon déterministe — Azure Neural, déjà branché comme secours, prend
+en SSML la hauteur, le volume, le débit et les pauses par mot ou par phrase (offre gratuite :
+500 000 caractères neuronaux par mois) — à mesurer de la même façon, avec une clé Azure, et à
+comparer à l'oreille.
+
 ## Ce que six semaines (au lieu de 48 h) remettent sur la table
 
 Dans l'ordre de valeur : tests automatisés dès le départ (fait) ; multilingue réel
