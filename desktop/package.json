@@ -14,7 +14,7 @@
   },
   "comment": "La version d'Electron est figée, jamais une plage : c'est ce Chromium précis qui est livré au client, et electron-builder l'exige pour télécharger les binaires.",
   "devDependencies": {
-    "electron": "44.4.5",
+    "electron": "44.10.2",
     "electron-builder": "^26.15.3",
     "typescript": "^5.6.0"
   },
