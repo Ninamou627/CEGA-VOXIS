@@ -788,6 +788,53 @@ en SSML la hauteur, le volume, le débit et les pauses par mot ou par phrase (of
 500 000 caractères neuronaux par mois) — à mesurer de la même façon, avec une clé Azure, et à
 comparer à l'oreille.
 
+## D30 — La vitesse de la voix ne saute plus ; ce que le premier serveur hébergé a montré
+
+Deux séances réelles le 07/11/2026 depuis la VM Azure (Autriche) : un discours d'Obama joué
+par un téléphone devant le micro du PC, écouté sur le même PC (écouteurs), AssemblyAI U3.5 Pro,
+DeepL, ElevenLabs Turbo v2.5 (voix Sarah). 32 puis 63 segments mesurés.
+
+**Ce que l'auditeur a entendu, et ce que disent les mesures.**
+
+| Ressenti | Mesure (2ᵉ séance) | Cause |
+|---|---|---|
+| « la voix attend trop avant de parler » | début de phrase → son 4,3 s en médiane aux prises de parole, dont 3,2 s à attendre la fin du premier morceau | la traduction par morceaux (D10, D25) |
+| « la voix accélère par moments » | 75 % des segments à ×0,85 ou à ×1,2 ; 23 enchaînements sur 56 changent de 0,2 ou plus | D26 calculé segment par segment, sur des morceaux courts |
+| « des mots sont sautés » | 63 segments sur 63 joués, aucun trou de numéro | en amont de la page : reconnaissance, traduction ou voix (à mesurer, voir plus bas) |
+
+**Décision.** La vitesse ne bouge plus que de 0,05 d'un segment au suivant, entre ×1 et ×1,2,
+et une prise de parole repart entre ×1,05 et ×1,15 (`pipeline/tempo.ts`). La vitesse que le
+segment seul aurait demandée reste journalisée (`targetSpeed`). Rejoué sur les deux séances
+(modèle de la file des téléphones, ~0,5 s plus optimiste que la mesure) :
+
+| Politique | Séance 2 : fin → son, médiane / p95 | Séance 1 | Sauts ≥ 0,2 (séance 2) |
+|---|---|---|---|
+| D26 (segment seul, 0,85–1,2) | 2,6 / 7,0 s | 1,1 / 3,1 s | 23 / 56 |
+| ±0,05, 1–1,2 (retenu) | 2,4 / 7,0 s | 1,1 / 3,6 s | 0 / 56 |
+| Vitesse fixe ×1,10 | 2,4 / 6,6 s | 1,1 / 3,4 s | 0 / 56 |
+
+La vitesse fixe vaut autant pour la latence, mais la voix ne suivrait plus du tout l'allure du
+formateur ; le lissage la garde, en douceur.
+
+**Corrigé au passage.**
+- *Sourdine.* Le STT ne reçoit rien pendant une sourdine : l'audio d'avant et d'après s'y
+  touche. Des mots dits juste avant une sourdine sont partis 20 minutes plus tard avec la
+  première phrase d'après, datée de la sourdine (« parole » de 1 208 s, voix à ×0,85). À la
+  sourdine, le STT clôt désormais la phrase en cours ; à la reprise, un segment ne commence pas
+  avant elle, et la reprise ouvre une prise de parole (premier morceau rapide, D25).
+- *Adresse des appareils derrière Caddy.* Le WebSocket lisait l'adresse de la connexion, celle
+  du proxy (172.18.0.4 pour tous) : trente codes faux tapés par n'importe qui bloquaient toutes
+  les nouvelles connexions, et chaque bon code remettait le compteur de tous à zéro. Avec
+  `TRUST_PROXY`, HTTP et WebSocket prennent la dernière entrée de X-Forwarded-For, celle que le
+  proxy écrit (`client-address.ts`) ; `trustProxy: true` de Fastify croyait toute la chaîne et
+  prenait la première, que le client peut inventer.
+
+**Ce qui reste à mesurer.** Les mesures ne gardent pas les textes : pour savoir où se perdent
+les mots, une séance avec `RECORD_DIR` (texte reconnu, traduction, chaque voix), relue par
+`npm run prosody -- --stt`. Trois voix ont duré deux fois la normale (69 caractères en 8,7 s) :
+à vérifier sur leurs fichiers. Une minute de discours continu coûte ~370 crédits ElevenLabs
+(2 285 caractères en 3,1 min), le double d'une parole avec pauses.
+
 ## Ce que six semaines (au lieu de 48 h) remettent sur la table
 
 Dans l'ordre de valeur : tests automatisés dès le départ (fait) ; multilingue réel

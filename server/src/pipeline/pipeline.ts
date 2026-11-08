@@ -402,11 +402,31 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     return Math.round((bytes / 2 / this.cfg.sampleRate) * 1000);
   }
 
+  /**
+   * Sourdine du formateur. Pendant la sourdine, le STT ne reçoit plus rien : dans son flux,
+   * l'audio d'avant et celui d'après se touchent. Le 07/11/2026, des mots dits juste avant une
+   * sourdine sont restés en attente au STT, puis sont partis 20 minutes plus tard avec la
+   * première phrase d'après, datée de la sourdine (« parole » de 1 208 s, voix à ×0,85).
+   */
   setMuted(muted: boolean): void {
     if (this.muted === muted) return;
     this.muted = muted;
+    if (muted) {
+      // Ce qui a été dit part maintenant, au lieu d'attendre la reprise.
+      if (this.pause.speechSinceCut > 0) {
+        this.pause.cut();
+        this.stt?.forceEndpoint?.();
+      }
+    } else {
+      // La salle a tout entendu pendant la sourdine : la reprise ouvre une prise de parole.
+      this.resumedAt = Date.now();
+      this.turnOpen = true;
+    }
     this.emitStatus();
   }
+
+  /** Fin de la dernière sourdine : un segment entendu depuis n'a pas commencé avant. */
+  private resumedAt?: number;
 
   /** Signalement externe (ex. bascule du TTS de secours). */
   reportDegraded(mode: DegradedMode, reason: string): void {
@@ -420,6 +440,9 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
   }
 
   private dispatch(seg: Segment) {
+    // Un segment qui finit après la reprise commence au plus tôt à la reprise : collé dans le
+    // flux à l'audio d'avant la sourdine, son premier mot y serait daté.
+    if (this.resumedAt != null && seg.tEnd >= this.resumedAt && seg.tStart < this.resumedAt) seg = { ...seg, tStart: this.resumedAt };
     const seq = ++this.seq;
     const tCommit = Date.now();
     // Confiance moyenne du moteur de reconnaissance sur les mots du segment, s'il la donne.
@@ -551,7 +574,7 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
       const aheadMs = Math.max(0, (this.roomFreeAt.get(lang) ?? 0) - Date.now());
       const sourceMs = seg.tEnd - seg.tStart;
       let speed: number;
-      let tempo: { predictedMs: number; budgetMs: number } | undefined;
+      let tempo: { predictedMs: number; budgetMs: number; target: number } | undefined;
       if (this.tuning.followTempo) {
         // Le segment dans le temps du formateur, file des téléphones comprise (D26).
         // Après un long silence, la pause n'appartient pas au temps du segment : la salle l'a déjà eue.
@@ -595,6 +618,7 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
         durMs: a.durMs,
         chars: text.length,
         speed,
+        targetSpeed: tempo?.target ?? null,
         voice: a.voice ?? null,
         queueMs,
         sourceMs,

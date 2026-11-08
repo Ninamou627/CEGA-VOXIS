@@ -448,7 +448,7 @@ export function Configuration({ conf, value, dirty, micDb, onChange, onSave, onD
 
           <Field
             label="Débit"
-            help="Qui suit le formateur : chaque phrase est dite dans le temps qu'il a mis à la dire, la voix accélère et ralentit avec lui, et les téléphones ne prennent pas de retard. Constant : une vitesse fixe, accélérée seulement quand le retard s'installe."
+            help="Qui suit le formateur : la voix suit son allure en douceur, de ×0,05 au plus d'une phrase à la suivante, pour que les téléphones ne prennent pas de retard. Constant : une vitesse fixe, accélérée seulement quand le retard s'installe."
             applies="live"
             changed={changed("voice.followTempo")}
           >
@@ -459,7 +459,7 @@ export function Configuration({ conf, value, dirty, micDb, onChange, onSave, onD
             label="Vitesse"
             help={
               v.followTempo
-                ? "Multiplie le débit calculé, entre ×0,85 et ×1,2. En dessous de ×1, la voix prend du retard sur le formateur."
+                ? "Multiplie le débit calculé, entre ×1 et ×1,2 (la borne basse suit ce réglage). En dessous de ×1, la voix prend du retard sur le formateur."
                 : "Vitesse de base de la voix. Le rattrapage automatique de la dérive s'y ajoute, jusqu'à ×1,2."
             }
             applies="live"

@@ -1,24 +1,27 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_CPS, Tempo } from "./tempo";
+import { DEFAULT_CPS, MAX_STEP, Tempo } from "./tempo";
 
 /** 85 caractères : 5 s de voix à 17 car./s. */
 const TEXT = 85;
 const base = { chars: TEXT, gapMs: 500, aheadMs: 0, preference: 1 };
+/** Un segment qui suit le précédent sans pause, dit en `sourceMs` : il demande 5000 / sourceMs. */
+const next = (sourceMs: number) => ({ ...base, gapMs: 0, sourceMs });
+/** Une prise de parole, après un long silence. */
+const turn = (sourceMs: number) => ({ ...base, gapMs: null, sourceMs });
 
 describe("Tempo — chaque segment dans le temps du formateur (D26)", () => {
-  it("dit le segment dans le temps que le formateur a mis à le dire, pause comprise", () => {
+  it("vise le temps que le formateur a mis à dire le segment, pause comprise", () => {
     const d = new Tempo().speedFor("fr", { ...base, sourceMs: 4500 });
     expect(d.predictedMs).toBe(5000);
     expect(d.budgetMs).toBe(5000);
-    expect(d.speed).toBe(1);
+    expect(d.target).toBe(1);
   });
 
-  it("accélère quand le formateur accélère, ralentit quand il ralentit, dans les bornes", () => {
+  it("vise plus vite quand le formateur accélère, plus lentement quand il ralentit, dans les bornes", () => {
     const t = new Tempo();
-    expect(t.speedFor("fr", { ...base, sourceMs: 3900, gapMs: 300 }).speed).toBe(1.19);
-    expect(t.speedFor("fr", { ...base, sourceMs: 3000 }).speed).toBe(1.2); // plafond d'ElevenLabs
-    expect(t.speedFor("fr", { ...base, sourceMs: 5300 }).speed).toBe(0.86);
-    expect(t.speedFor("fr", { ...base, sourceMs: 8000 }).speed).toBe(0.85); // plancher
+    expect(t.speedFor("fr", { ...base, sourceMs: 3900, gapMs: 300 }).target).toBe(1.19);
+    expect(t.speedFor("fr", { ...base, sourceMs: 3000 }).target).toBe(1.2); // plafond d'ElevenLabs
+    expect(t.speedFor("fr", { ...base, sourceMs: 8000 }).target).toBe(1); // plancher (D30)
   });
 
   it("résorbe la moitié de la file des téléphones, sans exiger moins de la moitié du temps", () => {
@@ -33,10 +36,6 @@ describe("Tempo — chaque segment dans le temps du formateur (D26)", () => {
     expect(t.speedFor("fr", { ...base, sourceMs: 4000, gapMs: null }).budgetMs).toBe(4000);
   });
 
-  it("le réglage de l'administration multiplie la vitesse calculée", () => {
-    expect(new Tempo().speedFor("fr", { ...base, sourceMs: 4500, preference: 0.9 }).speed).toBe(0.9);
-  });
-
   it("apprend le débit de la voix, à vitesse ramenée à ×1", () => {
     const t = new Tempo();
     expect(t.charsPerSecond("fr")).toBe(DEFAULT_CPS);
@@ -48,5 +47,50 @@ describe("Tempo — chaque segment dans le temps du formateur (D26)", () => {
     t.learn("fr", 100, 1000, 1); // 100 car./s : durée mal lue
     expect(t.charsPerSecond("fr")).toBeCloseTo(14.4);
     expect(t.charsPerSecond("en")).toBe(DEFAULT_CPS); // chaque langue a sa voix
+  });
+});
+
+describe("Tempo — une vitesse qui ne saute plus (D30)", () => {
+  it("une prise de parole repart entre ×1,05 et ×1,15, quoi qu'en demande le segment", () => {
+    const t = new Tempo();
+    expect(t.speedFor("fr", turn(3000)).speed).toBe(1.15); // il demandait ×1,2
+    expect(t.speedFor("fr", turn(8000)).speed).toBe(1.05); // il demandait ×1
+    expect(t.speedFor("fr", turn(4545)).speed).toBe(1.1); // dans la fenêtre : tel quel
+  });
+
+  it("d'un segment au suivant, la vitesse ne bouge que de 0,05", () => {
+    const t = new Tempo();
+    const speeds = [t.speedFor("fr", turn(4545)).speed];
+    // Le formateur alterne passages rapides et lents, comme le discours du 07/11/2026.
+    for (const ms of [3000, 3000, 3000, 8000, 8000, 3000]) speeds.push(t.speedFor("fr", next(ms)).speed);
+    expect(speeds).toEqual([1.1, 1.15, 1.2, 1.2, 1.15, 1.1, 1.15]);
+    for (let i = 1; i < speeds.length; i++) expect(Math.abs(speeds[i] - speeds[i - 1])).toBeLessThanOrEqual(MAX_STEP + 1e-9);
+  });
+
+  it("jamais sous ×1 ni au-dessus de ×1,2, même après une longue série", () => {
+    const t = new Tempo();
+    t.speedFor("fr", turn(4545));
+    let slow = 0;
+    for (let i = 0; i < 10; i++) slow = t.speedFor("fr", next(20_000)).speed;
+    expect(slow).toBe(1);
+    let fast = 0;
+    for (let i = 0; i < 10; i++) fast = t.speedFor("fr", next(1000)).speed;
+    expect(fast).toBe(1.2);
+  });
+
+  it("le réglage de l'administration déplace la plage : à ×0,9, la voix peut descendre à ×0,9", () => {
+    const t = new Tempo();
+    expect(t.speedFor("fr", { ...turn(5000), preference: 0.9 }).target).toBe(0.9);
+    let s = 0;
+    for (let i = 0; i < 5; i++) s = t.speedFor("fr", { ...next(5000), preference: 0.9 }).speed;
+    expect(s).toBe(0.9);
+  });
+
+  it("chaque langue lisse sa propre voix", () => {
+    const t = new Tempo();
+    t.speedFor("fr", turn(4545)); // ×1,1
+    t.speedFor("fr", next(3000)); // ×1,15
+    expect(t.speedFor("en", next(3000)).speed).toBe(1.15); // premier segment en anglais : il repart de la fenêtre
+    expect(t.speedFor("fr", next(3000)).speed).toBe(1.2);
   });
 });

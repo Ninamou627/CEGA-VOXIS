@@ -343,6 +343,62 @@ describe("Pipeline — premier morceau d'une prise de parole (D25)", () => {
   });
 });
 
+describe("Pipeline — sourdine du formateur", () => {
+  it("un segment entendu après une sourdine n'est pas daté d'avant elle", async () => {
+    const r = room();
+    const seen: { tStart: number; turnStart: boolean }[] = [];
+    r.pipeline.on("src.commit", (e) => seen.push(e));
+    await r.pipeline.start();
+    await r.speak(10); // la position p du flux est dite à T0 + p, jusqu'à T0 + 1000
+    r.stt.ev!.onPartial({ words: [{ text: "hello.", startMs: 100, endMs: 600, isFinal: true }], isFinal: true });
+    r.pipeline.setMuted(true);
+    await vi.advanceTimersByTimeAsync(60_000);
+    r.pipeline.setMuted(false); // reprise à T0 + 61 000 ; le flux, lui, reprend à la position 1000
+    await r.speak(10);
+    // Le STT colle un mot d'avant la sourdine (position 800) à la phrase d'après (07/11/2026).
+    r.stt.ev!.onPartial({
+      words: [
+        { text: "so", startMs: 800, endMs: 950, isFinal: true },
+        { text: "again.", startMs: 1100, endMs: 1600, isFinal: true },
+      ],
+      isFinal: true,
+    });
+    expect(seen).toHaveLength(2);
+    expect(seen[1].tStart).toBe(T0 + 61_000);
+    expect(seen[1].turnStart).toBe(true); // et non 200 ms après « hello. »
+    await r.pipeline.stop();
+  });
+
+  it("à la sourdine, le STT clôt la phrase en cours : elle part sans attendre la reprise", async () => {
+    const r = forcingRoom();
+    await r.pipeline.start();
+    await r.push(8, true); // 0,8 s de parole, pas de pause : rien de forcé
+    expect(r.forced).toHaveLength(0);
+    r.pipeline.setMuted(true);
+    expect(r.forced).toHaveLength(1);
+    r.pipeline.setMuted(false);
+    r.pipeline.setMuted(true); // aucune parole depuis : rien à clore
+    expect(r.forced).toHaveLength(1);
+    await r.pipeline.stop();
+  });
+
+  it("la reprise ouvre une prise de parole : son premier morceau part au premier blanc", async () => {
+    const r = forcingRoom({ quickStart: true });
+    await r.pipeline.start();
+    await r.push(9, true);
+    await r.push(2, false);
+    expect(r.forced).toHaveLength(1); // premier morceau
+    await r.push(9, true);
+    r.pipeline.setMuted(true); // la phrase en cours est close
+    expect(r.forced).toHaveLength(2);
+    r.pipeline.setMuted(false);
+    await r.push(9, true); // 0,9 s : trop peu pour la règle ordinaire, assez pour un premier morceau
+    await r.push(2, false);
+    expect(r.forced).toHaveLength(3);
+    await r.pipeline.stop();
+  });
+});
+
 describe("Pipeline — mots recalés sur l'audio (D25)", () => {
   it("date la fin d'un segment à la fin réelle de la parole, pas à l'horodatage du STT", async () => {
     const r = room();
