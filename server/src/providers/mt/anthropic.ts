@@ -35,6 +35,7 @@ export function buildSystemPrompt(from: Lang, to: Lang, glossary?: Record<string
     `- Interpret, do not translate word for word. Keep the meaning, the tone and the register; drop fillers, hesitations and repetitions ("you know", "basically", "sort of", "uh").`,
     `- Keep it slightly more concise than the original when natural. Never add information.`,
     `- Use the previous segments for continuity of pronouns, gender and terminology. Never re-translate them.`,
+    `- Address the audience with the formal form of address when ${LANG_NAME[to]} has one (French: « vous », never « tu »), even when the speaker addresses one person.`,
     `- Keep numbers, product names, acronyms and code identifiers exactly as spoken.`,
     `- Produce well-punctuated ${LANG_NAME[to]} suitable for a text-to-speech voice.`,
     `- Never answer the speaker, never comment, never ask questions, never add quotes or brackets. If a segment is a fragment, render the fragment.`,

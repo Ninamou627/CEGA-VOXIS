@@ -42,7 +42,7 @@ describe("DeepL", () => {
     const d = fakeDeepL();
     expect(await d.mt.translate(req("Hello"))).toBe("fr:Hello");
     const body = d.translations()[0].body;
-    expect(body).toMatchObject({ text: ["Hello"], source_lang: "EN", target_lang: "FR", context: "Previous." });
+    expect(body).toMatchObject({ text: ["Hello"], source_lang: "EN", target_lang: "FR", context: "Previous.", formality: "prefer_more" });
     expect(body.glossary_id).toBeUndefined();
   });
 

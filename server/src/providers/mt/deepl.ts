@@ -89,6 +89,10 @@ export class DeepLMt implements MtProvider {
       source_lang: SOURCE[req.from],
       target_lang: TARGET[req.to],
       preserve_formatting: true,
+      // Vouvoiement : sans ce réglage, DeepL a tutoyé la salle sur 8 segments du test du 8/11
+      // (« si tu tiens à moi ») ; rejoués avec leur contexte, les 8 passent au « vous ».
+      // « prefer_ » : une cible sans formalité (anglais…) est traduite quand même (vérifié, 200).
+      formality: "prefer_more",
     };
     // Le contexte de séance et les segments précédents (source) donnent le fil, sans être traduits.
     const context = [req.domain, ...req.context.map((c) => c.src)].filter(Boolean).join(" ");

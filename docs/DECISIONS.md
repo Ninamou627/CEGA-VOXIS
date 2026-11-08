@@ -835,6 +835,39 @@ les mots, une séance avec `RECORD_DIR` (texte reconnu, traduction, chaque voix)
 à vérifier sur leurs fichiers. Une minute de discours continu coûte ~370 crédits ElevenLabs
 (2 285 caractères en 3,1 min), le double d'une parole avec pauses.
 
+## D31 — L'âge d'une voix part de la fin de sa phrase ; la salle est vouvoyée
+
+Troisième séance le 08/11/2026, même montage que D30, enregistrée (`RECORD_DIR`) : 40 segments.
+L'enregistrement dit enfin où se perdent les mots.
+
+| Étape | Mesure | Verdict |
+|---|---|---|
+| Page apprenant | 39 voix jouées sur 40 : #19 sautée | **la cause du « mot sauté » entendu** |
+| Reconnaissance en direct | 19 % d'écart avec la transcription différée du même son | substitutions qui changent le sens ; pas concentrées autour des coupes forcées |
+| Traduction | fidèle, mais 8 segments au « tu » (« si tu tiens à moi ») | registre qui change en cours de discours |
+| Voix | relue par AssemblyAI : 4,2 % d'écart avec le texte à dire | correcte |
+
+Le blanc de 13 s entendu en cours de séance était les applaudissements du discours.
+
+**Âge depuis la fin de la phrase.** La page sautait une voix arrivée plus de 8 s après le
+*premier mot* de sa phrase. #19 durait 7,4 s (23 mots) ; sa voix était prête 1,1 s après la
+fin, mais 7,9 s après le premier mot, et elle a sauté entière. Toute phrase de plus de ~6,5 s
+était menacée, alors que ce sont les plus longues qui portent le plus de sens. L'âge est
+désormais compté depuis la fin prononcée (`tEnd` dans l'en-tête audio, `arrivalAgeMs` et
+`tooLate` dans `shared/playback.ts`, partagés avec `npm run load`). La limite reste 8 s, et la
+file de 8 s aussi : un téléphone vraiment en retard saute toujours. Rejoué sur la séance, l'âge
+le plus élevé au départ de la voix passe de 7,9 s à 5,0 s : aucune voix n'aurait sauté.
+
+**Vouvoiement.** DeepL reçoit `formality: "prefer_more"`, et le prompt de Claude (secours) le
+demande aussi. Les 8 segments tutoyés, rejoués avec leur contexte : 8 au « tu » sans le
+réglage, 0 avec. Sur deux phrases complètes, DeepL vouvoyait déjà : le réglage tient surtout
+le registre sur les fragments. « prefer_ » : une langue cible sans formalité est traduite
+quand même (vers l'anglais, vérifié).
+
+**Ce qui reste à mesurer.** L'écart de 19 % compare deux reconnaissances entre elles, pas au
+texte vraiment dit. Prochaine séance : un texte connu lu au micro, pour mesurer le vrai taux
+d'erreur de la reconnaissance en direct, et vérifier qu'une phrase de plus de 7 s est jouée.
+
 ## Ce que six semaines (au lieu de 48 h) remettent sur la table
 
 Dans l'ordre de valeur : tests automatisés dès le départ (fait) ; multilingue réel
