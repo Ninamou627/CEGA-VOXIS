@@ -35,7 +35,7 @@ function room(finalWords = true) {
   const metrics = new Metrics();
   const pipeline = new Pipeline({ stt, mt, tts }, { srcLang: "en", targetLangs: ["fr"], sampleRate: 16000 }, metrics);
   const commits: { seq: number; text: string; tOrigin: number; tEnd: number; reason: string }[] = [];
-  const audio: { seq: number; tOrigin: number }[] = [];
+  const audio: { seq: number; tOrigin: number; tEnd: number }[] = [];
   pipeline.on("src.commit", (e) => commits.push(e));
   pipeline.on("audio", (e) => audio.push(e));
   /** Le formateur parle : une trame de 100 ms reçue toutes les 100 ms. */
@@ -73,6 +73,7 @@ describe("Pipeline — latence fin de phrase → voix (D19)", () => {
 
     await vi.advanceTimersByTimeAsync(10); // traduction et synthèse (simulées, immédiates)
     expect(r.audio).toHaveLength(1);
+    expect(r.audio[0].tEnd).toBe(T0 + 800); // le téléphone compte l'âge de la voix depuis là (D31)
 
     await vi.advanceTimersByTimeAsync(290); // le téléphone commence à jouer 300 ms après le figement
     const { e2eMs, endMs, startMs } = r.metrics.ack("p1", r.audio[0].seq, r.audio[0].tOrigin, 0);

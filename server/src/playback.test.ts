@@ -1,5 +1,31 @@
 import { describe, expect, it } from "vitest";
-import { keptPauseMs, localRate } from "../../shared/playback";
+import { arrivalAgeMs, keptPauseMs, localRate, tooLate } from "../../shared/playback";
+
+describe("voix trop ancienne : âge compté depuis la fin de la phrase (D31)", () => {
+  // Le segment #19 du test du 8/11 : 7,4 s de phrase, voix prête 1,1 s après la fin.
+  const t0 = 1_000_000;
+  const h19 = { tOrigin: t0 + 550, tEnd: t0 + 7_380 };
+  const arrival = t0 + 7_380 + 1_092 + 200; // + transport jusqu'au téléphone
+
+  it("une phrase longue dont la voix arrive à temps n'est plus sautée", () => {
+    expect(arrival - h19.tOrigin).toBeGreaterThan(8_000); // l'ancienne règle la sautait
+    expect(arrivalAgeMs(arrival, h19)).toBe(1_292);
+    expect(tooLate(0, arrivalAgeMs(arrival, h19))).toBe(false);
+  });
+
+  it("une voix arrivée plus de 8 s après la fin de sa phrase saute toujours", () => {
+    expect(tooLate(0, arrivalAgeMs(h19.tEnd + 8_001, h19))).toBe(true);
+  });
+
+  it("une file de plus de 8 s fait toujours sauter", () => {
+    expect(tooLate(8_001, 0)).toBe(true);
+    expect(tooLate(8_000, 8_000)).toBe(false);
+  });
+
+  it("sans fin de phrase connue (question), l'âge part du premier mot", () => {
+    expect(arrivalAgeMs(t0 + 3_000, { tOrigin: t0 })).toBe(3_000);
+  });
+});
 
 describe("lecture côté téléphone (shared/playback)", () => {
   it("ne touche à rien sous 2 s de file", () => {

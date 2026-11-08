@@ -12,6 +12,21 @@
 /** Au-delà de cette file, ou de cet âge, on saute le segment plutôt que de dériver (§10). */
 export const MAX_QUEUE_MS = 8000;
 export const MAX_AGE_MS = 8000;
+
+/**
+ * Âge d'une voix à son arrivée, horloge serveur : compté depuis la FIN de la phrase dite
+ * (`tEnd`, D31). Compté depuis son premier mot, une phrase longue arrivait « trop vieille »
+ * alors que sa voix était prête 1 s après la fin : au test du 8/11, une phrase de 7,4 s
+ * (#19, 23 mots) a sauté entière à 7,9 s d'âge. Sans `tEnd` (question), le premier mot.
+ */
+export function arrivalAgeMs(nowServer: number, h: { tOrigin: number; tEnd?: number }): number {
+  return nowServer - (h.tEnd ?? h.tOrigin);
+}
+
+/** Le téléphone saute ce segment plutôt que de dériver : file trop longue ou phrase trop ancienne. */
+export function tooLate(queueMs: number, ageMs: number): boolean {
+  return queueMs > MAX_QUEUE_MS || ageMs > MAX_AGE_MS;
+}
 /** Cadence à laquelle la page réajuste sa vitesse de lecture. */
 export const RATE_EVERY_MS = 500;
 

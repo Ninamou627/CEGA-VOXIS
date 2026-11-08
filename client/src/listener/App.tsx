@@ -8,7 +8,7 @@
  */
 import { APP_NAME } from "../ui/brand";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { localRate as playbackRate, MAX_AGE_MS, MAX_QUEUE_MS, RATE_EVERY_MS } from "../../../shared/playback";
+import { arrivalAgeMs, localRate as playbackRate, RATE_EVERY_MS, tooLate } from "../../../shared/playback";
 import type { AudioHeader, FloorState, Lang, ReportKind, ServerEvent, StatsPayload } from "../../../shared/protocol";
 import { BIN_MS, envelope } from "../lib/envelope";
 import { QuestionRecorder } from "../lib/mic";
@@ -288,8 +288,7 @@ export function App() {
   function handleAudio(h: AudioHeader, bytes: Uint8Array) {
     const p = player.current;
     if (!p) return;
-    const age = Date.now() + clockOffset.current - h.tOrigin;
-    if (!pausedRef.current && (p.queueMs > MAX_QUEUE_MS || age > MAX_AGE_MS)) {
+    if (!pausedRef.current && tooLate(p.queueMs, arrivalAgeMs(Date.now() + clockOffset.current, h))) {
       setDropped((d) => d + 1);
       return;
     }

@@ -17,7 +17,7 @@
  */
 import WebSocket from "ws";
 import { decodeFrame } from "../../shared/framing";
-import { keptPauseMs, localRate, MAX_AGE_MS, MAX_QUEUE_MS, RATE_EVERY_MS } from "../../shared/playback";
+import { arrivalAgeMs, keptPauseMs, localRate, RATE_EVERY_MS, tooLate } from "../../shared/playback";
 import type { AudioHeader, ServerEvent } from "../../shared/protocol";
 import { adminCookie, originOf, roomCode } from "./session";
 
@@ -115,9 +115,8 @@ function connect(c: Client, attempt = 0) {
     if (c.lastSeq && header.seq > c.lastSeq + 1) c.gaps += header.seq - c.lastSeq - 1;
     c.lastSeq = header.seq;
 
-    // Même politique que la page apprenant : saut si la file ou l'âge dépassent 8 s.
-    const age = Date.now() + c.clockOffset - header.tOrigin;
-    if (queueOf(c) > MAX_QUEUE_MS || age > MAX_AGE_MS) {
+    // Même politique que la page apprenant : saut si la file, ou l'âge depuis la fin de la phrase, dépassent 8 s.
+    if (tooLate(queueOf(c), arrivalAgeMs(Date.now() + c.clockOffset, header))) {
       c.dropped++;
       return;
     }

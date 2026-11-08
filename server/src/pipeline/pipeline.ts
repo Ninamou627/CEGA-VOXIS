@@ -120,6 +120,8 @@ export interface PipelineEvents extends Record<string, unknown> {
     mime: string;
     durMs: number;
     tOrigin: number;
+    /** Fin prononcée du segment source : le téléphone compte l'âge de la voix depuis là (D31). */
+    tEnd: number;
     srcSeq: number;
     text: string;
     bytes: Uint8Array;
@@ -601,6 +603,7 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
         mime: a.mime,
         durMs: a.durMs,
         tOrigin: seg.tOrigin,
+        tEnd: seg.tEnd,
         srcSeq: seq,
         text,
         bytes: a.audio,
