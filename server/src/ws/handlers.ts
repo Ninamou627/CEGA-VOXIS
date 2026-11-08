@@ -12,6 +12,7 @@ import type { RawData, WebSocket, WebSocketServer } from "ws";
 import { encodeFrame } from "../../../shared/framing";
 import { ClientEventSchema, PROTOCOL_VERSION, type AudioHeader, type JoinEvent, type Lang, type ServerEvent } from "../../../shared/protocol";
 import { COOKIE_NAME, cookieValue, type Auth } from "../auth";
+import { clientAddress } from "../client-address";
 import type { Config } from "../config";
 import type { Metrics } from "../metrics";
 import type { Pipeline } from "../pipeline/pipeline";
@@ -121,7 +122,8 @@ export function attachWs(wss: WebSocketServer, ctx: WsContext): void {
     let joining = false;
     let questionAudio: Uint8Array[] = [];
     let questionMime = "audio/webm";
-    const remote = req.socket.remoteAddress;
+    // Derrière Caddy, l'adresse de l'appareil et non celle du proxy : le frein des codes compte par adresse.
+    const remote = clientAddress(req, config.TRUST_PROXY);
 
     const sendErr = (code: string, msg: string) => ws.send(JSON.stringify({ t: "error", code, msg } satisfies ServerEvent));
 

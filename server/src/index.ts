@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { registerAdmin } from "./admin";
 import { Auth } from "./auth";
 import { registerAuth } from "./auth-api";
+import { fastifyTrustProxy } from "./client-address";
 import { loadConfig, repoPath } from "./config";
 import { Db } from "./db";
 import { registerDownloads } from "./downloads";
@@ -67,8 +68,9 @@ let wss: WebSocketServer | undefined;
 const app = Fastify({
   logger: { level: cfg.LOG_LEVEL },
   // Derrière un reverse proxy : sans cela, req.ip est celle du proxy et le frein sur les
-  // essais de mot de passe s'appliquerait à tout le monde d'un coup.
-  trustProxy: cfg.TRUST_PROXY,
+  // essais de mot de passe s'appliquerait à tout le monde d'un coup. Un seul saut de confiance :
+  // la dernière entrée de X-Forwarded-For, comme pour le WebSocket (client-address.ts).
+  trustProxy: fastifyTrustProxy(cfg.TRUST_PROXY),
   serverFactory: (handler) => {
     const server = tls ? https.createServer(tls, handler) : http.createServer(handler);
     wss = new WebSocketServer({ server, path: "/ws", maxPayload: 8 * 1024 * 1024 });
