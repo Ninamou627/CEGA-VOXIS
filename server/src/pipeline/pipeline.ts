@@ -11,10 +11,10 @@ import type { Providers, SttStream, Word } from "../providers/types";
 import { TypedEmitter } from "../util/emitter";
 import { AudioClock } from "./audio-clock";
 import { PauseDetector } from "./pause";
-import { Tempo } from "./tempo";
+import { MAX_SPEED, Tempo } from "./tempo";
 import { LiveProsody } from "../prosody";
 import { VoiceProfile, type SegmentProsody } from "./voice-profile";
-import { CommitGate, DEFAULT_COMMIT, type CommitConfig, type Segment } from "./commit";
+import { CommitGate, DEFAULT_COMMIT, isTitle, joinSegments, type CommitConfig, type Segment } from "./commit";
 
 /** Réglages de l'administration relus en cours de séance. */
 export interface PipelineTuning {
@@ -32,6 +32,8 @@ export interface PipelineTuning {
   speechThresholdDb: number;
   /** Premier morceau d'une prise de parole coupé au premier blanc entre deux mots (D25). */
   quickStart: boolean;
+  /** Un morceau de trois mots ou moins part avec la suite, sauf vraie pause de l'orateur (D32). */
+  joinShort: boolean;
 }
 
 export interface PipelineConfig {
@@ -41,7 +43,7 @@ export interface PipelineConfig {
   tuning?: () => PipelineTuning;
 }
 
-const DEFAULT_TUNING: PipelineTuning = { commit: {}, contextSegments: 2, baseSpeed: 1, followTempo: true, speechThresholdDb: -35, quickStart: true };
+const DEFAULT_TUNING: PipelineTuning = { commit: {}, contextSegments: 2, baseSpeed: 1, followTempo: true, speechThresholdDb: -35, quickStart: true, joinShort: true };
 /**
  * Silence du formateur au-delà duquel on demande au STT de clore le tour en cours (D22) :
  * une phrase longue part en morceaux, chacun livré ~0,3 s après son dernier mot, au lieu
@@ -74,6 +76,20 @@ const QUICK_IDLE_MS = 1500;
  * deux cours enregistrés. Le formateur a repris avant 600 ms : la phrase continue.
  */
 const CONTINUE_PAUSE_MS = 600;
+/**
+ * Morceau court (D32) : trois mots ou moins, ou fini sur un titre (« Mr. »). Il attend la suite
+ * et part avec elle quand l'orateur a repris avant 600 ms — la pause qui achève une phrase
+ * (D27) —, 1,5 s après un titre, dont le nom suit presque toujours ; sinon, il part seul. Le
+ * 9/11/2026, 27 à 43 % des segments faisaient trois mots ou moins, dits chacun à part :
+ * « Euh, bonjour, Monsieur, » puis « Président, ». Rejoué sur les quatre séances du 8 et du
+ * 9/11 : 43 morceaux courts sur 111 segments → 25 ; 11 segments partent plus tard, de 2,6 s en
+ * médiane, 3,9 s au plus.
+ */
+const SHORT_WORDS = 3;
+const JOIN_PAUSE_MS = CONTINUE_PAUSE_MS;
+const TITLE_PAUSE_MS = 1500;
+/** Un morceau retenu n'attend jamais plus : au-delà, c'est la suite qui tarde (délai de coupe, 4 s). */
+const HOLD_MAX_MS = 4000;
 /** Un segment qui finit sur l'un de ces mots n'est pas fini, quelle que soit la pause. */
 const DANGLING = new Set([
   "and", "or", "but", "because", "so", "the", "a", "an", "of", "to", "in", "on", "with", "for", "that", "which", "who",
@@ -120,8 +136,6 @@ export interface PipelineEvents extends Record<string, unknown> {
     mime: string;
     durMs: number;
     tOrigin: number;
-    /** Fin prononcée du segment source : le téléphone compte l'âge de la voix depuis là (D31). */
-    tEnd: number;
     srcSeq: number;
     text: string;
     bytes: Uint8Array;
@@ -167,6 +181,8 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
   private live: LiveProsody;
   /** Ses habitudes depuis le démarrage du micro, auxquelles chaque segment se compare. */
   private voice: VoiceProfile;
+  /** Morceau court qui attend la suite (D32) ; `since` : depuis quand, pour ne pas attendre sans fin. */
+  private held?: { seg: Segment; stream: number; since: number };
 
   constructor(
     private readonly providers: Providers,
@@ -215,8 +231,8 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
    * Rattrapage de la dérive (§09 de la revue), quand la voix ne suit pas le débit du formateur.
    * La langue cible est plus longue que la source ; sans parade, la file des clients grandit
    * dès que l'orateur ne fait pas de pause. Quand la file médiane mesurée dans les acks
-   * s'allonge, la voix accélère : inaudible sous 1,15, temporaire au-delà. Le plafond dur
-   * (8 s, côté client) reste le dernier recours.
+   * s'allonge, la voix accélère, jusqu'au plafond de la synthèse (×1,1, D32). Le téléphone ne
+   * saute plus rien : le reste du retard se résorbe pendant les pauses de l'orateur.
    */
   private speedForQueue(queueMs: number | null): number {
     if (queueMs == null || queueMs < 2000) return 1;
@@ -242,7 +258,10 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     this.warmProviders(true);
     this.warmTimer = setInterval(() => this.warmProviders(false), WARM_EVERY_MS);
     await this.openStt();
-    this.tickTimer = setInterval(() => this.handle(this.gate.tick()), 100);
+    this.tickTimer = setInterval(() => {
+      this.handle(this.gate.tick());
+      this.checkHeld();
+    }, 100);
     this.emitStatus();
   }
 
@@ -267,6 +286,7 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     // Ce qui restait de la dernière phrase part ; le prochain démarrage du micro repart de
     // zéro, sans hériter des mots (ni de leurs instants) de cette prise.
     this.handle(this.gate.onUtteranceEnd());
+    this.releaseHeld();
     await s?.close();
     this.emit("mic", { on: false });
     this.emitStatus();
@@ -308,6 +328,7 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
           // Session STT perdue : on le dit à la salle, et on rouvre avec un léger recul.
           this.stt = undefined;
           this.handle(this.gate.onUtteranceEnd());
+          this.releaseHeld();
           this.setDegraded("stt-lost", `reconnaissance vocale interrompue — ${error.message.slice(0, 160)}`);
           this.scheduleSttRestart();
         },
@@ -415,6 +436,7 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     this.muted = muted;
     if (muted) {
       // Ce qui a été dit part maintenant, au lieu d'attendre la reprise.
+      this.releaseHeld();
       if (this.pause.speechSinceCut > 0) {
         this.pause.cut();
         this.stt?.forceEndpoint?.();
@@ -438,7 +460,53 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
   // ---------------------------------------------------------------------------
 
   private handle(segments: Segment[]) {
-    for (const s of segments) this.dispatch(s);
+    for (const s of segments) this.join(s);
+  }
+
+  /** Un segment sort du découpage : un morceau court attend la suite, le reste part (D32). */
+  private join(seg: Segment) {
+    const h = this.held;
+    let since = Date.now();
+    if (h) {
+      this.held = undefined;
+      if (h.stream === this.streams && seg.tStart - h.seg.tEnd < this.joinPauseMs(h.seg)) {
+        seg = joinSegments(h.seg, seg);
+        since = h.since;
+      } else {
+        this.dispatch(h.seg);
+      }
+    }
+    if (this.holds(seg)) this.held = { seg, stream: this.streams, since };
+    else this.dispatch(seg);
+  }
+
+  private holds(seg: Segment): boolean {
+    if (!this.tuning.joinShort || !this.started || this.muted) return false;
+    return seg.words.length <= SHORT_WORDS || this.endsOnTitle(seg);
+  }
+
+  private endsOnTitle(seg: Segment): boolean {
+    const last = seg.words.at(-1)?.text;
+    return last != null && isTitle(last);
+  }
+
+  private joinPauseMs(seg: Segment): number {
+    return this.endsOnTitle(seg) ? TITLE_PAUSE_MS : JOIN_PAUSE_MS;
+  }
+
+  /** Le morceau retenu part seul : l'orateur a vraiment marqué une pause, ou la suite tarde. */
+  private checkHeld() {
+    const h = this.held;
+    if (!h) return;
+    if (h.stream !== this.streams || this.muted || h.seg.endPos == null || Date.now() - h.since >= HOLD_MAX_MS) return this.releaseHeld();
+    const p = this.pause.pauseAfter(h.seg.endPos);
+    if (p && p.ms >= this.joinPauseMs(h.seg)) this.releaseHeld();
+  }
+
+  private releaseHeld() {
+    const h = this.held;
+    this.held = undefined;
+    if (h) this.dispatch(h.seg);
   }
 
   private dispatch(seg: Segment) {
@@ -496,6 +564,7 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
       gapMs,
       words: seg.words.length,
       reason: seg.reason,
+      joined: seg.joined ?? 1,
       confidence: confidence != null ? Math.round(confidence * 1000) / 1000 : null,
       voice: prosody
         ? {
@@ -586,7 +655,7 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
       } else {
         // La vitesse choisie par l'administration, et le rattrapage de la dérive par-dessus.
         const drift = this.speedForQueue(queueMs);
-        speed = Math.min(1.2, Math.max(0.7, this.tuning.baseSpeed * drift));
+        speed = Math.min(MAX_SPEED, Math.max(0.7, this.tuning.baseSpeed * drift));
       }
       if (speed !== this.speed) {
         this.speed = speed;
@@ -603,7 +672,6 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
         mime: a.mime,
         durMs: a.durMs,
         tOrigin: seg.tOrigin,
-        tEnd: seg.tEnd,
         srcSeq: seq,
         text,
         bytes: a.audio,

@@ -30,12 +30,14 @@ class FakeStt implements SttProvider {
 const mt: MtProvider = { name: "fake-mt", translate: async (r) => `fr:${r.text}` };
 const tts: TtsProvider = { name: "fake-tts", synthesize: async () => ({ audio: new Uint8Array(1), mime: "audio/mpeg", durMs: 1000 }) };
 
-function room(finalWords = true) {
+/** `joinShort` : morceaux courts attachés à la suite (D32) ; coupé ailleurs, où chaque segment se suit à l'unité. */
+function room(finalWords = true, joinShort = false) {
   const stt = new FakeStt(finalWords);
   const metrics = new Metrics();
-  const pipeline = new Pipeline({ stt, mt, tts }, { srcLang: "en", targetLangs: ["fr"], sampleRate: 16000 }, metrics);
+  const tuning = () => ({ commit: {}, contextSegments: 2, baseSpeed: 1, followTempo: true, speechThresholdDb: -35, quickStart: true, joinShort });
+  const pipeline = new Pipeline({ stt, mt, tts }, { srcLang: "en", targetLangs: ["fr"], sampleRate: 16000, tuning }, metrics);
   const commits: { seq: number; text: string; tOrigin: number; tEnd: number; reason: string }[] = [];
-  const audio: { seq: number; tOrigin: number; tEnd: number }[] = [];
+  const audio: { seq: number; tOrigin: number }[] = [];
   pipeline.on("src.commit", (e) => commits.push(e));
   pipeline.on("audio", (e) => audio.push(e));
   /** Le formateur parle : une trame de 100 ms reçue toutes les 100 ms. */
@@ -73,7 +75,6 @@ describe("Pipeline — latence fin de phrase → voix (D19)", () => {
 
     await vi.advanceTimersByTimeAsync(10); // traduction et synthèse (simulées, immédiates)
     expect(r.audio).toHaveLength(1);
-    expect(r.audio[0].tEnd).toBe(T0 + 800); // le téléphone compte l'âge de la voix depuis là (D31)
 
     await vi.advanceTimersByTimeAsync(290); // le téléphone commence à jouer 300 ms après le figement
     const { e2eMs, endMs, startMs } = r.metrics.ack("p1", r.audio[0].seq, r.audio[0].tOrigin, 0);
@@ -216,7 +217,7 @@ function forcingRoom(opts: { quickStart?: boolean; ttsDurMs?: number } = {}) {
       },
     };
     const voice: TtsProvider = { name: "fake-tts", synthesize: async () => ({ audio: new Uint8Array(1), mime: "audio/mpeg", durMs: opts.ttsDurMs ?? 1000 }) };
-    const tuning = () => ({ commit: {}, contextSegments: 2, baseSpeed: 1, followTempo: true, speechThresholdDb: -35, quickStart: opts.quickStart ?? false });
+    const tuning = () => ({ commit: {}, contextSegments: 2, baseSpeed: 1, followTempo: true, speechThresholdDb: -35, quickStart: opts.quickStart ?? false, joinShort: false });
     const pipeline = new Pipeline({ stt, mt, tts: voice }, { srcLang: "en", targetLangs: ["fr"], sampleRate: 16000, tuning }, new Metrics());
     const push = async (frames: number, loud: boolean) => {
       for (let i = 0; i < frames; i++) {
@@ -434,7 +435,7 @@ describe("Pipeline — la voix suit le débit du formateur (D26)", () => {
         return { audio: new Uint8Array(1), mime: "audio/mpeg", durMs: Math.round((r.text.length / 17 / (r.speed ?? 1)) * 1000) };
       },
     };
-    const tuning = () => ({ commit: {}, contextSegments: 2, baseSpeed: 1, followTempo, speechThresholdDb: -35, quickStart: false });
+    const tuning = () => ({ commit: {}, contextSegments: 2, baseSpeed: 1, followTempo, speechThresholdDb: -35, quickStart: false, joinShort: false });
     const pipeline = new Pipeline({ stt, mt, tts: voice }, { srcLang: "en", targetLangs: ["fr"], sampleRate: 16000, tuning }, new Metrics());
     const audio: { pauseMs?: number }[] = [];
     pipeline.on("audio", (e) => audio.push(e));
@@ -545,5 +546,80 @@ describe("Pipeline — phrase finie ou phrase qui continue (D27)", () => {
     await vi.advanceTimersByTimeAsync(10);
     expect(r.fr).toEqual(["fr:Good morning the,"]);
     await r.pipeline.stop();
+  });
+});
+
+describe("Pipeline — morceaux courts attachés à la suite (D32)", () => {
+  function joinRoom() {
+    const r = room(true, true);
+    const silence = async (frames: number) => {
+      for (let i = 0; i < frames; i++) {
+        await vi.advanceTimersByTimeAsync(100);
+        r.pipeline.pushAudio(FRAME);
+      }
+    };
+    /** Texte définitif d'un tour : des mots de 200 ms bout à bout à partir de `at` (position du flux). */
+    const final = (at: number, text: string) =>
+      r.stt.ev!.onPartial({ words: text.split(" ").map((t, i) => ({ text: t, startMs: at + i * 200, endMs: at + (i + 1) * 200, isFinal: true })), isFinal: true });
+    return { ...r, silence, final };
+  }
+
+  it("un morceau de trois mots ou moins part avec la suite quand l'orateur reprend aussitôt", async () => {
+    const r = joinRoom();
+    await r.pipeline.start();
+    await r.speak(10);
+    r.final(400, "Um, hello,");
+    await r.speak(10); // il continue de parler
+    expect(r.commits).toHaveLength(0);
+    r.final(900, "how are you today?");
+    expect(r.commits.map((c) => c.text)).toEqual(["Um, hello, how are you today?"]);
+    await r.pipeline.stop();
+  });
+
+  it("après une vraie pause de l'orateur, le morceau court part seul", async () => {
+    const r = joinRoom();
+    await r.pipeline.start();
+    await r.speak(15);
+    r.final(1300, "Hello.");
+    await r.silence(4); // 0,4 s : on ne sait pas encore
+    expect(r.commits).toHaveLength(0);
+    await r.silence(4); // 0,8 s : la phrase était finie
+    expect(r.commits.map((c) => c.text)).toEqual(["Hello."]);
+    await r.pipeline.stop();
+  });
+
+  it("après « Mr. », le nom est attendu jusqu'à 1,5 s de silence", async () => {
+    const r = joinRoom();
+    await r.pipeline.start();
+    await r.speak(15);
+    r.final(900, "Um, hello, Mr.");
+    await r.silence(9); // 0,9 s : la pause de l'étudiant, le 9/11
+    expect(r.commits).toHaveLength(0);
+    await r.speak(5);
+    r.final(2400, "President.");
+    expect(r.commits.map((c) => c.text)).toEqual(["Um, hello, Mr. President."]);
+    await r.pipeline.stop();
+  });
+
+  it("un morceau retenu n'attend jamais plus de 4 s", async () => {
+    const r = joinRoom();
+    await r.pipeline.start();
+    await r.speak(15);
+    r.final(1300, "Uh,");
+    await r.speak(35); // il parle, mais rien n'est encore reconnu
+    expect(r.commits).toHaveLength(0);
+    await r.speak(10);
+    expect(r.commits.map((c) => c.text)).toEqual(["Uh,"]);
+    await r.pipeline.stop();
+  });
+
+  it("un morceau retenu part quand le formateur arrête le micro : aucun mot perdu", async () => {
+    const r = joinRoom();
+    await r.pipeline.start();
+    await r.speak(15);
+    r.final(1100, "Thank you.");
+    expect(r.commits).toHaveLength(0);
+    await r.pipeline.stop();
+    expect(r.commits.map((c) => c.text)).toEqual(["Thank you."]);
   });
 });

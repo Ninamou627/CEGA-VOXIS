@@ -18,11 +18,8 @@ export interface AudioState {
   /** De l'audio est en cours de lecture (file non vide). */
   playing: boolean;
   queueMs: number;
-  dropped: number;
   /** Bout-en-bout p50 mesuré par la salle (ms), ou null avant la première mesure. */
   e2eMs: number | null;
-  /** Accélération de la lecture par le téléphone ; > 1 = il rattrape son retard. */
-  rate: number;
 }
 
 export interface QuestionState {
@@ -101,9 +98,7 @@ export function Listen(p: ListenProps) {
           ? { icon: "record_voice_over", text: "Un apprenant pose une question", cls: "text-tertiary" }
           : a.paused
             ? { icon: "pause_circle", text: "Écoute en pause", cls: "text-on-surface-variant" }
-            : a.rate > 1
-              ? { icon: "speed", text: `Rattrapage du retard ×${a.rate.toFixed(2).replace(".", ",")}`, cls: "text-tertiary" }
-              : { icon: "headphones", text: "Traduction en direct active", cls: "text-secondary animate-pulse" };
+            : { icon: "headphones", text: "Traduction en direct active", cls: "text-secondary animate-pulse" };
 
   const queueTone = a.queueMs > 5000 ? "text-error" : a.queueMs > 2500 ? "text-tertiary" : "text-on-surface-variant";
   const lagging = a.queueMs > 2500;
@@ -210,9 +205,7 @@ export function Listen(p: ListenProps) {
           <div className="flex items-center gap-1.5 bg-surface-container px-2.5 py-1 rounded-full whitespace-nowrap">
             <span className={`w-2 h-2 rounded-full bg-secondary ${live ? "animate-ping" : "opacity-40"}`}></span>
             <span className="font-metric-mono-sm text-metric-mono-sm text-secondary">{a.e2eMs != null ? fmtMs(a.e2eMs) : "—"}</span>
-            <span className="font-body-sm text-body-sm text-on-surface-variant">
-              {a.dropped > 0 ? `Décalage · ${a.dropped} sauté${a.dropped > 1 ? "s" : ""}` : "Décalage salle"}
-            </span>
+            <span className="font-body-sm text-body-sm text-on-surface-variant">Décalage salle</span>
           </div>
           {lagging ? (
             <button type="button" onClick={p.onResync} className={`flex items-center gap-1 whitespace-nowrap ${queueTone} active:opacity-70`}>

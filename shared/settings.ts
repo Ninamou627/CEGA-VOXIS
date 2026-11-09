@@ -45,6 +45,11 @@ const SpeechSchema = z
      * la première pause : la salle entend plus tôt, sur un morceau plus court (D25).
      */
     quickStart: z.boolean(),
+    /**
+     * Morceau de trois mots ou moins (« Mr. » | « President. ») envoyé avec la suite, sauf vraie
+     * pause de l'orateur : la voix dit une phrase au lieu de deux bribes, un peu plus tard (D32).
+     */
+    joinShort: z.boolean(),
     /** Vocabulaire de la formation, séparé par des virgules. */
     keyterms: z.string().max(4000),
     /** Description de la séance pour la reconnaissance (en anglais, ≤ 1500 caractères). */

@@ -3,12 +3,12 @@
  * deux boutons flottants : poser une question (studio par-dessus) et signaler un
  * problème (feuille par le bas). Le lecteur et le WebSocket vivent ici.
  *
- * Tout ce qui touche à la dérive est ici : file mesurée, abandon des segments
- * trop vieux, « revenir au direct », réécoute des 30 dernières secondes.
+ * Tout ce qui touche à la dérive est ici : file mesurée, « revenir au direct »,
+ * réécoute des 30 dernières secondes. Rien n'est sauté ni accéléré (D32) : la voix
+ * est jouée en entier, à sa vitesse.
  */
 import { APP_NAME } from "../ui/brand";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { arrivalAgeMs, localRate as playbackRate, RATE_EVERY_MS, tooLate } from "../../../shared/playback";
 import type { AudioHeader, FloorState, Lang, ReportKind, ServerEvent, StatsPayload } from "../../../shared/protocol";
 import { BIN_MS, envelope } from "../lib/envelope";
 import { QuestionRecorder } from "../lib/mic";
@@ -38,6 +38,8 @@ const ALERT_EVERY_MS = 90_000;
 /** Au-delà, le décalage ne s'explique plus par le fonctionnement normal (D7). */
 const TROUBLE_E2E_MS = 4000;
 const TROUBLE_QUEUE_MS = 5000;
+/** Cadence à laquelle la file affichée se met à jour. */
+const QUEUE_EVERY_MS = 500;
 
 type Hello = Extract<ServerEvent, { t: "hello" }>;
 type AskStatus = "idle" | "sending" | "done" | "failed";
@@ -58,8 +60,8 @@ export function App() {
   const [gateError, setGateError] = useState<string>();
   const [lang, setLang] = useState<Lang>((params.get("lang") as Lang) ?? "fr");
   // Lecteur média par défaut, partout : validé sur iPhone 13 Pro Max / iOS 26 écran
-  // verrouillé, insensible au bouton silence, et il porte le playbackRate à hauteur
-  // préservée. Web Audio reste disponible pour comparer sur ordinateur.
+  // verrouillé, insensible au bouton silence. Web Audio reste disponible pour comparer
+  // sur ordinateur.
   const [playerKind, setPlayerKind] = useState<PlayerKind>("element");
   const [phase, setPhase] = useState<"join" | "live">("join");
   /** Ce qui est ouvert par-dessus l'écoute : rien, le studio, la feuille de signalement. */
@@ -72,7 +74,6 @@ export function App() {
   const [floor, setFloor] = useState<FloorState>({ state: "lecturer" });
   const [degraded, setDegraded] = useState<{ mode: string; reason: string }>();
   const [queueMs, setQueueMs] = useState(0);
-  const [dropped, setDropped] = useState(0);
   const [asking, setAsking] = useState(false);
   const [askStatus, setAskStatus] = useState<AskStatus>("idle");
   const [askPaused, setAskPaused] = useState(false);
@@ -85,7 +86,6 @@ export function App() {
   const [muted, setMuted] = useState(false);
   const [volume, setVolume] = useState(100);
   const [showText, setShowText] = useState(true);
-  const [localRate, setLocalRate] = useState(1);
   const [alert, setAlert] = useState<string>();
   const [reportSent, setReportSent] = useState(false);
   /** Passage figé à l'ouverture de la feuille : on signale ce qu'on a entendu, pas la suite. */
@@ -98,7 +98,6 @@ export function App() {
   /** Enveloppes d'amplitude par segment, pour l'onde qui suit la voix. */
   const envelopes = useRef(new Map<number, Float32Array>());
   const recorder = useRef<QuestionRecorder>(undefined);
-  const serverSpeed = useRef(1);
   // Lus depuis les rappels du WebSocket et du lecteur, qui ne voient pas l'état React.
   const helloRef = useRef<Hello>(undefined);
   const askStatusRef = useRef<AskStatus>("idle");
@@ -116,14 +115,8 @@ export function App() {
   useEffect(() => {
     const id = setInterval(() => {
       const p = player.current;
-      if (!p) return;
-      const q = p.queueMs;
-      setQueueMs(Math.round(q));
-      // Parade locale immédiate (§09), la même que celle des apprenants simulés (shared/playback).
-      const rate = playbackRate(q, serverSpeed.current);
-      p.setRate(rate);
-      setLocalRate(rate);
-    }, RATE_EVERY_MS);
+      if (p) setQueueMs(Math.round(p.queueMs));
+    }, QUEUE_EVERY_MS);
     // Écran maintenu allumé pendant l'écoute (le lecteur média joue même écran verrouillé).
     const stop = keepWakeLockAlive();
     return () => {
@@ -154,9 +147,7 @@ export function App() {
         ? "La traduction a du retard — signalez-le"
         : lines[lines.length - 1]?.untranslated
           ? "Un passage n'a pas été traduit"
-          : dropped > 0 && queueMs > TROUBLE_QUEUE_MS / 2
-            ? "Des passages ont été sautés"
-            : undefined;
+          : undefined;
 
   useEffect(() => {
     troubleRef.current = trouble;
@@ -254,7 +245,6 @@ export function App() {
         break;
       case "stats":
         setStats(e.stats);
-        serverSpeed.current = e.stats.pipeline.speed;
         break;
       case "settings":
         applyDefaultVolume(e.settings.listenerVolume);
@@ -288,10 +278,6 @@ export function App() {
   function handleAudio(h: AudioHeader, bytes: Uint8Array) {
     const p = player.current;
     if (!p) return;
-    if (!pausedRef.current && tooLate(p.queueMs, arrivalAgeMs(Date.now() + clockOffset.current, h))) {
-      setDropped((d) => d + 1);
-      return;
-    }
     const meta: SegmentMeta = { seq: h.seq, tOrigin: h.tOrigin, durMs: h.durMs, text: h.text, lang: h.lang, pauseMs: h.pauseMs };
     envelope(bytes)
       .then((env) => {
@@ -512,8 +498,6 @@ export function App() {
   }
 
   const floorBusyByOther = floor.state === "question" && floor.who !== hello?.participantId;
-  // Le rattrapage du téléphone lui-même : la vitesse de synthèse suit désormais le formateur (D26).
-  const rate = localRate;
   const studioPhase: StudioPhase = asking ? (askPaused ? "paused" : "recording") : askStatus;
   // Le studio est un écran plein : flèche retour dans l'en-tête, pas de boutons flottants.
   const studio = sheet === "ask";
@@ -554,7 +538,7 @@ export function App() {
             langs={hello?.langs ?? ALL_LANGS}
             onLang={changeLang}
             degraded={degraded?.mode}
-            audio={{ paused, muted, volume, playing: queueMs > 0, queueMs, dropped, e2eMs: stats?.e2eP50 ?? null, rate }}
+            audio={{ paused, muted, volume, playing: queueMs > 0, queueMs, e2eMs: stats?.e2eP50 ?? null }}
             waveSample={waveSample}
             onPause={togglePause}
             onMute={toggleMute}

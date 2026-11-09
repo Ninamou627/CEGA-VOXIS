@@ -73,6 +73,17 @@ describe("CommitGate — règles de coupe", () => {
     expect(g.pendingText).toBe("Now");
   });
 
+  it("ne coupe pas après un titre abrégé : le nom suit (D32)", () => {
+    const { g } = gate();
+    g.onPartial(W("Um, hello, Mr. President. Thank"));
+    const r = g.onPartial(W("Um, hello, Mr. President. Thank you"));
+    expect(r.segments.map((s) => [s.text, s.reason])).toEqual([["Um, hello, Mr. President.", "punctuation"]]);
+    const b = gate().g;
+    b.onPartial(W("Dr. Smith is"));
+    expect(b.onPartial(W("Dr. Smith is here")).segments).toEqual([]);
+    expect(b.pendingText).toBe("Dr. Smith is");
+  });
+
   it("coupe sur une virgule à partir de clauseWords", () => {
     const { g } = gate({ clauseWords: 5 });
     const hyp = "one two three four five, six seven";

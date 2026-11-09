@@ -88,7 +88,6 @@ export function attachWs(wss: WebSocketServer, ctx: WsContext): void {
       mime: e.mime,
       durMs: e.durMs,
       tOrigin: e.tOrigin,
-      tEnd: e.tEnd,
       srcSeq: e.srcSeq,
       text: e.text,
       kind: "translation",

@@ -227,7 +227,7 @@ export function computeAlerts(sig: Signals): Alert[] {
   if (end != null && end > 1000)
     out.push({ id: "e2e", severity: end > 2000 ? "crit" : "warn", title: `Latence élevée : ${delay(end)}`, detail: "De la fin de la phrase à la voix, médiane sur la dernière minute ; la cible est 1 s.", to: "supervision" });
   const q = st?.queueMaxMs ?? null;
-  if (q != null && q > 5000) out.push({ id: "drift", severity: "warn", title: `Dérive : un téléphone a ${delay(q)} de retard en file`, detail: "Au-delà de 8 s, les segments sont sautés.", to: "supervision", stage: "tts" });
+  if (q != null && q > 5000) out.push({ id: "drift", severity: "warn", title: `Dérive : un téléphone a ${delay(q)} de retard en file`, detail: "Rien n'est sauté : le retard se résorbe pendant les pauses de l'orateur, ou l'apprenant revient au direct.", to: "supervision", stage: "tts" });
 
   for (const stage of ["stt", "mt", "tts"] as const) {
     const e = sig.overview?.lastErrors[stage];

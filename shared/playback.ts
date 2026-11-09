@@ -3,48 +3,17 @@
  * apprenants simulés du test de charge (`npm run load`), pour que la latence mesurée soit
  * celle qu'entend un vrai téléphone.
  *
- * Mesuré le 14/10/2026 (D21) : la file ne vient pas d'une dérive (avec DeepL, la voix
- * française dure ×0,93 à ×1,04 la parole anglaise), mais d'un segment rapide qui attend
- * derrière un segment lent. Accélérer davantage la lecture n'y gagne que 0,1 à 0,5 s ;
- * la politique ci-dessous reste donc celle qui était en place.
+ * Le téléphone ne saute plus rien et n'accélère plus rien (D32). Le 9/11/2026, l'apprenant
+ * entendait une voix « dégradée, pas fluide » et des phrases perdues :
+ *   - les trois voix jamais jouées des séances du 8/11 avaient été livrées 8 à 12 s après
+ *     la fin de la phrase (reconnaissance en retard), et le téléphone jetait toute voix de
+ *     plus de 8 s ;
+ *   - il étirait la voix (×1,08 à ×1,25, hauteur préservée) dès que sa file dépassait 2 s,
+ *     en y comptant la voix en cours : 39 % du temps d'écoute étiré, dont la moitié sans
+ *     rien derrière.
+ * Le retard se résorbe désormais pendant les pauses de l'orateur ; « Revenir au direct »
+ * reste le seul moyen de vider la file.
  */
-
-/** Au-delà de cette file, ou de cet âge, on saute le segment plutôt que de dériver (§10). */
-export const MAX_QUEUE_MS = 8000;
-export const MAX_AGE_MS = 8000;
-
-/**
- * Âge d'une voix à son arrivée, horloge serveur : compté depuis la FIN de la phrase dite
- * (`tEnd`, D31). Compté depuis son premier mot, une phrase longue arrivait « trop vieille »
- * alors que sa voix était prête 1 s après la fin : au test du 8/11, une phrase de 7,4 s
- * (#19, 23 mots) a sauté entière à 7,9 s d'âge. Sans `tEnd` (question), le premier mot.
- */
-export function arrivalAgeMs(nowServer: number, h: { tOrigin: number; tEnd?: number }): number {
-  return nowServer - (h.tEnd ?? h.tOrigin);
-}
-
-/** Le téléphone saute ce segment plutôt que de dériver : file trop longue ou phrase trop ancienne. */
-export function tooLate(queueMs: number, ageMs: number): boolean {
-  return queueMs > MAX_QUEUE_MS || ageMs > MAX_AGE_MS;
-}
-/** Cadence à laquelle la page réajuste sa vitesse de lecture. */
-export const RATE_EVERY_MS = 500;
-
-/** Débit effectif maximal (synthèse × lecture locale) : au-delà, la voix devient difficile à suivre. */
-export const MAX_EFFECTIVE_RATE = 1.3;
-
-/**
- * Vitesse de lecture locale (hauteur préservée), parade immédiate contre la file sans
- * attendre que l'audio déjà synthétisé soit passé. `queueMs` : audio restant à jouer,
- * segment en cours compris, à la vitesse courante ; `serverSpeed` : la vitesse de synthèse
- * du dernier segment. Depuis que la synthèse suit le débit du formateur (D26), elle n'est plus
- * une réponse à la file : le téléphone rattrape sa propre file, sans que le débit effectif
- * dépasse ×1,3.
- */
-export function localRate(queueMs: number, serverSpeed: number): number {
-  const target = queueMs > 6000 ? 1.25 : queueMs > 4000 ? 1.15 : queueMs > 2000 ? 1.08 : 1;
-  return Math.max(1, Math.round(Math.min(target, MAX_EFFECTIVE_RATE / (serverSpeed || 1)) * 100) / 100);
-}
 
 /** Silence du formateur à partir duquel une pause se retrouve à l'écoute. */
 const KEPT_PAUSE_FROM_MS = 400;

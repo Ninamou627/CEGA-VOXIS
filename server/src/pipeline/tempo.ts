@@ -13,21 +13,28 @@
  * sautait d'une borne à l'autre : sur un discours réel le 07/11/2026, 75 % des segments étaient
  * dits à ×0,85 ou à ×1,2, et 23 enchaînements sur 56 changeaient de 0,2 ou plus, ce que l'on
  * entend comme une voix qui accélère sans raison. Elle ne bouge plus que de 0,05 d'un segment
- * au suivant, entre ×1 et ×1,2, et une prise de parole repart entre ×1,05 et ×1,15 : rejoué sur
- * les deux séances, plus aucun saut de 0,2, pour une latence à peu près inchangée.
+ * au suivant, et une prise de parole repart entre ×1,05 et ×1,1 : rejoué sur les deux séances,
+ * plus aucun saut de 0,2, pour une latence à peu près inchangée.
+ *
+ * Plafond ×1,1 (D32, au lieu de ×1,2) : le 9/11/2026, l'apprenant trouvait la voix pressée,
+ * « pas fluide » ; un tiers de la voix était dit à ×1,15 ou plus. Le téléphone n'accélère plus
+ * de son côté : ×1,1 est désormais le débit le plus rapide qu'il entende.
  */
 import type { Lang } from "../../../shared/protocol";
 
 /** Débit de départ, avant le premier segment de la séance (ElevenLabs, français, 19/10/2026). */
 export const DEFAULT_CPS = 17;
-/** ElevenLabs accepte 0,7 → 1,2. Sous ×1, la voix allongeait la file des téléphones (D30). */
+/**
+ * ElevenLabs accepte 0,7 → 1,2. Sous ×1, la voix allongeait la file des téléphones (D30) ;
+ * au-dessus de ×1,1, elle s'entend pressée (D32).
+ */
 export const MIN_SPEED = 1;
-export const MAX_SPEED = 1.2;
+export const MAX_SPEED = 1.1;
 /** Écart le plus grand entre deux segments qui se suivent (D30). */
 export const MAX_STEP = 0.05;
-/** Une prise de parole repart près du milieu de la plage, sans hériter de la précédente. */
+/** Une prise de parole repart près du haut de la plage, sans hériter de la précédente. */
 const TURN_MIN = 1.05;
-const TURN_MAX = 1.15;
+const TURN_MAX = 1.1;
 /** Plancher d'ElevenLabs, quand le réglage de l'administration descend sous ×1. */
 const PROVIDER_MIN = 0.7;
 /** Part du retard déjà en file que le segment doit résorber. */

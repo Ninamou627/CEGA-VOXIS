@@ -43,12 +43,6 @@ export interface Player {
   /** Volume d'écoute, 0 à 1. iOS l'ignore (les boutons du téléphone font foi) ; `setMuted` reste le vrai silence. */
   setVolume(volume: number): void;
   /**
-   * Vitesse de lecture locale (1 = normale). Parade immédiate contre la dérive, sans
-   * attendre le serveur. Seul ElementPlayer l'applique (hauteur préservée) ; sur
-   * Web Audio, `playbackRate` transposerait la voix.
-   */
-  setRate(rate: number): void;
-  /**
    * Haut-parleur ou casque de sortie (`""` = celui du système). Un formateur branche un
    * casque fermé et laisse la salle sur les haut-parleurs : il doit pouvoir dire où va le
    * retour. Sans effet là où le navigateur ne sait pas choisir (voir `canChooseOutput`).
@@ -189,10 +183,6 @@ export class WebAudioPlayer implements Player {
     if (this.gain) this.gain.gain.value = this.muted ? 0 : this.volume;
   }
 
-  setRate(_rate: number): void {
-    /* volontairement inerte : voir l'interface */
-  }
-
   /** Web Audio sait choisir sa sortie depuis Chrome 110 ; ailleurs, on laisse le système. */
   async setOutputDevice(deviceId: string): Promise<void> {
     const ctx = this.ctx as (AudioContext & Partial<WithSink>) | undefined;
@@ -248,7 +238,6 @@ export class ElementPlayer implements Player {
   private current?: { meta: SegmentMeta; startedAt: number };
   private muted = false;
   private volume = 1;
-  private rate = 1;
   private sinkId = "";
 
   /** Les deux éléments alternent : la sortie choisie s'applique aux deux. */
@@ -259,13 +248,13 @@ export class ElementPlayer implements Player {
 
   get queueMs(): number {
     let ms = this.queue.reduce((a, q) => a + q.meta.durMs, 0);
-    if (this.current) ms += Math.max(0, this.current.meta.durMs - (performance.now() - this.current.startedAt) * this.rate);
-    return ms / this.rate;
+    if (this.current) ms += Math.max(0, this.current.meta.durMs - (performance.now() - this.current.startedAt));
+    return ms;
   }
 
   get playing(): Playing | undefined {
     const c = this.current;
-    return c ? { meta: c.meta, elapsedMs: (performance.now() - c.startedAt) * this.rate } : undefined;
+    return c ? { meta: c.meta, elapsedMs: performance.now() - c.startedAt } : undefined;
   }
 
   async unlock(): Promise<void> {
@@ -321,7 +310,6 @@ export class ElementPlayer implements Player {
     this.i ^= 1;
     el.muted = this.muted;
     el.volume = this.volume;
-    el.playbackRate = this.rate;
     if (el.src !== item.url) el.src = item.url;
     el.onplaying = () => {
       this.current = { meta: item.meta, startedAt: performance.now() };
@@ -372,14 +360,6 @@ export class ElementPlayer implements Player {
   setVolume(volume: number): void {
     this.volume = Math.min(1, Math.max(0, volume));
     for (const el of this.els) el.volume = this.volume;
-  }
-
-  setRate(rate: number): void {
-    this.rate = rate;
-    for (const el of this.els) {
-      (el as HTMLMediaElement & { preservesPitch?: boolean }).preservesPitch = true;
-      el.playbackRate = rate;
-    }
   }
 
   destroy(): void {

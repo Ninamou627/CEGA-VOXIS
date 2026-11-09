@@ -868,6 +868,51 @@ quand même (vers l'anglais, vérifié).
 texte vraiment dit. Prochaine séance : un texte connu lu au micro, pour mesurer le vrai taux
 d'erreur de la reconnaissance en direct, et vérifier qu'une phrase de plus de 7 s est jouée.
 
+## D32 — Rien n'est sauté, rien n'est accéléré par la page ; moins de morceaux
+
+Séances des 08 et 09/11/2026, même montage que D30. Ressenti de l'auditeur : une voix
+« dégradée, pas fluide », des mots « sautés au profit du rattrapage de l'intervenant ». Les
+mesures (`metrics.jsonl`, accusés de lecture des téléphones) trouvent trois causes, toutes dans
+nos propres règles de rattrapage :
+
+| Ressenti | Mesure | Cause |
+|---|---|---|
+| des phrases sautées | 3 voix jamais jouées (#111, #124, #126) | livrées par la reconnaissance 8 à 12 s après les mots ; la page jetait toute voix de plus de 8 s (D31) |
+| une voix dégradée | le 09/11, 39 % du temps d'écoute étiré par le navigateur, dont la moitié sans rien en attente ; voix produite à ×1,15 ou plus sur 32 % du temps ; au total ×1,2 ou plus pendant 28 % du temps | `ElementPlayer.queueMs` comptait la voix en cours : toute voix de plus de 2 s passait à ×1,08, en plus de la vitesse d'ElevenLabs |
+| pas fluide | 27 % (09/11) à 43 % (08/11) des segments font 3 mots ou moins ; « Um, hello, Mr. » puis « President. » partent séparément | coupe sur le point de « Mr. » ; chaque morceau est dit à part, l'intonation repart de zéro |
+
+Hors de cause : la qualité des fichiers de voix (MP3 44,1 kHz, 64 kbit/s mono), les écouteurs
+(filaires). Une quatrième cause reste ouverte, côté PC : le 08/11, 15 à 27 % du son du micro
+n'est pas arrivé au serveur dans 7 séances sur 8 (rien de perdu le 09/11).
+
+**Décision.** L'apprenant veut tout entendre, d'une voix naturelle, plutôt qu'immédiatement.
+- *Aucune voix sautée.* La page ne jette plus rien, ni par l'âge ni par la file
+  (`shared/playback.ts` ne garde que la pause gardée de D26). Seul « Revenir au direct », un
+  geste de l'apprenant, vide encore la file.
+- *Aucun étirement dans le navigateur.* `playbackRate` reste à 1 : `setRate` est retiré du
+  lecteur. La file d'attente affichée ne compte plus que ce qui reste à jouer. La seule vitesse
+  est celle de la synthèse, plafonnée à ×1,1 au lieu de ×1,2 (`MAX_SPEED`, et une prise de
+  parole repart entre ×1,05 et ×1,1). `tEnd` quitte l'en-tête audio : plus personne ne le lit.
+- *Moins de morceaux.* La coupe ignore le point d'un titre (« Mr. », « Dr. »… `isTitle`). Un
+  segment de 3 mots ou moins, ou qui finit sur un titre, est retenu et part avec le suivant si
+  l'orateur reprend en moins de 600 ms (1,5 s après un titre) ; sinon il part seul dès que la
+  pause est constatée, et au plus tard après 4 s. Un arrêt, une sourdine ou une panne de la
+  reconnaissance le libèrent : aucun mot perdu. Réglage « Morceaux courts » dans la
+  Configuration (`speech.joinShort`, actif par défaut).
+
+Rejoué sur la séance du 08/11 (111 segments) : les segments de 3 mots ou moins passent de 43 à
+25 ; 11 segments partent plus tard, de 2,6 s en médiane (p90 3,7 s, max 3,9 s). Fusionner aussi
+vers l'arrière gagnait peu et n'a pas été retenu.
+
+**Le prix.** Pendant un discours continu, le retard s'accumule au lieu d'être rattrapé, et ne
+se résorbe que pendant les pauses de l'orateur ; un morceau court retenu ajoute jusqu'à 4 s.
+L'indicateur D19 (moins d'une seconde après la fin de la phrase) s'éloigne : c'est un choix de
+l'utilisateur, une traduction complète et fluide avant une traduction immédiate.
+
+**Ce qui reste à mesurer.** Un enregistrement de 2 min de ce qui sort des écouteurs (boucle
+WASAPI sur la sortie par défaut), sur le même passage, pour vérifier à l'oreille et par
+transcription : vitesse, blancs, coupures, mots perdus. Puis la perte du son du micro côté PC.
+
 ## Ce que six semaines (au lieu de 48 h) remettent sur la table
 
 Dans l'ordre de valeur : tests automatisés dès le départ (fait) ; multilingue réel

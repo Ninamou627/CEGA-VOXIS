@@ -8,8 +8,9 @@
  * figé est ignorée pour la voix — c'est ce que fait un interprète humain.
  *
  * Les mots figés s'accumulent dans un tampon, découpé en segments prêts à traduire
- * selon, dans l'ordre : ponctuation terminale, frontière de proposition (à partir de
- * `clauseWords`), longueur maximale, silence (endpointing du STT), timeout anti-famine.
+ * selon, dans l'ordre : ponctuation terminale (sauf après un titre, « Mr. »), frontière de
+ * proposition (à partir de `clauseWords`), longueur maximale, silence (endpointing du STT),
+ * timeout anti-famine.
  *
  * Quand le fournisseur marque lui-même ses mots définitifs en cours de tour (AssemblyAI
  * universal-streaming), l'accord de deux hypothèses est coupé (`agreement`) : ce moteur
@@ -89,6 +90,27 @@ export interface Segment {
   startPos?: number;
   endPos?: number;
   reason: FlushReason;
+  /** Segments du découpage réunis dans celui-ci : un morceau court parti avec la suite (D32). */
+  joined?: number;
+}
+
+/**
+ * Deux segments qui se suivent dans le même flux STT n'en font plus qu'un : le premier mot de
+ * l'un, le dernier de l'autre (D32).
+ */
+export function joinSegments(a: Segment, b: Segment): Segment {
+  return {
+    text: `${a.text} ${b.text}`,
+    words: [...a.words, ...b.words],
+    tOrigin: a.tOrigin,
+    tEnd: b.tEnd,
+    tEndExact: b.tEndExact,
+    tStart: a.tStart,
+    startPos: a.startPos,
+    endPos: b.endPos,
+    reason: b.reason,
+    joined: (a.joined ?? 1) + (b.joined ?? 1),
+  };
 }
 
 export interface GateResult {
@@ -108,6 +130,17 @@ const SENT_KEPT = 60;
 
 const TERMINAL = /[.!?…]["»)\]]?$/;
 const CLAUSE = /[,;:]["»)\]]?$/;
+/**
+ * Titres abrégés : leur point n'achève pas la phrase, le nom suit (D32). Le 9/11/2026,
+ * « Um, hello, Mr. » est parti seul, puis « President. » : deux voix, « Monsieur, » et
+ * « Président, ».
+ */
+const TITLE = /^(mr|mrs|ms|dr|prof|st|sr|jr|gen|gov|sen|rep|rev|capt|col|lt|sgt)\.$/i;
+
+/** Ce mot est-il un titre abrégé (« Mr. », « Dr. ») ? */
+export function isTitle(word: string): boolean {
+  return TITLE.test(word);
+}
 
 /** Comparaison des hypothèses : insensible à la casse et à la ponctuation. */
 export function normalize(s: string): string {
@@ -283,7 +316,7 @@ export class CommitGate {
     const n = this.buf.length;
     if (!n) return;
 
-    const iTerm = this.buf.findIndex((b) => TERMINAL.test(b.w.text));
+    const iTerm = this.buf.findIndex((b) => TERMINAL.test(b.w.text) && !isTitle(b.w.text));
     if (iTerm >= 0) return this.flush(iTerm + 1, "punctuation");
 
     if (n >= this.cfg.clauseWords) {

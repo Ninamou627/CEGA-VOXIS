@@ -19,8 +19,8 @@ describe("Tempo — chaque segment dans le temps du formateur (D26)", () => {
 
   it("vise plus vite quand le formateur accélère, plus lentement quand il ralentit, dans les bornes", () => {
     const t = new Tempo();
-    expect(t.speedFor("fr", { ...base, sourceMs: 3900, gapMs: 300 }).target).toBe(1.19);
-    expect(t.speedFor("fr", { ...base, sourceMs: 3000 }).target).toBe(1.2); // plafond d'ElevenLabs
+    expect(t.speedFor("fr", { ...base, sourceMs: 4300, gapMs: 300 }).target).toBe(1.09);
+    expect(t.speedFor("fr", { ...base, sourceMs: 3000 }).target).toBe(1.1); // plafond : au-delà, la voix est pressée (D32)
     expect(t.speedFor("fr", { ...base, sourceMs: 8000 }).target).toBe(1); // plancher (D30)
   });
 
@@ -51,23 +51,23 @@ describe("Tempo — chaque segment dans le temps du formateur (D26)", () => {
 });
 
 describe("Tempo — une vitesse qui ne saute plus (D30)", () => {
-  it("une prise de parole repart entre ×1,05 et ×1,15, quoi qu'en demande le segment", () => {
+  it("une prise de parole repart entre ×1,05 et ×1,1, quoi qu'en demande le segment", () => {
     const t = new Tempo();
-    expect(t.speedFor("fr", turn(3000)).speed).toBe(1.15); // il demandait ×1,2
+    expect(t.speedFor("fr", turn(3000)).speed).toBe(1.1); // il demandait plus
     expect(t.speedFor("fr", turn(8000)).speed).toBe(1.05); // il demandait ×1
-    expect(t.speedFor("fr", turn(4545)).speed).toBe(1.1); // dans la fenêtre : tel quel
+    expect(t.speedFor("fr", turn(4630)).speed).toBe(1.08); // dans la fenêtre : tel quel
   });
 
   it("d'un segment au suivant, la vitesse ne bouge que de 0,05", () => {
     const t = new Tempo();
-    const speeds = [t.speedFor("fr", turn(4545)).speed];
+    const speeds = [t.speedFor("fr", turn(4630)).speed];
     // Le formateur alterne passages rapides et lents, comme le discours du 07/11/2026.
     for (const ms of [3000, 3000, 3000, 8000, 8000, 3000]) speeds.push(t.speedFor("fr", next(ms)).speed);
-    expect(speeds).toEqual([1.1, 1.15, 1.2, 1.2, 1.15, 1.1, 1.15]);
+    expect(speeds).toEqual([1.08, 1.1, 1.1, 1.1, 1.05, 1, 1.05]);
     for (let i = 1; i < speeds.length; i++) expect(Math.abs(speeds[i] - speeds[i - 1])).toBeLessThanOrEqual(MAX_STEP + 1e-9);
   });
 
-  it("jamais sous ×1 ni au-dessus de ×1,2, même après une longue série", () => {
+  it("jamais sous ×1 ni au-dessus de ×1,1, même après une longue série (D32)", () => {
     const t = new Tempo();
     t.speedFor("fr", turn(4545));
     let slow = 0;
@@ -75,7 +75,7 @@ describe("Tempo — une vitesse qui ne saute plus (D30)", () => {
     expect(slow).toBe(1);
     let fast = 0;
     for (let i = 0; i < 10; i++) fast = t.speedFor("fr", next(1000)).speed;
-    expect(fast).toBe(1.2);
+    expect(fast).toBe(1.1);
   });
 
   it("le réglage de l'administration déplace la plage : à ×0,9, la voix peut descendre à ×0,9", () => {
@@ -89,8 +89,8 @@ describe("Tempo — une vitesse qui ne saute plus (D30)", () => {
   it("chaque langue lisse sa propre voix", () => {
     const t = new Tempo();
     t.speedFor("fr", turn(4545)); // ×1,1
-    t.speedFor("fr", next(3000)); // ×1,15
-    expect(t.speedFor("en", next(3000)).speed).toBe(1.15); // premier segment en anglais : il repart de la fenêtre
-    expect(t.speedFor("fr", next(3000)).speed).toBe(1.2);
+    t.speedFor("fr", next(20_000)); // ×1,05
+    expect(t.speedFor("en", next(20_000)).speed).toBe(1.05); // premier segment en anglais : il repart de la fenêtre
+    expect(t.speedFor("fr", next(20_000)).speed).toBe(1);
   });
 });

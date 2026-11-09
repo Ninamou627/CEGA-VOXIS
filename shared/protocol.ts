@@ -179,8 +179,6 @@ export interface AudioHeader {
   durMs: number;
   /** Horloge serveur du premier mot du segment source. Voyage jusqu'à l'oreille. */
   tOrigin: number;
-  /** Horloge serveur de la fin prononcée du segment source : l'âge d'une voix part de là (D31). */
-  tEnd?: number;
   srcSeq: number;
   text: string;
   /** "question" = audio d'une question d'apprenant, destiné au formateur. */

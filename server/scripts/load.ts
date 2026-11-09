@@ -4,9 +4,9 @@
  *   npm run load -- [apprenants=30] [secondes=60] [ws://localhost:8787/ws]
  *
  * Chaque client rejoint la session, reçoit les trames audio, et les « joue » comme la
- * page apprenant (shared/playback) : file locale, vitesse de lecture réajustée toutes les
- * 500 ms selon la file, saut au-delà de 8 s, ack au démarrage effectif de chaque segment
- * avec la même définition de file. La latence mesurée est donc celle d'un vrai téléphone.
+ * page apprenant (shared/playback) : file locale, chaque voix jouée en entier à sa vitesse,
+ * sans saut (D32), ack au démarrage effectif de chaque segment avec la même définition de
+ * file. La latence mesurée est donc celle d'un vrai téléphone.
  * Il se reconnecte s'il est coupé. Toutes les 10 s, un rapport :
  * clients, trames, débit, égalité du fan-out, santé du serveur (/api/health).
  *
@@ -17,8 +17,8 @@
  */
 import WebSocket from "ws";
 import { decodeFrame } from "../../shared/framing";
-import { arrivalAgeMs, keptPauseMs, localRate, RATE_EVERY_MS, tooLate } from "../../shared/playback";
-import type { AudioHeader, ServerEvent } from "../../shared/protocol";
+import { keptPauseMs } from "../../shared/playback";
+import type { AudioHeader } from "../../shared/protocol";
 import { adminCookie, originOf, roomCode } from "./session";
 
 const N = Number(process.argv[2] ?? 30);
@@ -55,16 +55,10 @@ interface Client {
   connected: boolean;
   frames: number;
   bytes: number;
-  dropped: number;
   reconnects: number;
-  // Lecteur simulé, comme ElementPlayer : ce qui joue, ce qui attend, la vitesse locale.
+  // Lecteur simulé, comme ElementPlayer : ce qui joue, ce qui attend.
   current?: Item;
   queue: Item[];
-  rate: number;
-  /** Vitesse déjà appliquée à la synthèse par le serveur (stats). */
-  serverSpeed: number;
-  /** Horloge serveur − horloge locale (hello). */
-  clockOffset: number;
   /** Fin du segment précédent (horloge locale). */
   lastEndedAt: number;
   lastSeq: number;
@@ -76,12 +70,8 @@ const clients: Client[] = Array.from({ length: N }, (_, id) => ({
   connected: false,
   frames: 0,
   bytes: 0,
-  dropped: 0,
   reconnects: 0,
   queue: [],
-  rate: 1,
-  serverSpeed: 1,
-  clockOffset: 0,
   lastEndedAt: 0,
   lastSeq: 0,
   gaps: 0,
@@ -100,12 +90,7 @@ function connect(c: Client, attempt = 0) {
     if (fullAt === null && clients.every((x) => x.connected)) fullAt = Date.now();
   });
   ws.on("message", (raw, isBinary) => {
-    if (!isBinary) {
-      const e = JSON.parse(raw.toString()) as ServerEvent;
-      if (e.t === "hello") c.clockOffset = e.tServer - Date.now();
-      if (e.t === "stats") c.serverSpeed = e.stats.pipeline.speed;
-      return;
-    }
+    if (!isBinary) return;
     const buf = raw as Buffer;
     const { header, payload } = decodeFrame<AudioHeader>(new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength));
     if (header.t !== "audio") return;
@@ -114,12 +99,6 @@ function connect(c: Client, attempt = 0) {
     totalBytesWindow += payload.byteLength;
     if (c.lastSeq && header.seq > c.lastSeq + 1) c.gaps += header.seq - c.lastSeq - 1;
     c.lastSeq = header.seq;
-
-    // Même politique que la page apprenant : saut si la file, ou l'âge depuis la fin de la phrase, dépassent 8 s.
-    if (tooLate(queueOf(c), arrivalAgeMs(Date.now() + c.clockOffset, header))) {
-      c.dropped++;
-      return;
-    }
     c.queue.push({ seq: header.seq, tOrigin: header.tOrigin, left: header.durMs, pauseMs: header.pauseMs, at: Date.now() });
     if (!c.current) startNext(c);
   });
@@ -135,9 +114,9 @@ function connect(c: Client, attempt = 0) {
   });
 }
 
-/** Comme ElementPlayer.queueMs : audio restant à jouer, segment en cours compris, à la vitesse courante. */
+/** Comme ElementPlayer.queueMs : audio restant à jouer, segment en cours compris. */
 function queueOf(c: Client): number {
-  return (c.queue.reduce((a, q) => a + q.left, 0) + (c.current?.left ?? 0)) / c.rate;
+  return c.queue.reduce((a, q) => a + q.left, 0) + (c.current?.left ?? 0);
 }
 
 /** Le segment suivant commence, après la pause gardée s'il y en a une (comme ElementPlayer). */
@@ -159,25 +138,20 @@ function ack(c: Client) {
   c.ws.send(JSON.stringify({ t: "ack", seq: c.current.seq, tOrigin: c.current.tOrigin, queueMs: queueOf(c) }));
 }
 
-// La lecture avance, et la vitesse se réajuste toutes les 500 ms, pour tous les apprenants simulés.
-let lastRateAt = 0;
+// La lecture avance, pour tous les apprenants simulés.
 let lastTick = performance.now();
 setInterval(() => {
-  const now = Date.now();
   const tick = performance.now();
   const elapsed = tick - lastTick;
   lastTick = tick;
-  const retune = now - lastRateAt >= RATE_EVERY_MS;
-  if (retune) lastRateAt = now;
   for (const c of clients) {
-    if (retune) c.rate = localRate(queueOf(c), c.serverSpeed);
     if (!c.current) continue;
     if (c.current.wait) {
       c.current.wait = Math.max(0, c.current.wait - elapsed);
       if (!c.current.wait) ack(c);
       continue;
     }
-    c.current.left -= elapsed * c.rate;
+    c.current.left -= elapsed;
     if (c.current.left <= 0) {
       c.lastEndedAt = Date.now();
       startNext(c);
@@ -208,10 +182,9 @@ function report(final = false) {
   const max = Math.max(...frames);
   const mbps = ((totalBytesWindow * 8) / 10 / 1e6).toFixed(2);
   totalBytesWindow = 0;
-  const dropped = clients.reduce((a, c) => a + c.dropped, 0);
   const reconnects = clients.reduce((a, c) => a + c.reconnects, 0);
   const gaps = clients.reduce((a, c) => a + c.gaps, 0);
-  return { t: Math.round((Date.now() - t0) / 1000), connected, min, max, mbps, dropped, reconnects, gaps, final };
+  return { t: Math.round((Date.now() - t0) / 1000), connected, min, max, mbps, reconnects, gaps, final };
 }
 
 const rows: any[] = [];
@@ -223,7 +196,7 @@ const timer = setInterval(async () => {
   rows.push({ ...r, cpu: p.cpuPercent, rss: p.rssMb, lag: p.loopLagMaxMs, e2e: s.e2eP50, e2e95: s.e2eP95, end: s.endP50, end95: s.endP95, start: s.startP50, start95: s.startP95, first: s.firstP50, qmax: s.queueMaxMs });
   console.log(
     `t=${String(r.t).padStart(3)}s  clients ${String(r.connected).padStart(3)}/${N}  trames/client ${r.min}–${r.max}` +
-      `  ${r.mbps} Mbit/s  sautés ${r.dropped}  reconnexions ${r.reconnects}  trous ${r.gaps}` +
+      `  ${r.mbps} Mbit/s  reconnexions ${r.reconnects}  trous ${r.gaps}` +
       `  | serveur CPU ${p.cpuPercent ?? "?"} %  RSS ${p.rssMb ?? "?"} Mo  boucle ${p.loopLagMaxMs ?? "?"} ms` +
       `  fin de phrase → voix p50 ${s.endP50 ?? "—"} p95 ${s.endP95 ?? "—"}  e2e p50 ${s.e2eP50 ?? "—"}  file max ${s.queueMaxMs ?? "—"}`,
   );
@@ -237,7 +210,7 @@ const timer = setInterval(async () => {
     console.log("\n=== Bilan ===");
     console.log(`apprenants connectés en fin de test : ${last.connected}/${N}`);
     console.log(`fan-out : chaque client a reçu entre ${last.min} et ${last.max} trames${last.min === last.max ? " (identique : aucun client lésé)" : " (INÉGAL)"}`);
-    console.log(`segments sautés ${last.dropped} · trous de séquence ${last.gaps} · reconnexions ${last.reconnects}`);
+    console.log(`trous de séquence ${last.gaps} · reconnexions ${last.reconnects}`);
     console.log(`serveur : CPU max ${cpuMax} % · RSS ${last.rss} Mo · retard de boucle max ${lagMax} ms`);
     console.log(`fin de phrase → voix p50 ${last.end ?? "—"} ms · p95 ${last.end95 ?? "—"} ms`);
     console.log(`début de parole → voix p50 ${last.start ?? "—"} ms · p95 ${last.start95 ?? "—"} ms · premier son d'une prise de parole p50 ${last.first ?? "—"} ms`);

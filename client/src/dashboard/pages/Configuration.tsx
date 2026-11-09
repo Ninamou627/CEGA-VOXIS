@@ -51,6 +51,11 @@ const QUICK_START = [
   { value: "off" as const, label: "À la première pause", title: "Après ~4 mots, à la première pause d'un quart de seconde : morceau plus long" },
 ];
 
+const JOIN_SHORT = [
+  { value: "on" as const, label: "Avec la suite", title: "Un morceau de 3 mots ou moins attend la suite, sauf vraie pause : une phrase au lieu de deux bribes, un peu plus tard" },
+  { value: "off" as const, label: "Seuls", title: "Chaque morceau part dès qu'il est reconnu, même d'un seul mot" },
+];
+
 const dec = (x: number, digits = 1) => x.toFixed(digits).replace(".", ",");
 const db = (x: number) => `${x > 0 ? "+" : x < 0 ? "−" : ""}${Math.abs(x)} dB`;
 
@@ -359,6 +364,15 @@ export function Configuration({ conf, value, dirty, micDb, onChange, onSave, onD
             changed={changed("speech.quickStart")}
           >
             <Segmented value={sp.quickStart ? "on" : "off"} onChange={(x) => set("speech", { quickStart: x === "on" })} options={QUICK_START} />
+          </Field>
+
+          <Field
+            label="Morceaux courts"
+            help="« Mr. » puis « President. » : deux voix séparées, ou une seule phrase un peu plus tard. Avec la suite, un morceau de 3 mots ou moins attend la reprise de l'orateur (4 s au plus) ; une vraie pause l'envoie seul."
+            applies="live"
+            changed={changed("speech.joinShort")}
+          >
+            <Segmented value={sp.joinShort ? "on" : "off"} onChange={(x) => set("speech", { joinShort: x === "on" })} options={JOIN_SHORT} />
           </Field>
 
           <Field

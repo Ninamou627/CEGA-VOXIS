@@ -111,6 +111,7 @@ const pipeline = new Pipeline(
         followTempo: s.voice.followTempo,
         speechThresholdDb: s.speech.speechThresholdDb,
         quickStart: s.speech.quickStart,
+        joinShort: s.speech.joinShort,
       };
     },
   },
