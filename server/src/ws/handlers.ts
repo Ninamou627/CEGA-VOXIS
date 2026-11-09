@@ -20,9 +20,16 @@ import type { Providers } from "../providers/types";
 import type { Participant, Room } from "../room";
 import { clientSettings, type Settings } from "../settings";
 import type { Totals } from "../totals";
+import { attachHeartbeat } from "./heartbeat";
 
 /** `WebSocket.OPEN` : l'import de `ws` ne porte que les types. */
 const WS_OPEN = 1;
+
+/**
+ * Un formateur qui revient trouve souvent sa place encore tenue par son ancienne liaison,
+ * figée (D35). Elle a ce délai pour répondre à un ping ; muette, elle cède la place.
+ */
+const SEAT_PROBE_MS = 2000;
 
 export interface WsContext {
   room: Room;
@@ -57,6 +64,13 @@ interface RecentSegment {
 
 export function attachWs(wss: WebSocketServer, ctx: WsContext): void {
   const { room, pipeline, providers, metrics, config, log, totals, auth } = ctx;
+  const heartbeat = attachHeartbeat(wss);
+  /**
+   * Arrêt du pipeline en cours, quand le formateur part. Un formateur qui revient aussitôt
+   * attend qu'il finisse : sinon le « micro coupé » de l'ancienne prise arriverait après le
+   * « micro ouvert » de la nouvelle, et l'enregistrement de la séance s'arrêterait.
+   */
+  let pipelineStopping: Promise<void> = Promise.resolve();
 
   const recent = new Map<number, RecentSegment>();
   function remember(seq: number, patch: Partial<RecentSegment>) {
@@ -304,6 +318,25 @@ export function attachWs(wss: WebSocketServer, ctx: WsContext): void {
       // Le client a pu partir pendant la vérification.
       if (me || ws.readyState !== WS_OPEN) return;
 
+      // La place du formateur est tenue : par un autre poste vivant, ou par l'ancienne
+      // liaison figée de celui qui revient (D35). Seule la seconde ne répond pas au ping.
+      if (evt.role === "lecturer") {
+        const holder = [...room.participants.values()].find((p) => p.role === "lecturer");
+        // Sonde manquée : l'ancienne liaison est muette, ou vient de se fermer d'elle-même
+        // (sa fermeture était restée coincée dans le réseau figé). Dans le second cas, rien
+        // à couper ni à attendre.
+        if (holder && !(await heartbeat.probe(holder.ws, SEAT_PROBE_MS)) && holder.ws.readyState !== holder.ws.CLOSED) {
+          log.warn({ id: holder.id, by: id }, "place du formateur tenue par une liaison muette : coupée");
+          const closed = new Promise<void>((resolve) => {
+            holder.ws.once("close", () => resolve());
+            setTimeout(resolve, 1000).unref();
+          });
+          heartbeat.cut(holder.ws, "seat_taken");
+          await closed;
+        }
+        if (me || ws.readyState !== WS_OPEN) return;
+      }
+
       // Plus aucune attente à partir d'ici : le contrôle du formateur unique et l'entrée dans
       // la salle tiennent dans le même tour de boucle, donc sans course entre deux connexions.
       if (evt.session && evt.session !== room.sessionId) {
@@ -326,9 +359,13 @@ export function attachWs(wss: WebSocketServer, ctx: WsContext): void {
 
       if (evt.role === "lecturer") {
         const sampleRate = evt.sampleRate ?? 16000;
-        pipeline
-          .start()
-          .then(() => log.info({ sampleRate }, "pipeline démarré"))
+        pipelineStopping
+          .then(async () => {
+            // Reparti pendant l'attente : rien à démarrer (sinon le STT tournerait sans formateur).
+            if (!room.participants.has(id)) return;
+            await pipeline.start();
+            log.info({ sampleRate }, "pipeline démarré");
+          })
           .catch((err: Error) => {
             log.error({ err: err.message }, "démarrage du pipeline impossible");
             sendErr("pipeline_start", err.message);
@@ -350,16 +387,18 @@ export function attachWs(wss: WebSocketServer, ctx: WsContext): void {
       });
     }
 
-    ws.on("close", () => {
+    ws.on("close", (code: number) => {
       if (!me) return;
       const hadFloor = room.floor.state === "question" && room.floor.who === me.id;
       room.remove(me.id);
       metrics.forget(me.id);
-      metrics.event("leave", { id: me.id, role: me.role });
-      log.info({ id: me.id, role: me.role }, "participant déconnecté");
+      // `cut` : c'est le serveur qui a coupé une liaison muette (D35) ; sinon le code de fermeture.
+      const cut = heartbeat.reason(ws);
+      metrics.event("leave", { id: me.id, role: me.role, code, cut: cut ?? null });
+      log.info({ id: me.id, role: me.role, code, cut }, "participant déconnecté");
       if (hadFloor) room.broadcast({ t: "floor", floor: room.floor });
       if (me.role === "lecturer") {
-        pipeline.stop().catch((err: Error) => log.error({ err: err.message }, "arrêt du pipeline"));
+        pipelineStopping = pipeline.stop().catch((err: Error) => log.error({ err: err.message }, "arrêt du pipeline"));
       }
     });
 

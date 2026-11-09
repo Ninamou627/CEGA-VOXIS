@@ -1022,6 +1022,71 @@ Ce qui les distingue d'une vraie fin :
 Gain modeste et sans coût : une frontière par séance (« the world is In a place where it
 can… »).
 
+## D35 — Une liaison figée se repère ; à la reconnexion, le direct
+
+Essai du 09/11/2026 à 15:25 après D34, même montage. Tout le reste tient : son livré par le
+navigateur 98,5 à 102 % (même onglet caché), reçu par le serveur 100 %, 95,0 % des mots du
+texte officiel à l'identique, 60 phrases traduites et dites sur 60, blanc après chaque voix
+Azure 312 ms au lieu de 984 ms. Mais à 15:27:10, le PC a perdu le réseau environ 80 s (il sort
+sous deux IP publiques). La liaison de la page d'écoute s'est figée sans se fermer : ni le
+navigateur ni le serveur ne s'en sont aperçus, faute de battement de cœur. Quand elle est
+revenue, elle a tout livré d'un coup : 39 voix sur 60 jouées 4 minutes en retard, entre
+15:31:14 et 15:33:25. Aucune n'était perdue, mais c'était inutilisable en direct.
+
+**Repérer une liaison figée, des deux côtés.**
+- Page (`client/src/lib/ws.ts`) : le serveur parle au moins toutes les 2 s (stats, à tous les
+  rôles). Passé 6 s sans rien, ou une ouverture qui n'aboutit pas en 6 s, la page débranche
+  l'ancien socket avant de le fermer (code 4000) : rien de ce qu'il livrerait encore ne
+  l'atteint. Puis elle en rouvre un, en moins d'une seconde la première fois.
+- Serveur (`server/src/ws/heartbeat.ts`) : un ping toutes les 10 s, et toute liaison qui n'a
+  pas répondu au précédent est coupée. Le départ est journalisé (`leave`, avec `cut: "no_pong"`
+  et le code de fermeture), et le nombre d'apprenants redevient juste.
+- Formateur : il revient souvent alors que son ancienne liaison, figée, tient encore la place.
+  Avant, il recevait le refus `lecturer_exists`, définitif. Désormais l'ancienne liaison a 2 s
+  pour répondre à un ping. Muette, elle cède la place (`cut: "seat_taken"`) ; vivante (un
+  second poste ouvert), le refus reste. Le redémarrage du pipeline attend la fin de son arrêt :
+  sans cela, le « micro coupé » de l'ancienne prise arrivait après le « micro ouvert » de la
+  nouvelle, et l'enregistrement de la séance s'arrêtait 15 s plus tard.
+
+**À la reconnexion, le direct — rien n'est gardé pour plus tard.** Il avait été proposé de
+garder 5 minutes de voix sur le serveur et de renvoyer à la page celles qu'elle n'avait pas
+reçues. Refusé : après une coupure, on reprend sur le direct. Une voix gardée pour être jouée
+plus tard retarderait le direct. Les voix et les lignes de texte émises pendant une coupure
+sont donc perdues pour cet apprenant. Ce qui était déjà arrivé dans la page avant la coupure
+se joue normalement.
+
+**Mesuré en local**, avec le vrai `attachWs`, le pipeline en fournisseurs simulés, la page
+d'écoute construite dans un navigateur, et un relais TCP qu'on fige sans rien fermer :
+
+| Coupure simulée | Page de nouveau dans la salle | Ancienne liaison libérée | Voix émises pendant la coupure |
+|---|---|---|---|
+| Ancien chemin mort, nouveau ouvert | 6,5 s après le gel | coupée par le serveur en 14,2 s | non jouées |
+| L'ancien chemin revient au bout de 8 s, avec son arriéré (le test 8) | 5,8 à 6,5 s | fermée (4000) dès le retour du réseau | arrivées sur l'ancien socket, non jouées |
+| Panne de 25 s, nouvelles connexions en suspens | 19 ms après le retour du réseau | coupée par le serveur en 12,1 s | non jouées |
+
+Aucun arriéré après la reprise. Retard bout-en-bout du pipeline simulé :
+- avant la coupure : 3,2 à 4,9 s ;
+- les 1 à 4 premières voix après la reprise : 5,0 à 7,6 s ;
+- ensuite : 3,5 à 5,0 s.
+
+La file d'écoute monte au plus à 5,4 s, contre 4,2 s avant. Un formateur simulé, avec le même chien de garde,
+a repris sa place 8,1 s après le gel : 6,6 s pour repérer la coupure, 0,5 s pour rouvrir, 2 s
+de sonde. Quand son ancienne liaison s'est fermée d'elle-même, il est entré 3 ms après.
+
+**Limites.**
+- Formateur : le micro est perdu du gel jusqu'à la réadmission (la coupure, plus environ 6 s
+  pour la repérer, plus jusqu'à 2 s de sonde).
+- Au retour du réseau, une tentative en suspens aboutit aussitôt. Si la page vient d'en
+  abandonner une, la suivante attend son délai, jusqu'à 9,6 s.
+- Entre la reconnexion et la coupure de l'ancienne liaison, l'apprenant compte double au plus
+  20 s (7,6 s mesurées).
+- Les accusés de lecture envoyés pendant le gel sont perdus : la mesure de latence a un trou
+  à cet endroit.
+- Une page elle-même endormie plus de 6 s (onglet gelé, veille) peut se reconnecter sans
+  nécessité. Coût : une reconnexion.
+- Le lecteur à deux `<audio>` (ElementPlayer) n'a toujours pas de garde si `ended` ne vient
+  jamais.
+
 ## Ce que six semaines (au lieu de 48 h) remettent sur la table
 
 Dans l'ordre de valeur : tests automatisés dès le départ (fait) ; multilingue réel
