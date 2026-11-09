@@ -4,6 +4,7 @@
  * source pour la vue d'ensemble, la supervision et le compteur d'alertes du menu.
  */
 import type { OverviewResponse, RecentReport, Stage } from "../../../shared/admin";
+import { CAPTURE_ALERT_BELOW } from "../../../shared/capture";
 import type { ClientSettings, StatsPayload } from "../../../shared/protocol";
 import type { ConnState } from "../lib/ws";
 import { delay, span } from "../ui/format";
@@ -65,7 +66,9 @@ export function stageStates(sig: Signals): StageState[] {
       ? { id: "mic", label: "Microphone", icon: "mic_off", tone: "warn", status: "Coupé", metric: "sourdine du formateur" }
       : lastFrame != null && lastFrame > 3000
         ? { id: "mic", label: "Microphone", icon: "mic_off", tone: "crit", status: "Muet", metric: `plus de son depuis ${delay(lastFrame)}` }
-        : { id: "mic", label: "Microphone", icon: "mic", tone: "ok", status: "Connecté", metric: `${(h?.audio.received ?? 0).toLocaleString("fr-FR")} trames` };
+        : st?.micCapture != null && st.micCapture < CAPTURE_ALERT_BELOW
+          ? { id: "mic", label: "Microphone", icon: "mic", tone: "warn", status: "Son perdu", metric: `${Math.round((1 - st.micCapture) * 100)} % perdu par le navigateur` }
+          : { id: "mic", label: "Microphone", icon: "mic", tone: "ok", status: "Connecté", metric: `${(h?.audio.received ?? 0).toLocaleString("fr-FR")} trames` };
 
   const audio: StageState =
     !lecturer || db == null
@@ -161,6 +164,17 @@ export function computeAlerts(sig: Signals): Alert[] {
 
   if (lecturer && (h?.audio.lastFrameAgoMs ?? 0) > 3000 && !pl?.muted) {
     out.push({ id: "frames", severity: "crit", title: "Le micro du formateur n'envoie plus de son", detail: `Dernière trame reçue il y a ${delay(h!.audio.lastFrameAgoMs!)}. Onglet formateur fermé ou en veille ?`, to: "supervision", stage: "mic" });
+  }
+  if (lecturer && st?.micCapture != null && st.micCapture < CAPTURE_ALERT_BELOW) {
+    const lost = Math.round((1 - st.micCapture) * 100);
+    out.push({
+      id: "capture",
+      severity: "warn",
+      title: `Le PC du formateur perd ${lost} % du son du micro`,
+      detail: "Perdu dans son navigateur, avant l'envoi : la reconnaissance manque des mots. Onglet formateur en arrière-plan, économie d'énergie ou PC surchargé ?",
+      to: "supervision",
+      stage: "mic",
+    });
   }
   if (lecturer && h && !h.audio.sttOpen && pl?.degraded !== "stt-lost") out.push({ id: "stt-closed", severity: "crit", title: "Reconnaissance vocale fermée", detail: "Le formateur est en ligne mais le flux de reconnaissance n'est pas ouvert.", to: "supervision", stage: "stt" });
 

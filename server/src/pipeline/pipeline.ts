@@ -109,6 +109,12 @@ const OPEN_END = new Set([
   "and", "or", "but", "because", "the", "a", "an", "of", "to", "in", "on", "with", "for", "at", "by", "from", "into",
   "than", "if", "our", "your", "their", "its", "my", "about",
 ]);
+/**
+ * Auxiliaires et modaux : « the truth is the world is. », « in a place where it can. » (D34).
+ * Au test 7, ces faux points cassaient le sens (« le monde est ainsi, » / « il peut l'être, »).
+ * Sur les deux séances étiquetées avec le texte officiel, aucune vraie fin de phrase n'y finit.
+ */
+const AUXILIARIES = new Set(["is", "are", "was", "were", "am", "can", "could", "will", "would", "should", "must", "shall", "may", "might"]);
 const FILLERS = new Set(["uh", "um", "er", "erm", "uhm", "hmm", "mm"]);
 /** Un segment qui finit sur l'un de ces mots n'est pas fini, quelle que soit la pause. */
 const DANGLING = new Set([
@@ -493,7 +499,9 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     if (h) {
       this.held = undefined;
       if (h.stream === this.streams && seg.tStart - h.seg.tEnd < this.joinPauseMs(h.seg) && since - h.since < this.holdMaxMs(h.seg)) {
-        seg = joinSegments(h.seg, seg);
+        // Le point d'une phrase coupée n'en est pas un : la traduction doit lire une seule phrase (D34).
+        const head = this.midSentence(h.seg) ? { ...h.seg, text: h.seg.text.replace(/\.\s*$/, "") } : h.seg;
+        seg = joinSegments(head, seg);
         since = h.since;
       } else {
         this.dispatch(h.seg, since - h.since);
@@ -522,7 +530,7 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     if (/[?!]["”»)]*$/.test(text)) return false;
     if (!/[.…]["”»)]*$/.test(text)) return true;
     const last = (text.toLowerCase().match(/[\p{L}']+/gu) ?? []).at(-1);
-    return last != null && (OPEN_END.has(last) || FILLERS.has(last));
+    return last != null && (OPEN_END.has(last) || AUXILIARIES.has(last) || FILLERS.has(last));
   }
 
   private joinPauseMs(seg: Segment): number {

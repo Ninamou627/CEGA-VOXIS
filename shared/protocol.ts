@@ -83,6 +83,11 @@ export interface StatsPayload {
   micDb: number | null;
   /** Secondes écoulées depuis le dernier signal de parole. */
   micSilentS: number | null;
+  /**
+   * Part du son du micro que le navigateur du formateur livre vraiment, sur 10 s (D34) ;
+   * null sans relevé récent. Sous 0,95, la reconnaissance manque des mots.
+   */
+  micCapture: number | null;
   pipeline: PipelineStatus;
   uptimeS: number;
 }
@@ -227,6 +232,11 @@ export const ClientEventSchema = z.discriminatedUnion("t", [
   /** « Revenir au direct » : le client a vidé sa file. */
   z.object({ t: z.literal("resync"), droppedMs: z.number().optional() }),
   z.object({ t: z.literal("lecturer.mute"), muted: z.boolean() }),
+  /**
+   * Captation du micro, toutes les 5 s (D34) : part du temps réel que le navigateur du formateur
+   * a réellement livrée au worklet (1 = rien de perdu), et l'état de l'onglet à ce moment-là.
+   */
+  z.object({ t: z.literal("lecturer.capture"), ratio: z.number().min(0).max(2), visible: z.boolean(), focused: z.boolean() }),
 ]);
 export type ClientEvent = z.infer<typeof ClientEventSchema>;
 export type JoinEvent = Extract<ClientEvent, { t: "join" }>;

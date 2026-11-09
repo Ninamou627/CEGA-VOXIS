@@ -68,6 +68,8 @@ export class Metrics {
   speechDb = -35;
   private queues = new Map<string, { t: number; ms: number }>();
   private mic: { t: number; db: number }[] = [];
+  /** Dernier relevé de captation envoyé par la page formateur (D34). */
+  private captureAt: { t: number; ratio: number } | null = null;
   private lastSpeechAt: number | null = null;
   readonly startedAt = Date.now();
   /** Démarrage du micro en cours : le silence se compte à partir de là, pas du lancement du serveur. */
@@ -141,8 +143,18 @@ export class Metrics {
 
   micReset(): void {
     this.mic = [];
+    this.captureAt = null;
     this.lastSpeechAt = null;
     this.micStartedAt = Date.now();
+  }
+
+  /**
+   * Relevé de la page formateur : part du son du micro livrée par son navigateur (D34). Au test 7,
+   * 74 % seulement, perdus par morceaux de 10 ms avant même l'envoi ; la reconnaissance manquait des mots.
+   */
+  capture(ratio: number, visible: boolean, focused: boolean): void {
+    this.captureAt = { t: Date.now(), ratio };
+    this.event("capture", { ratio: Math.round(ratio * 1000) / 1000, visible, focused });
   }
 
   snapshot() {
@@ -180,6 +192,8 @@ export class Metrics {
       queueMaxMs: queues.length ? Math.round(Math.max(...queues)) : null,
       micDb: recent.length ? Math.round(Math.max(...recent.map((m) => m.db))) : null,
       micSilentS: recent.length ? Math.round((now - (this.lastSpeechAt ?? this.micStartedAt)) / 1000) : null,
+      // Un relevé toutes les 5 s : au-delà de 15 s sans relevé, on ne sait plus.
+      micCapture: this.captureAt && now - this.captureAt.t < 15_000 ? Math.round(this.captureAt.ratio * 100) / 100 : null,
       uptimeS: Math.round((now - this.startedAt) / 1000),
     };
   }

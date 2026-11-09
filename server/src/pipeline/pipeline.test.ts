@@ -675,7 +675,29 @@ describe("Pipeline — phrases entières (D33)", () => {
     await r.speak(5);
     expect(r.commits).toHaveLength(0);
     r.final(1600, "results now.");
-    expect(r.commits.map((c) => c.text)).toEqual(["Then we will look at the. results now."]);
+    // Le faux point disparaît : la traduction lit une seule phrase (D34).
+    expect(r.commits.map((c) => c.text)).toEqual(["Then we will look at the results now."]);
+    await r.pipeline.stop();
+  });
+
+  it("un faux point après un auxiliaire (« is. ») n'achève pas la phrase (test 7, D34)", async () => {
+    const r = sentenceRoom();
+    await r.pipeline.start();
+    await r.speak(15);
+    r.final(300, "The truth is the world is.");
+    await r.speak(5);
+    expect(r.commits).toHaveLength(0);
+    r.final(1800, "In a place where it can solve its problems.");
+    expect(r.commits.map((c) => c.text)).toEqual(["The truth is the world is In a place where it can solve its problems."]);
+    await r.pipeline.stop();
+  });
+
+  it("une vraie fin de phrase part tout de suite, même suivie d'un mot ordinaire", async () => {
+    const r = sentenceRoom();
+    await r.pipeline.start();
+    await r.speak(15);
+    r.final(300, "People are healthier today.");
+    expect(r.commits.map((c) => c.text)).toEqual(["People are healthier today."]);
     await r.pipeline.stop();
   });
 

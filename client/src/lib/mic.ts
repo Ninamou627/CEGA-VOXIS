@@ -3,6 +3,7 @@
  * des questions (téléphones). Le navigateur fournit l'AGC et la suppression de bruit ;
  * on ne met rien devant le STT.
  */
+import { CaptureMeter } from "../../../shared/capture";
 
 export interface MicHandle {
   sampleRate: number;
@@ -46,6 +47,11 @@ export interface MicOptions {
    * et le système se retraduit en boucle. En salle (casque fermé, écouteurs), sans effet.
    */
   echoCancellation?: boolean;
+  /**
+   * Toutes les 5 s de son : part du temps réel que le navigateur a vraiment livrée (1 = rien
+   * de perdu). Calculée à l'arrivée des trames, pas sur une minuterie (D34).
+   */
+  onCapture?: (ratio: number) => void;
 }
 
 export async function startMic(onFrame: (pcm: ArrayBuffer, level: number) => void, opts: MicOptions = {}): Promise<MicHandle> {
@@ -78,7 +84,11 @@ export async function startMic(onFrame: (pcm: ArrayBuffer, level: number) => voi
   await ctx.resume();
 
   let muted = false;
+  // La sourdine n'arrête pas le worklet : la captation se mesure aussi pendant qu'elle est mise.
+  const meter = new CaptureMeter();
   node.port.onmessage = (e: MessageEvent<ArrayBuffer>) => {
+    const ratio = meter.frame(performance.now(), (e.data.byteLength / 2 / ctx.sampleRate) * 1000);
+    if (ratio != null) opts.onCapture?.(ratio);
     const level = rms(e.data);
     if (!muted) onFrame(e.data, level);
     else onFrame(new ArrayBuffer(0), level);

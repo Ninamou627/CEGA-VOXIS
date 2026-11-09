@@ -964,6 +964,64 @@ a mis 3,0 s au lieu de 0,2 s, et les trois suivantes ont attendu derrière elle 
 langue). Le retard est retombé à 2,8 s à la pause suivante, sans rien sauter. Pistes : un second
 moteur de traduction lancé si DeepL tarde, et la coupe au délai.
 
+## D34 — Le micro qui perd du son se voit ; la voix Azure sans blanc ; moins de faux points
+
+Essai du 09/11/2026 à 14:17 après D33, même montage, toutes les voix en secours Azure (crédits
+ElevenLabs épuisés jusqu'au 19/11). La reconnaissance est comparée cette fois au texte officiel
+de la Maison Blanche (Public Papers of the Presidents, govinfo), et non à une autre transcription
+automatique : celle du test 6 avait elle-même perdu « ask you this question. Well, my name is
+Alonso Cornejo ».
+
+| Étape | Test 7 (14:17) | Test 6 (12:08) |
+|---|---|---|
+| Son du micro reçu par le serveur | **74 %** | 100 % |
+| Mots du texte officiel retrouvés à l'identique | 94,2 % (16 manquants) | 90,0 % |
+| Phrases traduites | 69 / 69 | 46 / 46 |
+| Voix fabriquées, jouées, entendues | 69 / 69 | 42 / 46 (crédits) |
+| Voix coupées au milieu d'une phrase | 4 / 69, toutes au plafond de 8 s | 20 / 46 |
+| Silence entendu à la fin de chaque voix | **984 ms** en médiane (Azure) | 272 ms (ElevenLabs) |
+
+**Le micro qui perd du son se voit.** Au test 7, le navigateur du PC a jeté 26 % du son du micro
+par paquets entiers de 10 ms (les ruptures tombent toujours au même endroit d'un bloc de 160
+échantillons), avant même le worklet : ce n'est pas le réseau. Le code n'a pas changé depuis le
+test 6, où rien n'était perdu ; la cause est donc dans l'environnement du PC (onglet en
+arrière-plan, économie d'énergie, charge), pas encore établie. Mots perdus ou déformés :
+« not Peru », « Thank you », « Peruvian » → « proving », « constantly doing » → « customly »,
+« saying to yourself » → « save yourself a lot » (contresens en français). Désormais :
+- la page formateur mesure, à l'arrivée de chaque trame, le son livré par le worklet contre le
+  temps réel écoulé sur 10 s (`shared/capture.ts`) ; ni les minuteries d'un onglet caché ni un
+  thread principal bloqué un instant ne faussent la mesure ;
+- deux relevés de suite sous 95 % affichent une alerte au formateur ;
+- chaque relevé part au serveur avec l'état de l'onglet (visible, au premier plan) : journal
+  `capture`, champ `micCapture` des stats, alerte et étage « Microphone » du tableau de bord.
+Si l'alerte ne suffit pas, une captation qui ne dépend plus du rendu audio du navigateur
+(MediaStreamTrackProcessor dans un worker) est la suite.
+
+**La voix Azure sans blanc.** Mesuré sur le serveur : 100 ms de silence avant la phrase, 840 ms
+après. Ce silence s'ajoutait à la pause de l'orateur que l'écoute garde déjà (D26) : 70 s de
+silence sur 276 s de voix au test 7, un blanc d'environ 1 s entre chaque phrase, et une file
+d'écoute qui gonfle. Le SSML fixe désormais 50 ms avant et 150 ms après (`mstts:silence`,
+`Leading-exact` / `Tailing-exact`) ; mesuré : 10 ms et 180 ms avec 0 et 150 ms demandés, soit
+≈ 0,7 s de gagnée par phrase.
+
+**Moins de faux points.** Quand l'orateur s'arrête au milieu d'une phrase, la reconnaissance met
+un point : « the world is. » / « In a place where it can. » devenaient « le monde est ainsi, » /
+« Dans un état où il peut l'être, ». Les 63 frontières du test 7 et les 42 du test 6 ont été
+étiquetées avec le texte officiel : 26 faux points sur 57 points au test 7, 6 sur 22 au test 6.
+Ce qui les distingue d'une vraie fin :
+- ni la pause qui suit (médiane 686 ms contre 724 ms pour une vraie fin), ni la coupe forcée
+  par nous (21 sur 26 contre 22 sur 31) ;
+- « le morceau suivant commence par une minuscule ou une préposition » en recolle 4 sur 26, et
+  « … ou par And / Or » 12, mais avec 8 vraies fins sur 31 retenues à tort. Surtout, ces règles
+  obligent à attendre le premier mot suivant après chaque phrase, soit 1,5 à 2 s de plus sur
+  presque toutes. Non retenu ;
+- le dernier mot : un auxiliaire ou un modal (« is », « can », « would »…) ne finit aucune des
+  vraies fins des deux séances. Ces mots rejoignent donc ceux qui retiennent le morceau (D33). Et
+  quand deux morceaux se rejoignent, le faux point du premier disparaît : la traduction lit une
+  seule phrase.
+Gain modeste et sans coût : une frontière par séance (« the world is In a place where it
+can… »).
+
 ## Ce que six semaines (au lieu de 48 h) remettent sur la table
 
 Dans l'ordre de valeur : tests automatisés dès le départ (fait) ; multilingue réel

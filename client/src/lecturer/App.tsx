@@ -7,6 +7,7 @@
  * divergent, le problème est réseau ; si les deux sont bas, c'est le micro.
  */
 import { useEffect, useRef, useState } from "react";
+import { CAPTURE_ALERT_BELOW } from "../../../shared/capture";
 import type { AudioHeader, ClientSettings, FloorState, Lang, ServerEvent, StatsPayload } from "../../../shared/protocol";
 import { desktop } from "../lib/desktop";
 import { listMics, listOutputs, startMic, type MicHandle } from "../lib/mic";
@@ -73,6 +74,9 @@ export function App() {
   const [roomSettings, setRoomSettings] = useState<ClientSettings>({ listenerVolume: 100, inputGainDb: 0, speechThresholdDb: -35, silenceAlertS: 20 });
   /** Question en cours de lecture dans le casque, pour la barre de progression de sa carte. */
   const [playingQ, setPlayingQ] = useState<{ n: number; startedAt: number; durMs: number }>();
+  /** Part du son du micro que le navigateur perd, quand elle dépasse 5 % (D34). */
+  const [captureLoss, setCaptureLoss] = useState<number>();
+  const lastCaptureLow = useRef(false);
 
   const sock = useRef<SalleSocket>(undefined);
   const mic = useRef<MicHandle>(undefined);
@@ -145,7 +149,18 @@ export function App() {
         setHistory([...h]);
         if (frame.byteLength) sock.current?.sendBinary(frame);
       },
-      { deviceId: id || undefined, echoCancellation },
+      {
+        deviceId: id || undefined,
+        echoCancellation,
+        onCapture: (ratio) => {
+          // L'état de l'onglet part avec le relevé : il dira, après coup, ce qui faisait perdre du son.
+          sock.current?.send({ t: "lecturer.capture", ratio, visible: document.visibilityState === "visible", focused: document.hasFocus() });
+          // Deux relevés bas de suite (10 s) avant d'alerter : un à-coup isolé ne compte pas.
+          const low = ratio < CAPTURE_ALERT_BELOW;
+          setCaptureLoss(low && lastCaptureLow.current ? 1 - ratio : undefined);
+          lastCaptureLow.current = low;
+        },
+      },
     );
     mic.current = m;
     m.setMuted(mutedRef.current);
@@ -209,6 +224,8 @@ export function App() {
     setPlayingQ(undefined);
     historyRef.current = [];
     setHistory([]);
+    setCaptureLoss(undefined);
+    lastCaptureLow.current = false;
     setRunning(false);
     setStopArmed(false);
     setLevel(0);
@@ -387,7 +404,7 @@ export function App() {
         onStop={requestStop}
       />
       <main className="flex-1 w-full max-w-[1780px] mx-auto p-4 md:p-6 lg:p-7 flex flex-col gap-5">
-        {(err || degraded || serverSilent) && (
+        {(err || degraded || serverSilent || (running && captureLoss != null)) && (
           <div className="flex flex-col gap-2">
             {err && (
               <div className="bg-error-container text-on-error-container border border-error/30 rounded-xl px-4 py-3 text-sm" role="alert">
@@ -403,6 +420,12 @@ export function App() {
               <div className="bg-error-container text-on-error-container border border-error/30 rounded-xl px-4 py-3 text-sm" role="alert">
                 Le serveur reçoit du silence ({serverDb} dB depuis {silentS} s). Ce n'est pas le bon micro, ou son niveau est trop bas : choisissez-en un
                 autre dans le panneau audio, et vérifiez le niveau d'entrée dans Windows.
+              </div>
+            )}
+            {running && captureLoss != null && (
+              <div className="bg-error-container text-on-error-container border border-error/30 rounded-xl px-4 py-3 text-sm" role="alert">
+                Le navigateur perd {Math.round(captureLoss * 100)} % du son du micro avant de l'envoyer : la reconnaissance va manquer des mots. Gardez cet
+                onglet visible et au premier plan, branchez le PC sur secteur et désactivez l'économie d'énergie, fermez les applications lourdes.
               </div>
             )}
           </div>
