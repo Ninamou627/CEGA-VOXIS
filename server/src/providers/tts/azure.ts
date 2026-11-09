@@ -1,9 +1,12 @@
 /**
  * Azure Neural TTS — secours : robuste, prévisible, trois fois moins cher.
  * REST + SSML. La vitesse passe par <prosody rate="+8%">.
+ * Palier gratuit F0 : 500 000 caractères par mois (≈ 8 h de voix française). Pour cet abonnement
+ * étudiant, seule `germanywestcentral` parmi les régions permises offre les voix neuronales (D33).
  */
 import type { Lang } from "../../../../shared/protocol";
 import { mp3DurationMs } from "../../util/mp3";
+import { providerFetch } from "../http";
 import type { TtsProvider, TtsRequest, TtsResult } from "../types";
 
 export interface AzureTtsOptions {
@@ -33,7 +36,8 @@ export class AzureTts implements TtsProvider {
       `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="${locale}">` +
       `<voice name="${voice}"><prosody rate="${rate >= 0 ? "+" : ""}${rate}%">${escapeXml(req.text)}</prosody></voice></speak>`;
 
-    const res = await fetch(`https://${this.opts.region}.tts.speech.microsoft.com/cognitiveservices/v1`, {
+    // Connexion gardée ouverte entre deux phrases, comme les autres fournisseurs (D20).
+    const res = await providerFetch(`https://${this.opts.region}.tts.speech.microsoft.com/cognitiveservices/v1`, {
       method: "POST",
       headers: {
         "Ocp-Apim-Subscription-Key": this.opts.key,
@@ -47,6 +51,6 @@ export class AzureTts implements TtsProvider {
     if (!res.ok) throw new Error(`Azure TTS ${res.status} : ${(await res.text()).slice(0, 300)}`);
 
     const audio = new Uint8Array(await res.arrayBuffer());
-    return { audio, mime: "audio/mpeg", durMs: mp3DurationMs(audio) };
+    return { audio, mime: "audio/mpeg", durMs: mp3DurationMs(audio), voice };
   }
 }

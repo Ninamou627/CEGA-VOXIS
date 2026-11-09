@@ -50,6 +50,11 @@ const SpeechSchema = z
      * pause de l'orateur : la voix dit une phrase au lieu de deux bribes, un peu plus tard (D32).
      */
     joinShort: z.boolean(),
+    /**
+     * Morceau qui s'arrête au milieu d'une phrase (« It's really an honor to ») envoyé avec la
+     * suite tant que l'orateur reprend avant 2,5 s : la voix dit des phrases entières, plus tard (D33).
+     */
+    wholeSentences: z.boolean(),
     /** Vocabulaire de la formation, séparé par des virgules. */
     keyterms: z.string().max(4000),
     /** Description de la séance pour la reconnaissance (en anglais, ≤ 1500 caractères). */

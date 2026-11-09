@@ -34,6 +34,8 @@ export interface PipelineTuning {
   quickStart: boolean;
   /** Un morceau de trois mots ou moins part avec la suite, sauf vraie pause de l'orateur (D32). */
   joinShort: boolean;
+  /** Un morceau qui s'arrête au milieu d'une phrase attend la suite et part avec elle (D33). */
+  wholeSentences: boolean;
 }
 
 export interface PipelineConfig {
@@ -43,7 +45,7 @@ export interface PipelineConfig {
   tuning?: () => PipelineTuning;
 }
 
-const DEFAULT_TUNING: PipelineTuning = { commit: {}, contextSegments: 2, baseSpeed: 1, followTempo: true, speechThresholdDb: -35, quickStart: true, joinShort: true };
+const DEFAULT_TUNING: PipelineTuning = { commit: {}, contextSegments: 2, baseSpeed: 1, followTempo: true, speechThresholdDb: -35, quickStart: true, joinShort: true, wholeSentences: true };
 /**
  * Silence du formateur au-delà duquel on demande au STT de clore le tour en cours (D22) :
  * une phrase longue part en morceaux, chacun livré ~0,3 s après son dernier mot, au lieu
@@ -90,6 +92,24 @@ const JOIN_PAUSE_MS = CONTINUE_PAUSE_MS;
 const TITLE_PAUSE_MS = 1500;
 /** Un morceau retenu n'attend jamais plus : au-delà, c'est la suite qui tarde (délai de coupe, 4 s). */
 const HOLD_MAX_MS = 4000;
+/**
+ * Phrase coupée au milieu (D33). Le STT clôt un tour à chaque hésitation de l'orateur (D22,
+ * pauses de 250 ms) : le 9/11/2026, 20 voix sur 46 s'arrêtaient au milieu d'une phrase
+ * (« C'est vraiment un honneur de »… silence… « J'étudie le marketing à »…), chacune traduite
+ * et dite à part, l'intonation repartant de zéro. Un morceau sans ponctuation finale, ou fini
+ * sur une hésitation ou sur un mot qui annonce la suite (« to », « the », « and »…, même suivi
+ * du point qu'ajoute une coupe forcée), attend la suite tant que l'orateur reprend avant 2,5 s,
+ * 8 s au plus depuis le premier morceau retenu. Rejoué sur la séance : 20 → 3 voix coupées,
+ * 29 voix au lieu de 46 ; 13 voix partent plus tard, de 2,9 s en médiane, 7 s au plus.
+ */
+const MID_PAUSE_MS = 2500;
+const MID_HOLD_MAX_MS = 8000;
+/** Mots qui ne finissent pas une phrase anglaise, même suivis d'un point (coupe forcée, D27). */
+const OPEN_END = new Set([
+  "and", "or", "but", "because", "the", "a", "an", "of", "to", "in", "on", "with", "for", "at", "by", "from", "into",
+  "than", "if", "our", "your", "their", "its", "my", "about",
+]);
+const FILLERS = new Set(["uh", "um", "er", "erm", "uhm", "hmm", "mm"]);
 /** Un segment qui finit sur l'un de ces mots n'est pas fini, quelle que soit la pause. */
 const DANGLING = new Set([
   "and", "or", "but", "because", "so", "the", "a", "an", "of", "to", "in", "on", "with", "for", "that", "which", "who",
@@ -463,25 +483,30 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     for (const s of segments) this.join(s);
   }
 
-  /** Un segment sort du découpage : un morceau court attend la suite, le reste part (D32). */
+  /**
+   * Un segment sort du découpage : un morceau court (D32) ou une phrase coupée au milieu (D33)
+   * attend la suite, le reste part.
+   */
   private join(seg: Segment) {
     const h = this.held;
     let since = Date.now();
     if (h) {
       this.held = undefined;
-      if (h.stream === this.streams && seg.tStart - h.seg.tEnd < this.joinPauseMs(h.seg)) {
+      if (h.stream === this.streams && seg.tStart - h.seg.tEnd < this.joinPauseMs(h.seg) && since - h.since < this.holdMaxMs(h.seg)) {
         seg = joinSegments(h.seg, seg);
         since = h.since;
       } else {
-        this.dispatch(h.seg);
+        this.dispatch(h.seg, since - h.since);
       }
     }
     if (this.holds(seg)) this.held = { seg, stream: this.streams, since };
-    else this.dispatch(seg);
+    else this.dispatch(seg, Date.now() - since);
   }
 
   private holds(seg: Segment): boolean {
-    if (!this.tuning.joinShort || !this.started || this.muted) return false;
+    if (!this.started || this.muted) return false;
+    if (this.midSentence(seg)) return true;
+    if (!this.tuning.joinShort) return false;
     return seg.words.length <= SHORT_WORDS || this.endsOnTitle(seg);
   }
 
@@ -490,15 +515,30 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     return last != null && isTitle(last);
   }
 
+  /** La phrase n'est pas finie : pas de ponctuation finale, hésitation, ou mot qui annonce la suite (D33). */
+  private midSentence(seg: Segment): boolean {
+    if (!this.tuning.wholeSentences || this.cfg.srcLang !== "en") return false;
+    const text = seg.text.trim();
+    if (/[?!]["”»)]*$/.test(text)) return false;
+    if (!/[.…]["”»)]*$/.test(text)) return true;
+    const last = (text.toLowerCase().match(/[\p{L}']+/gu) ?? []).at(-1);
+    return last != null && (OPEN_END.has(last) || FILLERS.has(last));
+  }
+
   private joinPauseMs(seg: Segment): number {
-    return this.endsOnTitle(seg) ? TITLE_PAUSE_MS : JOIN_PAUSE_MS;
+    if (this.endsOnTitle(seg)) return TITLE_PAUSE_MS;
+    return this.midSentence(seg) ? MID_PAUSE_MS : JOIN_PAUSE_MS;
+  }
+
+  private holdMaxMs(seg: Segment): number {
+    return this.midSentence(seg) ? MID_HOLD_MAX_MS : HOLD_MAX_MS;
   }
 
   /** Le morceau retenu part seul : l'orateur a vraiment marqué une pause, ou la suite tarde. */
   private checkHeld() {
     const h = this.held;
     if (!h) return;
-    if (h.stream !== this.streams || this.muted || h.seg.endPos == null || Date.now() - h.since >= HOLD_MAX_MS) return this.releaseHeld();
+    if (h.stream !== this.streams || this.muted || h.seg.endPos == null || Date.now() - h.since >= this.holdMaxMs(h.seg)) return this.releaseHeld();
     const p = this.pause.pauseAfter(h.seg.endPos);
     if (p && p.ms >= this.joinPauseMs(h.seg)) this.releaseHeld();
   }
@@ -506,10 +546,11 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
   private releaseHeld() {
     const h = this.held;
     this.held = undefined;
-    if (h) this.dispatch(h.seg);
+    if (h) this.dispatch(h.seg, Date.now() - h.since);
   }
 
-  private dispatch(seg: Segment) {
+  /** `heldMs` : temps passé à attendre la suite (D32, D33), journalisé avec la coupe. */
+  private dispatch(seg: Segment, heldMs = 0) {
     // Un segment qui finit après la reprise commence au plus tôt à la reprise : collé dans le
     // flux à l'audio d'avant la sourdine, son premier mot y serait daté.
     if (this.resumedAt != null && seg.tEnd >= this.resumedAt && seg.tStart < this.resumedAt) seg = { ...seg, tStart: this.resumedAt };
@@ -565,6 +606,7 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
       words: seg.words.length,
       reason: seg.reason,
       joined: seg.joined ?? 1,
+      heldMs: Math.round(heldMs),
       confidence: confidence != null ? Math.round(confidence * 1000) / 1000 : null,
       voice: prosody
         ? {

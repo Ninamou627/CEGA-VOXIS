@@ -30,11 +30,14 @@ class FakeStt implements SttProvider {
 const mt: MtProvider = { name: "fake-mt", translate: async (r) => `fr:${r.text}` };
 const tts: TtsProvider = { name: "fake-tts", synthesize: async () => ({ audio: new Uint8Array(1), mime: "audio/mpeg", durMs: 1000 }) };
 
-/** `joinShort` : morceaux courts attachés à la suite (D32) ; coupé ailleurs, où chaque segment se suit à l'unité. */
-function room(finalWords = true, joinShort = false) {
+/**
+ * `joinShort` : morceaux courts attachés à la suite (D32) ; `wholeSentences` : phrases coupées
+ * au milieu attachées à la suite (D33). Coupés ailleurs, où chaque segment se suit à l'unité.
+ */
+function room(finalWords = true, joinShort = false, wholeSentences = false) {
   const stt = new FakeStt(finalWords);
   const metrics = new Metrics();
-  const tuning = () => ({ commit: {}, contextSegments: 2, baseSpeed: 1, followTempo: true, speechThresholdDb: -35, quickStart: true, joinShort });
+  const tuning = () => ({ commit: {}, contextSegments: 2, baseSpeed: 1, followTempo: true, speechThresholdDb: -35, quickStart: true, joinShort, wholeSentences });
   const pipeline = new Pipeline({ stt, mt, tts }, { srcLang: "en", targetLangs: ["fr"], sampleRate: 16000, tuning }, metrics);
   const commits: { seq: number; text: string; tOrigin: number; tEnd: number; reason: string }[] = [];
   const audio: { seq: number; tOrigin: number }[] = [];
@@ -217,7 +220,7 @@ function forcingRoom(opts: { quickStart?: boolean; ttsDurMs?: number } = {}) {
       },
     };
     const voice: TtsProvider = { name: "fake-tts", synthesize: async () => ({ audio: new Uint8Array(1), mime: "audio/mpeg", durMs: opts.ttsDurMs ?? 1000 }) };
-    const tuning = () => ({ commit: {}, contextSegments: 2, baseSpeed: 1, followTempo: true, speechThresholdDb: -35, quickStart: opts.quickStart ?? false, joinShort: false });
+    const tuning = () => ({ commit: {}, contextSegments: 2, baseSpeed: 1, followTempo: true, speechThresholdDb: -35, quickStart: opts.quickStart ?? false, joinShort: false, wholeSentences: false });
     const pipeline = new Pipeline({ stt, mt, tts: voice }, { srcLang: "en", targetLangs: ["fr"], sampleRate: 16000, tuning }, new Metrics());
     const push = async (frames: number, loud: boolean) => {
       for (let i = 0; i < frames; i++) {
@@ -435,7 +438,7 @@ describe("Pipeline — la voix suit le débit du formateur (D26)", () => {
         return { audio: new Uint8Array(1), mime: "audio/mpeg", durMs: Math.round((r.text.length / 17 / (r.speed ?? 1)) * 1000) };
       },
     };
-    const tuning = () => ({ commit: {}, contextSegments: 2, baseSpeed: 1, followTempo, speechThresholdDb: -35, quickStart: false, joinShort: false });
+    const tuning = () => ({ commit: {}, contextSegments: 2, baseSpeed: 1, followTempo, speechThresholdDb: -35, quickStart: false, joinShort: false, wholeSentences: false });
     const pipeline = new Pipeline({ stt, mt, tts: voice }, { srcLang: "en", targetLangs: ["fr"], sampleRate: 16000, tuning }, new Metrics());
     const audio: { pauseMs?: number }[] = [];
     pipeline.on("audio", (e) => audio.push(e));
@@ -621,5 +624,102 @@ describe("Pipeline — morceaux courts attachés à la suite (D32)", () => {
     expect(r.commits).toHaveLength(0);
     await r.pipeline.stop();
     expect(r.commits.map((c) => c.text)).toEqual(["Thank you."]);
+  });
+});
+
+describe("Pipeline — phrases entières (D33)", () => {
+  /** Réglages d'usine : morceaux courts et phrases coupées attachés à la suite. */
+  function sentenceRoom(wholeSentences = true) {
+    const r = room(true, true, wholeSentences);
+    const silence = async (frames: number) => {
+      for (let i = 0; i < frames; i++) {
+        await vi.advanceTimersByTimeAsync(100);
+        r.pipeline.pushAudio(FRAME);
+      }
+    };
+    /** Texte définitif d'un tour : des mots de 200 ms bout à bout à partir de `at` (position du flux). */
+    const final = (at: number, text: string) =>
+      r.stt.ev!.onPartial({ words: text.split(" ").map((t, i) => ({ text: t, startMs: at + i * 200, endMs: at + (i + 1) * 200, isFinal: true })), isFinal: true });
+    return { ...r, silence, final };
+  }
+
+  it("un morceau qui finit sur « to » attend la suite et part avec elle (séance du 9/11)", async () => {
+    const r = sentenceRoom();
+    await r.pipeline.start();
+    await r.speak(13);
+    r.final(300, "It's really an honor to");
+    await r.speak(10); // l'orateur hésite puis reprend
+    expect(r.commits).toHaveLength(0);
+    r.final(1500, "be here today.");
+    expect(r.commits.map((c) => c.text)).toEqual(["It's really an honor to be here today."]);
+    await r.pipeline.stop();
+  });
+
+  it("une hésitation finale (« uh, ») n'achève pas la phrase", async () => {
+    const r = sentenceRoom();
+    await r.pipeline.start();
+    await r.speak(13);
+    r.final(300, "I don't know that, uh,");
+    await r.speak(5);
+    expect(r.commits).toHaveLength(0);
+    r.final(1400, "I can give you advice.");
+    expect(r.commits.map((c) => c.text)).toEqual(["I don't know that, uh, I can give you advice."]);
+    await r.pipeline.stop();
+  });
+
+  it("le point d'une coupe forcée après « the » n'achève pas la phrase", async () => {
+    const r = sentenceRoom();
+    await r.pipeline.start();
+    await r.speak(15);
+    r.final(300, "Then we will look at the.");
+    await r.speak(5);
+    expect(r.commits).toHaveLength(0);
+    r.final(1600, "results now.");
+    expect(r.commits.map((c) => c.text)).toEqual(["Then we will look at the. results now."]);
+    await r.pipeline.stop();
+  });
+
+  it("sans le réglage, la même phrase part en deux morceaux", async () => {
+    const r = sentenceRoom(false);
+    await r.pipeline.start();
+    await r.speak(13);
+    r.final(300, "It's really an honor to");
+    expect(r.commits.map((c) => c.text)).toEqual(["It's really an honor to"]);
+    await r.pipeline.stop();
+  });
+
+  it("une phrase finie (point, question) part aussitôt", async () => {
+    const r = sentenceRoom();
+    await r.pipeline.start();
+    await r.speak(13);
+    r.final(300, "Is it better than before?");
+    expect(r.commits.map((c) => c.text)).toEqual(["Is it better than before?"]);
+    r.final(1400, "People are healthier today.");
+    expect(r.commits.map((c) => c.text)).toEqual(["Is it better than before?", "People are healthier today."]);
+    await r.pipeline.stop();
+  });
+
+  it("après 2,5 s de vrai silence, le morceau part seul : rien n'est perdu", async () => {
+    const r = sentenceRoom();
+    await r.pipeline.start();
+    await r.speak(13);
+    r.final(300, "It's really an honor to");
+    await r.silence(20); // 2 s : l'orateur cherche ses mots
+    expect(r.commits).toHaveLength(0);
+    await r.silence(7); // 2,7 s : il s'est arrêté
+    expect(r.commits.map((c) => c.text)).toEqual(["It's really an honor to"]);
+    await r.pipeline.stop();
+  });
+
+  it("un morceau retenu n'attend jamais plus de 8 s", async () => {
+    const r = sentenceRoom();
+    await r.pipeline.start();
+    await r.speak(13);
+    r.final(300, "It's really an honor to");
+    await r.speak(75); // il parle, mais rien n'est encore reconnu
+    expect(r.commits).toHaveLength(0);
+    await r.speak(10);
+    expect(r.commits.map((c) => c.text)).toEqual(["It's really an honor to"]);
+    await r.pipeline.stop();
   });
 });

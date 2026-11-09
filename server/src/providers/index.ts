@@ -3,7 +3,7 @@ import type { Lang } from "../../../shared/protocol";
 import type { Config } from "../config";
 import { parseGlossary, parseKeyterms, type MtEngine, type Settings } from "../settings";
 import type { MtProvider, MtRequest, Providers, TtsProvider, TtsRequest, TtsResult } from "./types";
-import { Breaker } from "./fallback";
+import { Breaker, retryTransient } from "./fallback";
 import { MockStt } from "./stt/mock";
 import { AssemblyAiStt } from "./stt/assemblyai";
 import { DeepgramStt } from "./stt/deepgram";
@@ -19,6 +19,27 @@ export interface FallbackHooks {
   onFallback: (stage: "mt" | "tts", err: Error) => void;
   /** Le primaire répond de nouveau. */
   onRecover: (stage: "mt" | "tts") => void;
+}
+
+/**
+ * Une voix qui échoue pour une raison passagère est redemandée une fois, au même moteur :
+ * la salle garde sa voix. Un refus (crédits épuisés, clé refusée) passe aussitôt au secours (D33).
+ */
+export class RetryingTts implements TtsProvider {
+  constructor(
+    private readonly inner: TtsProvider,
+    private readonly delayMs = 300,
+    private readonly onRetry: (err: Error) => void = (e) => console.warn(`[tts] ${inner.name} : nouvel essai après « ${e.message.slice(0, 120)} »`),
+  ) {}
+  get name(): string {
+    return this.inner.name;
+  }
+  synthesize(req: TtsRequest): Promise<TtsResult> {
+    return retryTransient(() => this.inner.synthesize(req), this.delayMs, this.onRetry);
+  }
+  warm(force?: boolean): Promise<void> {
+    return this.inner.warm?.(force) ?? Promise.resolve();
+  }
 }
 
 export class FallbackTts implements TtsProvider {
@@ -212,14 +233,16 @@ export function makeProviders(cfg: Config, settings: () => Settings, hooks: Fall
   const mt = new SwitchableMt(engines, hooks, settings, cfg.SRC_LANG);
 
   // ---- voix -----------------------------------------------------------------------
-  let tts = makeTts(cfg.TTS_PROVIDER, cfg, settings);
-  let elevenlabs = tts instanceof ElevenLabsTts ? tts : undefined;
+  // Chaque moteur retente une panne passagère ; un refus du primaire passe au secours (D33).
+  const primaryTts = makeTts(cfg.TTS_PROVIDER, cfg, settings);
+  let elevenlabs = primaryTts instanceof ElevenLabsTts ? primaryTts : undefined;
+  let tts: TtsProvider = new RetryingTts(primaryTts);
   const ttsBackup = cfg.TTS_BACKUP;
   if (ttsBackup !== "none" && ttsBackup !== cfg.TTS_PROVIDER) {
     const backup = tryBuild(`secours ${ttsBackup}`, () => makeTts(ttsBackup, cfg, settings));
     if (backup) {
       if (backup instanceof ElevenLabsTts) elevenlabs = backup;
-      tts = new FallbackTts(tts, backup, hooks);
+      tts = new FallbackTts(tts, new RetryingTts(backup), hooks);
     }
   }
 

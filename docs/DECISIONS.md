@@ -913,6 +913,57 @@ l'utilisateur, une traduction complète et fluide avant une traduction immédiat
 WASAPI sur la sortie par défaut), sur le même passage, pour vérifier à l'oreille et par
 transcription : vitesse, blancs, coupures, mots perdus. Puis la perte du son du micro côté PC.
 
+## D33 — Aucune phrase sans voix ; des phrases entières
+
+Essai du 09/11/2026 à 12:11 après D32, même montage, avec enregistrement des écouteurs (boucle
+WASAPI). Chaque étape a été vérifiée contre la précédente :
+
+| Étape | Mesure | Verdict |
+|---|---|---|
+| Son du micro | 98 à 102 % reçu par le serveur | bon (perte du 08/11 absente) |
+| Reconnaissance | 306 mots dans la transcription différée du même son ; le direct en a 94 % à l'identique, aucun passage de 2 mots manqué | bonne : « Universidad San Marcos » → « University », « Thank you », un « Hello », un « or » |
+| Découpage | aucun mot perdu ; **20 voix sur 46 s'arrêtent au milieu d'une phrase** | les « coupures » entendues |
+| Traduction | 46 segments sur 46 complets (relus) | bonne |
+| Voix | fichiers relus par transcription : 3,2 % d'écart, 1 mot ; **les 4 dernières phrases sans voix** | crédits ElevenLabs épuisés à 12:14:02, aucun secours |
+| Lecture | 42 voix sur 42, en entier ; vitesse mesurée dans les écouteurs ×0,99 | bonne (D32 tenu) |
+
+**Une phrase n'est jamais perdue faute de voix.** Le serveur n'affichait que le texte quand
+ElevenLabs échouait. Désormais :
+- chaque moteur de voix retente une fois une panne passagère (réseau, délai, 429, 5xx) après
+  300 ms : la salle garde sa voix ;
+- un refus (crédits épuisés, clé refusée) passe aussitôt au secours, la voix française Azure
+  « Denise » (`TTS_BACKUP=azure`), pour 60 s avant de réessayer le primaire. Palier gratuit F0 :
+  500 000 caractères par mois, environ 8 h de voix. Parmi les régions que l'abonnement étudiant
+  permet, seule `germanywestcentral` offre les voix neuronales (`spaincentral` est exclue du
+  service Speech autonome) ;
+- Azure garde sa connexion ouverte entre deux phrases, comme les autres fournisseurs (D20).
+
+**Des phrases entières.** Le STT clôt un tour à chaque hésitation de l'orateur (pauses de
+250 ms, D22) : « C'est vraiment un honneur de »… silence… « J'étudie le marketing à »… Un
+segment sans ponctuation finale, ou fini sur une hésitation (« uh, ») ou sur un mot qui annonce
+la suite (« to », « the », « and »…, même suivi du point d'une coupe forcée), attend la suite et
+part avec elle si l'orateur reprend avant 2,5 s, 8 s au plus depuis le premier morceau retenu ;
+une vraie pause l'envoie seul. Réglage « Phrases » dans la Configuration (`speech.wholeSentences`,
+actif par défaut). Rejoué sur les deux séances du 09/11 :
+
+| Séance | Voix coupées au milieu d'une phrase | Voix | Voix qui partent plus tard |
+|---|---|---|---|
+| 12:08 (D32) | 20 → 3 | 46 → 30, 11 mots en médiane | 13 : +2,9 s en médiane, +7,0 s au plus |
+| 10:42 (avant D32) | 13 → 2 | 25 → 19 | 11 : +3,7 s en médiane, +7,1 s au plus |
+
+Les coupures restantes suivent un vrai arrêt de l'orateur (4,4 s de silence après « honor to »).
+Le premier morceau rapide d'une prise de parole (D25) attend lui aussi sa suite : la voix
+commence plus tard, mais sur une phrase.
+
+**Le prix.** Encore du retard, au profit de phrases entières : c'est le choix de l'utilisateur,
+une voix complète et fluide avant une voix immédiate (D32). L'indicateur D19 s'éloigne d'autant.
+
+**Ce que l'essai a aussi montré.** Le retard monte à 8–9 s sur 4 voix en fin de passage : la
+phrase #34 est sortie du STT 4,7 s après les mots (coupe au délai, sans ponctuation), puis DeepL
+a mis 3,0 s au lieu de 0,2 s, et les trois suivantes ont attendu derrière elle (chaîne série par
+langue). Le retard est retombé à 2,8 s à la pause suivante, sans rien sauter. Pistes : un second
+moteur de traduction lancé si DeepL tarde, et la coupe au délai.
+
 ## Ce que six semaines (au lieu de 48 h) remettent sur la table
 
 Dans l'ordre de valeur : tests automatisés dès le départ (fait) ; multilingue réel

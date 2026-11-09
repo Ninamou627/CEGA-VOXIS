@@ -46,6 +46,7 @@ export function defaultsFrom(cfg: Config): Settings {
       segmentTimeoutMs: DEFAULT_COMMIT.timeoutMs,
       quickStart: true,
       joinShort: true,
+      wholeSentences: true,
       keyterms: cfg.STT_KEYTERMS.join(", "),
       prompt: cfg.STT_PROMPT ?? "",
     },

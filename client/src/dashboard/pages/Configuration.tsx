@@ -56,6 +56,11 @@ const JOIN_SHORT = [
   { value: "off" as const, label: "Seuls", title: "Chaque morceau part dès qu'il est reconnu, même d'un seul mot" },
 ];
 
+const WHOLE_SENTENCES = [
+  { value: "on" as const, label: "Entières", title: "Un morceau coupé au milieu d'une phrase attend la suite : la voix dit des phrases entières, plus tard" },
+  { value: "off" as const, label: "En morceaux", title: "Chaque morceau part dès qu'il est reconnu, même au milieu d'une phrase : la voix commence plus tôt" },
+];
+
 const dec = (x: number, digits = 1) => x.toFixed(digits).replace(".", ",");
 const db = (x: number) => `${x > 0 ? "+" : x < 0 ? "−" : ""}${Math.abs(x)} dB`;
 
@@ -373,6 +378,15 @@ export function Configuration({ conf, value, dirty, micDb, onChange, onSave, onD
             changed={changed("speech.joinShort")}
           >
             <Segmented value={sp.joinShort ? "on" : "off"} onChange={(x) => set("speech", { joinShort: x === "on" })} options={JOIN_SHORT} />
+          </Field>
+
+          <Field
+            label="Phrases"
+            help="L'orateur hésite au milieu d'une phrase : « It's really an honor to »… Entières, ce morceau attend la suite tant que l'orateur reprend avant 2,5 s (8 s au plus) ; la voix ne s'arrête plus au milieu d'une phrase, mais commence plus tard."
+            applies="live"
+            changed={changed("speech.wholeSentences")}
+          >
+            <Segmented value={sp.wholeSentences ? "on" : "off"} onChange={(x) => set("speech", { wholeSentences: x === "on" })} options={WHOLE_SENTENCES} />
           </Field>
 
           <Field

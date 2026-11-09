@@ -112,6 +112,7 @@ const pipeline = new Pipeline(
         speechThresholdDb: s.speech.speechThresholdDb,
         quickStart: s.speech.quickStart,
         joinShort: s.speech.joinShort,
+        wholeSentences: s.speech.wholeSentences,
       };
     },
   },
