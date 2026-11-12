@@ -2,13 +2,14 @@
  * Les quatre piliers de la qualité. Chacun a une mesure définie et son échantillon :
  * pas de note inventée, un chiffre qu'on peut expliquer à un client.
  *
- *   1. Rapidité      — latence moyenne micro → oreille, mesurée à l'accusé de lecture ;
+ *   1. Rapidité      — décalage par mot moyen, du mot prononcé au mot entendu (D41) ; avant cette
+ *                      mesure, premier mot reconnu → voix ;
  *   2. Transcription — confiance moyenne donnée par le moteur de reconnaissance ;
  *   3. Traduction    — part des segments sans signalement « mauvaise traduction » ni échec ;
  *   4. Voix          — part des segments sans signalement « voix peu naturelle ».
  */
 import type { DayRow, Quality } from "../../../../shared/admin";
-import { delay, num, rate, secs } from "../../ui/format";
+import { delay, num, perMin, rate, secs } from "../../ui/format";
 import { Bars, Ring, TONE_TEXT, type Tone } from "../ui";
 
 export interface Pillar {
@@ -28,24 +29,59 @@ export interface Pillar {
 
 const rateTone = (x: number | null, ok: number, warn: number): Tone => (x == null ? "idle" : x >= ok ? "ok" : x >= warn ? "warn" : "crit");
 
-export function pillars(q: Quality, days: DayRow[], liveMeanMs: number | null, sttName?: string): Pillar[] {
-  const speedMs = liveMeanMs ?? q.speed.meanMs;
-  const mock = sttName?.includes("mock");
-  return [
-    {
+/** Cibles du décalage par mot (D41) : 4 s, et 6 s au-delà desquelles c'est critique. */
+const LAG_OK_MS = 4000;
+const LAG_CRIT_MS = 6000;
+
+/** Rapidité : le décalage par mot quand on l'a mesuré (D41), sinon l'ancienne mesure. */
+function speedPillar(q: Quality, days: DayRow[], liveMeanMs: number | null): Pillar {
+  const l = q.lag;
+  if (l.n > 0 || liveMeanMs != null) {
+    const ms = liveMeanMs ?? l.meanMs;
+    return {
       n: 1,
       key: "speed",
       title: "Rapidité",
-      metric: "Latence de traduction",
-      value: speedMs != null ? secs(speedMs) : "—",
-      // L'anneau est plein à la cible (1,5 s) et se vide au-delà.
-      ring: speedMs != null ? Math.min(1, 1500 / speedMs) : null,
-      tone: speedMs == null ? "idle" : speedMs <= 2500 ? "ok" : speedMs <= 4000 ? "warn" : "crit",
-      definition: liveMeanMs != null ? "moyenne de la dernière minute, du mot prononcé à la voix entendue" : "moyenne historique, du mot prononcé à la voix entendue",
-      sample: q.speed.n ? `${num(q.speed.n)} lectures${q.speed.p95Ms != null ? ` · p95 ${delay(q.speed.p95Ms)}` : ""}${q.speed.reports ? ` · ${q.speed.reports} signalée${q.speed.reports > 1 ? "s" : ""} lente${q.speed.reports > 1 ? "s" : ""}` : ""}` : "aucune lecture mesurée",
-      series: days.map((d) => d.e2eMean),
-      seriesMax: 4000,
-    },
+      metric: "Décalage par mot",
+      value: ms != null ? secs(ms) : "—",
+      // L'anneau est plein à la cible (4 s) et se vide au-delà.
+      ring: ms != null ? Math.min(1, LAG_OK_MS / Math.max(1, ms)) : null,
+      tone: ms == null ? "idle" : ms <= LAG_OK_MS ? "ok" : ms <= LAG_CRIT_MS ? "warn" : "crit",
+      definition: `${liveMeanMs != null ? "moyenne de la dernière minute" : "moyenne historique"}, du mot prononcé au même mot entendu (estimé)`,
+      sample: [
+        `${num(l.n)} mots`,
+        l.p95Ms != null && `p95 ${delay(l.p95Ms)}`,
+        l.maxMs != null && `max ${delay(l.maxMs)}`,
+        l.slopeMaxMsPerMin != null && `pente max ${perMin(l.slopeMaxMsPerMin)}`,
+        q.speed.reports && `${q.speed.reports} signalée${q.speed.reports > 1 ? "s" : ""} lente${q.speed.reports > 1 ? "s" : ""}`,
+      ]
+        .filter(Boolean)
+        .join(" · "),
+      series: days.map((d) => d.wordLagMean),
+      seriesMax: 15000,
+    };
+  }
+  const speedMs = q.speed.meanMs;
+  return {
+    n: 1,
+    key: "speed",
+    title: "Rapidité",
+    metric: "Latence de traduction",
+    value: speedMs != null ? secs(speedMs) : "—",
+    // L'anneau est plein à la cible (1,5 s) et se vide au-delà.
+    ring: speedMs != null ? Math.min(1, 1500 / speedMs) : null,
+    tone: speedMs == null ? "idle" : speedMs <= 2500 ? "ok" : speedMs <= 4000 ? "warn" : "crit",
+    definition: "moyenne historique, du premier mot reconnu à la voix entendue (mesure d'avant le décalage par mot)",
+    sample: q.speed.n ? `${num(q.speed.n)} lectures${q.speed.p95Ms != null ? ` · p95 ${delay(q.speed.p95Ms)}` : ""}${q.speed.reports ? ` · ${q.speed.reports} signalée${q.speed.reports > 1 ? "s" : ""} lente${q.speed.reports > 1 ? "s" : ""}` : ""}` : "aucune lecture mesurée",
+    series: days.map((d) => d.e2eMean),
+    seriesMax: 4000,
+  };
+}
+
+export function pillars(q: Quality, days: DayRow[], liveMeanMs: number | null, sttName?: string): Pillar[] {
+  const mock = sttName?.includes("mock");
+  return [
+    speedPillar(q, days, liveMeanMs),
     {
       n: 2,
       key: "transcription",

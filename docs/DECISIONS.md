@@ -1461,6 +1461,77 @@ Cinquième correction de l'audit du 10/11/2026 (étape 1.5, défaut F-08).
 - L'alerte du tableau de bord est vérifiée par les stats reçues (`playFails`), pas regardée à
   l'écran : il faut la connexion d'administration.
 
+## D41 — Ce que la salle entend se mesure : décalage par mot, retard maximal, pente
+
+Sixième correction de l'audit du 10/11/2026 (étape 2.1, défaut F-12).
+
+**Constat.**
+- L'indicateur affiché en tête (D19, « fin de phrase → voix ») mesure un étage : il part de la
+  fin de la phrase. En phrases entières (D33), le premier mot d'une phrase de 10 s s'entend au
+  mieux 10 s après avoir été dit, et D19 n'en voit rien : il récompensait l'attente de phrases
+  entières.
+- Le bout-en-bout à l'écoute (D24) part du premier mot du segment : il ne dit rien des mots qui
+  suivent, ni de la tendance au fil de la séance.
+- La dérive n'existait que dans le rapport, sur le premier mot de chaque segment, sans erreur
+  type : en direct, rien ne disait si le retard grandissait.
+
+**Décision.**
+- Trois indicateurs de premier rang, calculés à partir des accusés des téléphones et des mots
+  datés (`latency-report.ts`, `metrics.ts`) :
+  - *décalage par mot* : début prononcé d'un mot → début de son écoute. Pour le mot k sur n d'un
+    segment : écoute + (k/n) × durée de la voix − (début du segment + place du mot k dans la
+    parole). La place du mot vient des mots datés du STT, désormais journalisés au commit
+    (`wordStarts`) ; sans eux (journaux d'avant D41), elle est répartie à proportion du temps de
+    parole. Côté voix, toujours à proportion : la valeur est une estimation, et le rapport le dit ;
+  - *retard maximal* : le mot le plus en retard (segment et heure au rapport) ;
+  - *pente du retard* : moindres carrés sur le décalage moyen de chaque segment, avec son erreur
+    type et l'étendue couverte. En direct : sur les 10 dernières minutes, et rien sous 3 minutes.
+- Les pannes ne faussent pas la tendance : un segment dont l'intervalle [début, écoute] croise un
+  mode dégradé « stt-lost » ou « text-only » (désormais journalisé, `degraded`) est écarté et
+  compté à part ; le maximum pannes comprises reste au rapport.
+- Partout :
+  - `npm run report` : les trois indicateurs en tête, puis la table « Étages » ; par minute, le
+    décalage par mot ; l'ancienne dérive est gardée, étiquetée comme telle ;
+  - stats en direct : `wordLagP50`, `wordLagP95`, `lagMaxMs`, `lagSlopeMsPerMin` ;
+  - tableau de bord. *Supervision* : « Décalage par mot », « Retard maximal », « Pente du
+    retard », puis les étages (« Fin de phrase → voix » avec la mention D19). *Vue d'ensemble* :
+    le décalage par mot en titre (cible 4 s, critique au-delà de 6 s). *Qualité* : décalage par
+    mot, retard max et pente max par jour ; le pilier vitesse en part quand il y a des mesures.
+    *Alertes* : décalage médian au-delà de 6 s, pente au-delà de 100 ms/min.
+- D19 reste affiché, comme indicateur d'étage.
+
+**Mesuré** (`npm run report` sur le journal du serveur hébergé, essais du 09/11, hors pannes ;
+journaux d'avant D41, donc sans mots datés : place des mots répartie à proportion) :
+
+| Essai | Décalage par mot, médiane / p95 | Retard maximal | Pente |
+|---|---|---|---|
+| 6 (42 segments) | 5,4 s / 10,6 s (283 mots) | 11,5 s | +1,64 ± 0,47 s/min sur 2,2 min |
+| 7 (69 segments) | 10,4 s / 14,6 s (703 mots) | 17,2 s | +1,19 ± 0,19 s/min sur 5,4 min |
+| 8 (20 segments) | 8,6 s / 11,2 s (200 mots) | 12,2 s | +2,93 ± 1,06 s/min sur 1,5 min |
+
+Lecture : la salle entendait chaque mot 5 à 10 s après qu'il a été dit, là où D19 affichait 1 à
+2 s. Les pentes, prises sur 1,5 à 5,4 minutes, sont surtout la montée en régime du retard au
+début d'une prise de parole (erreurs types larges) : sur l'essai 6, la voix durait 0,85 fois la
+parole, elle ne pouvait pas s'accumuler sans fin. L'essai 7 a ses causes propres (blanc d'1 s
+de la voix Azure, corrigé en D34 ; 74 % du son capté).
+
+**Vérifié.** 10 tests nouveaux. Rapport (7) : mots répartis à proportion ou datés par le STT,
+pente et erreur type, pannes lues dans les changements de mode puis écartées, pente vue quand la
+voix dure plus que la parole, première écoute rapprochée de la voix de sa langue. Métriques en
+direct (3) : décalage de chaque mot à l'accusé dans la langue écoutée, écoutes d'un segment en
+panne écartées, pente seulement au-delà de 3 minutes.
+300 tests sur 300 ; types vérifiés (serveur, client, poste).
+
+**Limites.**
+- Une estimation : la voix est supposée dire les mots dans l'ordre, à débit régulier. Les
+  essais passés n'ont pas les mots datés ; les prochains les auront.
+- La pente en direct, sur 10 minutes, compte la montée en régime de chaque prise de parole : un
+  début de séance la gonfle. L'erreur type est au rapport, pas à l'écran.
+- La pente maximale du jour est la plus forte relevée chaque minute (au moins 3 minutes de
+  données) : un pic court peut la porter.
+- Les pages du tableau de bord sont vérifiées par les types, pas regardées à l'écran : il faut
+  la connexion d'administration.
+
 ## Ce que six semaines (au lieu de 48 h) remettent sur la table
 
 Dans l'ordre de valeur : tests automatisés dès le départ (fait) ; multilingue réel

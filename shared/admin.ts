@@ -27,6 +27,15 @@ export interface DayTotals {
    */
   endSum?: number;
   endN?: number;
+  /**
+   * Décalage par mot (D41), hors segments ayant traversé une panne : somme et nombre de mots
+   * écoutés, retard maximal, et la pente du retard la plus forte relevée sur 10 minutes (ms/min).
+   * Absents des jours enregistrés avant cette mesure.
+   */
+  wordLagSum?: number;
+  wordLagN?: number;
+  lagMaxMs?: number;
+  lagSlopeMaxMsPerMin?: number;
   /** Confiance des mots donnée par le moteur de reconnaissance, sommée par segment. */
   confSum: number;
   confN: number;
@@ -50,7 +59,10 @@ export type Stage = "stt" | "mt" | "tts";
 
 /** Les quatre piliers de la qualité, chacun avec sa mesure et son échantillon. */
 export interface Quality {
+  /** Premier mot reconnu → début d'écoute : la mesure de rapidité d'avant D41. */
   speed: { meanMs: number | null; p95Ms: number | null; n: number; reports: number };
+  /** Décalage par mot, retard maximal et pente la plus forte (D41) ; `n` : mots écoutés. */
+  lag: { meanMs: number | null; p95Ms: number | null; n: number; maxMs: number | null; slopeMaxMsPerMin: number | null };
   transcription: { confidence: number | null; n: number; reports: number; segments: number };
   translation: { ok: number | null; n: number; reports: number; untranslated: number };
   voice: { natural: number | null; n: number; reports: number; audioReports: number };
@@ -62,6 +74,10 @@ export interface DayRow {
   sessionMs: number;
   availability: number | null;
   e2eMean: number | null;
+  /** Décalage par mot moyen, retard maximal, pente la plus forte sur 10 min (D41). */
+  wordLagMean: number | null;
+  lagMaxMs: number | null;
+  lagSlopeMax: number | null;
   confidence: number | null;
   translationOk: number | null;
   voiceNatural: number | null;
@@ -85,6 +101,8 @@ export interface OverviewResponse {
   e2e: { p50: number | null; p95: number | null };
   /** Latence fin de phrase → voix sur tout l'historique (D19), à la résolution de l'histogramme. */
   end: { p50: number | null; p95: number | null; n: number };
+  /** Décalage par mot sur tout l'historique (D41), à la résolution de l'histogramme ; `n` : mots. */
+  wordLag: { p50: number | null; p95: number | null; n: number };
   quality: Quality;
   qualityToday: Quality;
   /** 14 derniers jours, du plus ancien au plus récent. */

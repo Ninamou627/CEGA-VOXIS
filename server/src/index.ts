@@ -162,6 +162,13 @@ setInterval(() => {
   totals.tick(1000, inSession, inSession && pipeline.sttOpen && degraded !== "text-only" && degraded !== "stt-lost");
 }, 1000).unref();
 
+// Pente du retard sur 10 minutes (D41), relevée chaque minute de séance : la plus forte du jour est gardée.
+setInterval(() => {
+  if (!pipeline.isStarted) return;
+  const slope = metrics.snapshot().lagSlopeMsPerMin;
+  if (slope != null) totals.slopeReading(slope);
+}, 60_000).unref();
+
 // ---- authentification (D17) ---------------------------------------------------------
 // Comptes et code de séance vivent en base : ils doivent survivre à un redémarrage, et un
 // hébergement managé n'a pas de disque durable.

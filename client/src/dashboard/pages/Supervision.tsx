@@ -89,7 +89,10 @@ export function Supervision(p: SupervisionProps) {
         <Alerts alerts={p.alerts} here="supervision" />
       </Section>
 
-      <Section title="Latence et dérive" hint="Dix minutes de relevés, un toutes les 2 secondes. La ligne pointillée marque le seuil d'alerte.">
+      <Section
+        title="Retard de la voix"
+        hint="Dix minutes de relevés, un toutes les 2 secondes : décalage par mot, retard maximal et pente du retard (D41), puis chaque étage. La ligne pointillée marque la cible."
+      >
         <Trends history={p.history} stats={stats} />
       </Section>
 

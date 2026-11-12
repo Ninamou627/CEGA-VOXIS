@@ -986,7 +986,11 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     this.metrics.stage("commit", tCommit - seg.tOrigin);
     // Fin prononcée → segment figé : la part de la reconnaissance dans la latence de D19.
     this.metrics.stage("endCommit", tCommit - seg.tEnd);
-    this.metrics.segmentEnd(seq, { tOrigin: seg.tOrigin, tEnd: seg.tEnd, tStart: seg.tStart, turnStart });
+    // Début de chaque mot depuis le début du segment, d'après le STT : le décalage se mesure mot
+    // par mot (D41). Null si un mot n'est pas daté.
+    const base = seg.startPos ?? seg.words[0]?.startMs;
+    const wordStarts = base != null && seg.words.length && seg.words.every((w) => w.startMs != null) ? seg.words.map((w) => Math.max(0, Math.round(w.startMs! - base))) : null;
+    this.metrics.segmentEnd(seq, { tOrigin: seg.tOrigin, tEnd: seg.tEnd, tStart: seg.tStart, turnStart, words: seg.words.length, wordStarts });
     // Retard d'affichage du STT : du premier mot prononcé à sa première apparition.
     const first = seg.words[0]?.endMs;
     const firstSpoken = first != null ? this.clock.spokenAt(first) : undefined;
@@ -1006,6 +1010,7 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
       turnStart,
       gapMs,
       words: seg.words.length,
+      wordStarts,
       reason: seg.reason,
       joined: seg.joined ?? 1,
       heldMs: Math.round(heldMs),
@@ -1151,6 +1156,7 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
       const tTts = Date.now();
       this.metrics.stage("tts", tTts - tSpeak);
       this.tempo.learn(lang, text.length, a.durMs, speed);
+      this.metrics.voice(seq, lang, a.durMs);
       this.roomFreeAt.set(lang, Math.max(this.roomFreeAt.get(lang) ?? 0, tTts) + a.durMs);
       this.emit("audio", {
         seq,
@@ -1200,7 +1206,7 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     this.degraded = mode;
     this.degradedReason = reason;
     this.emit("degraded", { mode, reason });
-    this.metrics.event("degraded", { mode, reason });
+    this.metrics.degraded(mode, reason);
     this.emitStatus();
   }
 

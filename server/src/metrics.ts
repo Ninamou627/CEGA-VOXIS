@@ -13,14 +13,24 @@
  *     l'apprenant ressent : `e2e`, plus le retard d'affichage du STT et la durée du premier mot.
  *     Compté à part pour le premier segment d'une prise de parole (`first`) : le formateur
  *     commence à parler, combien de temps avant que la salle entende quelque chose ?
+ *
+ * Indicateurs de premier rang depuis D41 (audit F-12), calculés à chaque ack : le décalage par
+ * mot (début prononcé d'un mot → début de son écoute, estimé — voir `wordLags`), le retard
+ * maximal et la pente du retard sur dix minutes. `end` (D19) reste un indicateur d'étage.
  */
 import { createWriteStream, type WriteStream } from "node:fs";
+import type { Lang } from "../../shared/protocol";
+import { OUTAGE_MODES, slope, wordLags } from "./latency-report";
 
 const WINDOW_MS = 60_000;
 /** Une prise de parole commence quelques fois par minute : sa fenêtre est plus longue. */
 const FIRST_WINDOW_MS = 300_000;
 /** Segments dont on garde la fin prononcée, le temps que leurs acks arrivent. */
 const KEEP_SEGMENTS = 500;
+/** Retard maximal et pente du retard : dix minutes, le temps de voir une dérive (D41). */
+const LAG_WINDOW_MS = 600_000;
+/** Sous 3 minutes de mesures, la pente ne dit rien (essai 8 rejoué : ± 1 s/min sur 1,5 min). */
+const SLOPE_MIN_SPAN_MIN = 3;
 
 function percentile(values: number[], p: number): number | null {
   if (!values.length) return null;
@@ -42,6 +52,11 @@ export interface AckLatency {
   endMs: number | null;
   /** Début prononcé → début d'écoute ; null si le segment n'est plus connu. */
   startMs: number | null;
+  /**
+   * Décalage par mot de cette écoute (D41) : moyenne, maximum, somme et nombre de mots ; `outage`
+   * si le segment a traversé une panne. Null si le segment ou la durée de sa voix n'est plus connu.
+   */
+  wordLag: { mean: number; max: number; sum: number; n: number; outage: boolean; lags: number[] } | null;
 }
 
 /** Ce qu'on retient d'un segment figé, le temps que ses acks arrivent. */
@@ -51,6 +66,9 @@ export interface SegmentTimes {
   tStart: number;
   /** Premier segment d'une prise de parole (le formateur se taisait avant). */
   turnStart: boolean;
+  /** Nombre de mots, et début de chacun depuis le début du segment si le STT les date (D41). */
+  words?: number;
+  wordStarts?: number[] | null;
 }
 
 export class Metrics {
@@ -59,8 +77,12 @@ export class Metrics {
   private end: { t: number; ms: number }[] = [];
   private start: { t: number; ms: number }[] = [];
   private first: { t: number; ms: number }[] = [];
-  /** seq → instants du segment, pour dater les acks qui le concernent. */
-  private segments = new Map<number, SegmentTimes & { played: boolean }>();
+  /** seq → instants du segment et durée de sa voix par langue, pour dater les acks qui le concernent. */
+  private segments = new Map<number, SegmentTimes & { played: boolean; durs: Partial<Record<Lang, number>> }>();
+  /** Décalage par mot de chaque écoute, sur dix minutes (D41). */
+  private lags: { t: number; lags: number[]; mean: number; max: number; outage: boolean }[] = [];
+  /** Pannes (reconnaissance perdue, texte seul) des dix dernières minutes ; `to` infini tant qu'elle dure. */
+  private outages: { from: number; to: number }[] = [];
   private stages: Record<StageName, { t: number; ms: number }[]> = { commit: [], endCommit: [], mt: [], tts: [], sttLag: [] };
   /** Premier ack d'un segment : le moment où la salle a commencé à l'entendre (enregistreur). */
   onFirstPlay?: (seq: number, at: number) => void;
@@ -91,12 +113,30 @@ export class Metrics {
 
   /** Un segment vient d'être figé : on retient ses instants prononcés jusqu'aux acks. */
   segmentEnd(seq: number, times: SegmentTimes): void {
-    this.segments.set(seq, { ...times, played: false });
+    this.segments.set(seq, { ...times, played: false, durs: {} });
     if (this.segments.size > KEEP_SEGMENTS) this.segments.delete(this.segments.keys().next().value!);
   }
 
-  /** Ack d'un client : début de lecture effectif d'un segment. */
-  ack(participantId: string, seq: number, tOrigin: number, queueMs: number): AckLatency {
+  /** La voix d'un segment est prête dans une langue : sa durée sert au décalage par mot (D41). */
+  voice(seq: number, lang: Lang, durMs: number): void {
+    const s = this.segments.get(seq);
+    if (s) s.durs[lang] = durMs;
+  }
+
+  /** Changement de mode du pipeline : journalisé, et les pannes sont retenues pour les indicateurs de retard. */
+  degraded(mode: string, reason: string): void {
+    this.event("degraded", { mode, reason });
+    const now = Date.now();
+    const open = this.outages.at(-1);
+    const isOpen = open != null && open.to === Infinity;
+    if (OUTAGE_MODES.has(mode)) {
+      if (!isOpen) this.outages.push({ from: now, to: Infinity });
+    } else if (isOpen) open.to = now;
+    this.outages = this.outages.filter((o) => o.to >= now - LAG_WINDOW_MS);
+  }
+
+  /** Ack d'un client : début de lecture effectif d'un segment. `lang` : la langue qu'il écoute. */
+  ack(participantId: string, seq: number, tOrigin: number, queueMs: number, lang?: Lang): AckLatency {
     const now = Date.now();
     const e2eMs = now - tOrigin;
     // Le tOrigin renvoyé par le client doit être celui du segment : un seq d'un autre
@@ -108,6 +148,16 @@ export class Metrics {
     this.e2e.push({ t: now, ms: e2eMs });
     if (endMs != null) this.end.push({ t: now, ms: endMs });
     if (startMs != null) this.start.push({ t: now, ms: startMs });
+    // Décalage par mot de cette écoute : il faut la durée de la voix dans la langue écoutée.
+    const durMs = known && lang ? known.durs[lang] : undefined;
+    let wordLag: AckLatency["wordLag"] = null;
+    if (known && durMs != null) {
+      const lags = wordLags({ tStart: known.tStart, play: now, speech: known.tEnd - known.tStart, durMs, words: known.words ?? 1, wordStarts: known.wordStarts });
+      const sum = lags.reduce((a, b) => a + b, 0);
+      const outage = this.outages.some((o) => o.from <= now && o.to >= known.tStart);
+      wordLag = { mean: Math.round(sum / lags.length), max: Math.max(...lags), sum, n: lags.length, outage, lags };
+      this.lags.push({ t: now, lags, mean: wordLag.mean, max: wordLag.max, outage });
+    }
     // Le premier son d'une prise de parole : le premier téléphone qui le joue.
     if (known && !known.played) {
       known.played = true;
@@ -115,8 +165,8 @@ export class Metrics {
       this.onFirstPlay?.(seq, now);
     }
     this.queues.set(participantId, { t: now, ms: queueMs });
-    this.event("ack", { participantId, seq, e2eMs, endMs, startMs, queueMs });
-    return { e2eMs, endMs, startMs };
+    this.event("ack", { participantId, seq, lang: lang ?? null, e2eMs, endMs, startMs, queueMs, wordLagMs: wordLag?.mean ?? null, wordLagMaxMs: wordLag?.max ?? null });
+    return { e2eMs, endMs, startMs, wordLag };
   }
 
   forget(participantId: string): void {
@@ -202,7 +252,16 @@ export class Metrics {
         50,
       );
     };
+    // Indicateurs de premier rang (D41), hors écoutes de segments ayant traversé une panne.
+    this.lags = this.lags.filter((s) => s.t >= now - LAG_WINDOW_MS);
+    const lagOk = this.lags.filter((s) => !s.outage);
+    const words = lagOk.filter((s) => s.t >= cutoff).flatMap((s) => s.lags);
+    const sl = slope(lagOk.map((s) => ({ t: s.t, v: s.mean })));
     return {
+      wordLagP50: percentile(words, 50),
+      wordLagP95: percentile(words, 95),
+      lagMaxMs: lagOk.length ? lagOk.reduce((m, s) => Math.max(m, s.max), -Infinity) : null,
+      lagSlopeMsPerMin: sl && sl.spanMin >= SLOPE_MIN_SPAN_MIN ? sl.msPerMin : null,
       e2eP50: percentile(e2e, 50),
       e2eP95: percentile(e2e, 95),
       e2eMean: e2e.length ? Math.round(e2e.reduce((a, b) => a + b, 0) / e2e.length) : null,

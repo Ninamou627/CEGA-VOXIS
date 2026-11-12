@@ -56,9 +56,16 @@ const ratio = (num: number, den: number) => (den > 0 ? num / den : null);
 const reportsOf = (d: DayTotals, k: "transcription" | "translation" | "slow" | "voice" | "audio") => d.reports[k] ?? 0;
 
 /** Les quatre piliers de la qualité, chacun avec sa mesure et son échantillon. */
-function quality(d: DayTotals, e2e: { p95: number | null }): Quality {
+function quality(d: DayTotals, e2e: { p95: number | null }, wordLag: { p95: number | null }): Quality {
   return {
     speed: { meanMs: d.e2eN ? Math.round(d.e2eSum / d.e2eN) : null, p95Ms: e2e.p95, n: d.e2eN, reports: reportsOf(d, "slow") },
+    lag: {
+      meanMs: d.wordLagN ? Math.round((d.wordLagSum ?? 0) / d.wordLagN) : null,
+      p95Ms: wordLag.p95,
+      n: d.wordLagN ?? 0,
+      maxMs: d.lagMaxMs ?? null,
+      slopeMaxMsPerMin: d.lagSlopeMaxMsPerMin ?? null,
+    },
     transcription: { confidence: ratio(d.confSum, d.confN), n: d.confN, reports: reportsOf(d, "transcription"), segments: d.translated },
     translation: {
       ok: d.translated ? 1 - (reportsOf(d, "translation") + d.untranslated) / d.translated : null,
@@ -137,6 +144,7 @@ export function registerAdmin(app: FastifyInstance, ctx: AdminContext): void {
         const all = totals.all();
         const today = totals.today();
         const e2e = { p50: totals.e2ePercentile(50), p95: totals.e2ePercentile(95) };
+        const wordLag = { p50: totals.wordLagPercentile(50), p95: totals.wordLagPercentile(95), n: totals.wordLagCount() };
         const voices: Record<string, VoiceStats> = {};
         for (const [id, v] of Object.entries(totals.voices())) {
           voices[id] = { ...v, natural: ratio(v.spoken - v.unnatural, v.spoken) };
@@ -149,14 +157,18 @@ export function registerAdmin(app: FastifyInstance, ctx: AdminContext): void {
           availabilityToday: ratio(today.availableMs, today.sessionMs),
           e2e,
           end: { p50: totals.endPercentile(50), p95: totals.endPercentile(95), n: totals.endCount() },
-          quality: quality(all, e2e),
-          qualityToday: quality(today, { p95: null }),
+          wordLag,
+          quality: quality(all, e2e, wordLag),
+          qualityToday: quality(today, { p95: null }, { p95: null }),
           days: totals.lastDays(14).map(({ day, totals: d }) => ({
             day,
             translatedMs: d.translatedMs,
             sessionMs: d.sessionMs,
             availability: ratio(d.availableMs, d.sessionMs),
             e2eMean: d.e2eN ? Math.round(d.e2eSum / d.e2eN) : null,
+            wordLagMean: d.wordLagN ? Math.round((d.wordLagSum ?? 0) / d.wordLagN) : null,
+            lagMaxMs: d.lagMaxMs ?? null,
+            lagSlopeMax: d.lagSlopeMaxMsPerMin ?? null,
             confidence: ratio(d.confSum, d.confN),
             translationOk: d.translated ? 1 - (reportsOf(d, "translation") + d.untranslated) / d.translated : null,
             voiceNatural: d.spoken ? 1 - reportsOf(d, "voice") / d.spoken : null,

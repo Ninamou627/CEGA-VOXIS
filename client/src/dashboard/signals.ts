@@ -7,7 +7,7 @@ import type { OverviewResponse, RecentReport, Stage } from "../../../shared/admi
 import { CAPTURE_ALERT_BELOW } from "../../../shared/capture";
 import type { ClientSettings, StatsPayload } from "../../../shared/protocol";
 import type { ConnState } from "../lib/ws";
-import { delay, span } from "../ui/format";
+import { delay, perMin, span } from "../ui/format";
 import { REPORT_LABEL } from "../ui/reports";
 import type { Health, SessionInfo } from "./types";
 import type { Tone } from "./ui";
@@ -269,9 +269,26 @@ export function computeAlerts(sig: Signals): Alert[] {
       stage: "stt",
     });
 
-  const end = st?.endP50 ?? null;
-  if (end != null && end > 1000)
-    out.push({ id: "e2e", severity: end > 2000 ? "crit" : "warn", title: `Latence élevée : ${delay(end)}`, detail: "De la fin de la phrase à la voix, médiane sur la dernière minute ; la cible est 1 s.", to: "supervision" });
+  // Indicateurs de premier rang (D41) ; « fin de phrase → voix » (D19) n'est plus qu'un étage.
+  const lag = st?.wordLagP50 ?? null;
+  if (lag != null && lag > 6000)
+    out.push({
+      id: "e2e",
+      severity: lag > 10_000 ? "crit" : "warn",
+      title: `Décalage par mot élevé : ${delay(lag)}`,
+      detail: "Du mot prononcé au même mot entendu, médiane sur la dernière minute ; la cible est 4 s (6 s au 95ᵉ centile).",
+      to: "supervision",
+    });
+  const slope = st?.lagSlopeMsPerMin ?? null;
+  if (slope != null && slope > 100)
+    out.push({
+      id: "lag-slope",
+      severity: slope > 500 ? "crit" : "warn",
+      title: `Le retard grandit : ${perMin(slope)}`,
+      detail: "Pente du décalage par mot sur dix minutes ; stable, elle reste entre −0,1 et +0,1 s/min. Une pause de l'orateur laisse la salle rattraper.",
+      to: "supervision",
+      stage: "tts",
+    });
   const q = st?.queueMaxMs ?? null;
   if (q != null && q > 5000) out.push({ id: "drift", severity: "warn", title: `Dérive : un téléphone a ${delay(q)} de retard en file`, detail: "Rien n'est sauté : le retard se résorbe pendant les pauses de l'orateur, ou l'apprenant revient au direct.", to: "supervision", stage: "tts" });
   // Voix non jouées sur les téléphones, nouvel essai compris (D40) : avant, rien ne le disait.

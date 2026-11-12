@@ -57,6 +57,11 @@ export function shortDate(t: number): string {
 }
 
 /** 870 → « 0,87 s » : latence au centième, comme on la lit sur un tableau de bord. */
+/** Pente du retard (D41) : 120 ms/min → « +0,12 s/min ». */
+export function perMin(msPerMin: number): string {
+  return `${msPerMin >= 0 ? "+" : "−"}${(Math.abs(msPerMin) / 1000).toFixed(2).replace(".", ",")} s/min`;
+}
+
 export function secs(ms: number): string {
   return `${(ms / 1000).toFixed(2).replace(".", ",")} s`;
 }

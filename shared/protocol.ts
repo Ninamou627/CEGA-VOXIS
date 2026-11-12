@@ -119,6 +119,17 @@ export interface StatsPayload {
   micSeq?: number | null;
   /** Segments qu'un téléphone n'a pas pu jouer, nouvel essai compris, sur 60 s (D40). */
   playFails?: number;
+  /**
+   * Indicateurs de premier rang (D41), hors écoutes de segments ayant traversé une panne.
+   * Décalage par mot : du début prononcé d'un mot au début de son écoute, tous les mots écoutés
+   * sur 60 s (ms). Estimé : la voix traduite est supposée dire les mots dans l'ordre, à débit
+   * régulier. Retard maximal : le mot le plus en retard sur 10 min. Pente du retard : variation du
+   * décalage moyen par minute sur 10 min (ms/min), null sous 3 min de mesures.
+   */
+  wordLagP50?: number | null;
+  wordLagP95?: number | null;
+  lagMaxMs?: number | null;
+  lagSlopeMsPerMin?: number | null;
   pipeline: PipelineStatus;
   uptimeS: number;
 }

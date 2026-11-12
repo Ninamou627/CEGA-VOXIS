@@ -81,15 +81,36 @@ console.log(
     `${r.committed} segments figés, ${r.untranslated} sans voix, ${r.unplayed} jamais joués, ${r.all.total.n} mesurés`,
 );
 if (r.approx) console.log("(journal d'avant l'étape A : début du premier mot estimé, fin du premier mot − 0,3 s)");
-console.log(`\n${"".padEnd(31)}${"Début de prise de parole".padEnd(20)}  Tous les segments`);
+
+// Les trois indicateurs de premier rang (D41) : ce que l'apprenant vit, mot par mot.
+const L = r.lag;
+const sl = L.slope;
+const sps = (ms: number) => `${ms >= 0 ? "+" : "−"}${(Math.abs(ms) / 1000).toFixed(2).replace(".", ",")} s/min`;
+console.log("\nIndicateurs de premier rang (hors segments traversant une panne) :");
+console.log(`  Décalage par mot (début → début)  médiane ${s(L.words.p50)} · p95 ${s(L.words.p95)}  (${L.words.n} mots)`);
+console.log(
+  `  Retard maximal                    ${s(L.max?.ms ?? null)}${L.max ? ` — segment ${L.max.seq}, ${hhmm(L.max.t)}` : ""}` +
+    (L.outageSegments ? ` · ${s(L.maxWithOutages)} pannes comprises (${L.outageSegments} seg. écartés)` : ""),
+);
+console.log(
+  `  Pente du retard                   ${sl ? `${sps(sl.msPerMin)}${sl.seMsPerMin != null ? ` (± ${(sl.seMsPerMin / 1000).toFixed(2).replace(".", ",")})` : ""} sur ${String(sl.spanMin).replace(".", ",")} min, ${sl.n} seg.` : "—"}`,
+);
+console.log(
+  `  (estimé : la voix est supposée dire les mots dans l'ordre, à débit régulier ; début des mots du formateur ${
+    L.timedSegments === r.all.total.n && L.timedSegments ? "donné par le STT" : L.timedSegments ? `donné par le STT pour ${L.timedSegments} seg. sur ${r.all.total.n}, réparti à proportion ailleurs` : "réparti à proportion du temps de parole"
+  })`,
+);
+
+console.log(`\nÉtages${"".padEnd(25)}${"Début de prise de parole".padEnd(20)}  Tous les segments`);
 console.log(`${"".padEnd(31)}${`(n=${r.turnStarts.total.n})`.padEnd(20)}  (n=${r.all.total.n})`);
 console.log(`${"".padEnd(31)}${"médiane      p95".padEnd(20)}  médiane      p95`);
 for (const k of Object.keys(LABEL) as StageKey[]) console.log(`${LABEL[k].padEnd(31)}${cell(r.turnStarts[k])}   ${cell(r.all[k])}`);
 console.log("(les médianes ne s'additionnent pas exactement)");
 
 console.log("\nAu fil de la séance (médianes par minute) :");
-for (const m of r.minutes) console.log(`  minute ${String(m.minute + 1).padStart(2)} : début de parole → son ${s(m.total).padStart(7)} · envoi et file ${s(m.wait).padStart(7)}  (${m.n} seg.)`);
-if (r.driftMsPerMin != null) console.log(`Le décalage ressenti varie de ${r.driftMsPerMin >= 0 ? "+" : ""}${s(r.driftMsPerMin)} par minute.`);
+for (const m of r.minutes)
+  console.log(`  minute ${String(m.minute + 1).padStart(2)} : par mot ${s(m.wordLag).padStart(7)} · premier mot → son ${s(m.total).padStart(7)} · envoi et file ${s(m.wait).padStart(7)}  (${m.n} seg.)`);
+if (r.driftMsPerMin != null) console.log(`Le décalage du premier mot varie de ${r.driftMsPerMin >= 0 ? "+" : ""}${s(r.driftMsPerMin)} par minute (ancienne mesure de dérive).`);
 if (r.voiceRatio != null) console.log(`Voix traduite / parole du formateur : ${r.voiceRatio.toFixed(2).replace(".", ",")}${r.voiceRatio > 1 ? " — au-dessus de 1, la file des téléphones grandit" : ""}`);
 const x = (v: number | null) => (v == null ? "—" : `×${v.toFixed(2).replace(".", ",")}`);
 if (r.speed.p50 != null) console.log(`Vitesse de la voix : ${x(r.speed.p50)} en médiane (de ${x(r.speed.p10)} à ${x(r.speed.p90)} pour 80 % des segments)`);

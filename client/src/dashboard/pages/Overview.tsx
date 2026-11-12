@@ -30,8 +30,12 @@ const more = (href: string, label = "Détail") => (
   </a>
 );
 
-/** L'objectif du projet (D19) : moins d'une seconde de la fin de la phrase à la voix. */
-const LATENCY_TARGET_MS = 1000;
+/**
+ * Cibles du décalage par mot (D41) : médiane ≤ 4 s, 95ᵉ centile ≤ 6 s — celles que l'audit fixe au
+ * mode progressif. En mode « phrases entières », 5 à 10 s sont mesurés : l'indicateur le montre.
+ */
+const WORD_LAG_TARGET_MS = 4000;
+const WORD_LAG_CRIT_MS = 6000;
 
 /** 0.87 → « 0,87 » : le nombre seul, l'unité est posée à côté en petit. */
 const dec = (x: number, digits: number) => x.toFixed(digits).replace(".", ",");
@@ -45,12 +49,14 @@ export function Overview({ sig, nodes, speaking, alerts, inspected, onInspect }:
   const listeners = stats?.listeners ?? health?.listeners ?? 0;
   const byLang = Object.entries(stats?.byLang ?? {}).filter(([, n]) => (n ?? 0) > 0) as [Lang, number][];
 
-  // Latence qui valide le projet (D19) : de la fin de la phrase prononcée au début de sa
-  // traduction entendue, médiane de la dernière minute quand la salle parle, sinon de l'historique.
-  const liveEnd = stats?.endP50 ?? null;
-  const endMs = liveEnd ?? ov?.end.p50 ?? null;
-  const endP95 = liveEnd != null ? (stats?.endP95 ?? null) : (ov?.end.p95 ?? null);
-  const latencyTone: Tone = endMs == null ? "idle" : endMs > 2000 ? "crit" : endMs > LATENCY_TARGET_MS ? "warn" : "ok";
+  // Indicateur phare (D41) : le décalage par mot, du mot prononcé au mot entendu — médiane de la
+  // dernière minute quand la salle écoute, sinon de l'historique. « Fin de phrase → voix » (D19)
+  // est désormais un étage de la page Supervision.
+  const liveLag = stats?.wordLagP50 ?? null;
+  const lagMs = liveLag ?? ov?.wordLag.p50 ?? null;
+  const lagP95 = liveLag != null ? (stats?.wordLagP95 ?? null) : (ov?.wordLag.p95 ?? null);
+  const lagMax = liveLag != null ? (stats?.lagMaxMs ?? null) : (ov?.quality.lag.maxMs ?? null);
+  const latencyTone: Tone = lagMs == null ? "idle" : lagMs > WORD_LAG_CRIT_MS ? "crit" : lagMs > WORD_LAG_TARGET_MS ? "warn" : "ok";
 
   const crit = alerts.filter((a) => a.severity === "crit").length;
   const warn = alerts.filter((a) => a.severity === "warn").length;
@@ -75,12 +81,12 @@ export function Overview({ sig, nodes, speaking, alerts, inspected, onInspect }:
         />
         <Stat
           icon="timer"
-          label="Fin de phrase → voix"
-          value={endMs != null ? <Value parts={[[dec(endMs / 1000, 2), "s"]]} /> : "—"}
+          label="Décalage par mot"
+          value={lagMs != null ? <Value parts={[[dec(lagMs / 1000, 1), "s"]]} /> : "—"}
           caption={
-            endMs != null
-              ? `médiane ${liveEnd != null ? "de la dernière minute" : "de l'historique"}${endP95 != null ? ` · p95 ${delay(endP95)}` : ""} · cible 1 s`
-              : "aucune lecture mesurée"
+            lagMs != null
+              ? `médiane ${liveLag != null ? "de la dernière minute" : "de l'historique"}${lagP95 != null ? ` · p95 ${delay(lagP95)}` : ""}${lagMax != null ? ` · max ${delay(lagMax)}` : ""}`
+              : "aucune écoute mesurée"
           }
           tone={latencyTone}
           href="#/supervision"

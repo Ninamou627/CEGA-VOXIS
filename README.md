@@ -50,7 +50,7 @@ latence — est donc exercé pour de vrai, sans dépenser un centime.
 | Guide certificat DNS-01 | `docs/CERTIFICAT.md` | ✅ |
 | Salle, mutex de parole, fan-out ; au retour d'une coupure, le texte manqué renvoyé (5 min au plus), la voix reprend au direct (D40) | `server/src/room.ts`, `ws/handlers.ts`, `shared/catchup.ts` | ✅ testé |
 | Lecture gardée sur le téléphone : « durée + 2 s », un nouvel essai, puis échec signalé au journal et au tableau de bord (D40) | `client/src/lib/player.ts`, `shared/playguard.ts` | ✅ testé |
-| Métriques JSONL + bout-en-bout mesuré à l'ack | `server/src/metrics.ts` | ✅ |
+| Métriques JSONL + bout-en-bout mesuré à l'ack ; en direct, décalage par mot, retard maximal et pente du retard, pannes écartées (D41) | `server/src/metrics.ts` | ✅ testé |
 | Page apprenant (maquette VOXIS : écoute, volume, transcription, boutons flottants) | `client/src/listener` | ✅ |
 | Studio de question : micro (30 s max) **ou** question écrite, retour bilingue | `client/src/listener/views/Studio.tsx` | ✅ |
 | Signalement de qualité en deux gestes, contexte joint par le serveur (D14) | `views/ReportSheet.tsx`, `server/src/ws/handlers.ts` | ✅ |
@@ -60,7 +60,7 @@ latence — est donc exercé pour de vrai, sans dépenser un centime.
 | Écran de salle pour le projecteur (QR en grand avant la séance, sous-titres géants, questions en bandeau, réglages à la souris et au clavier) | `client/src/screen` | ✅ |
 | Rejeu d'une fixture WAV dans le pipeline | `server/scripts/replay.ts` | ✅ |
 | Enregistrement des séances (voix du formateur, segments, voix traduite, écoutes), désactivé par défaut | `server/src/recorder.ts` | ✅ |
-| Rapport de latence d'une séance : du début de parole au premier son, étage par étage, et fiabilité de la mesure (D24) | `server/src/latency-report.ts`, `server/scripts/report.ts` | ✅ |
+| Rapport de latence d'une séance : en tête, décalage par mot, retard maximal et pente du retard (D41) ; du début de parole au premier son, étage par étage, et fiabilité de la mesure (D24) | `server/src/latency-report.ts`, `server/scripts/report.ts` | ✅ |
 | Fidélité de la voix traduite : débit, hauteur, énergie, intonation, pauses, intelligibilité, qualité (D24) | `server/src/prosody.ts`, `server/scripts/prosody.ts` | ✅ |
 
 ## Commandes

@@ -75,6 +75,10 @@ export interface Sample {
   endP50: number | null;
   /** Début de parole → voix : le décalage que l'apprenant ressent. */
   startP50: number | null;
+  /** Indicateurs de premier rang (D41) : décalage par mot, retard maximal, pente du retard. */
+  wordLagP50: number | null;
+  lagMaxMs: number | null;
+  lagSlopeMsPerMin: number | null;
   queueMaxMs: number | null;
   listeners: number;
   micDb: number | null;

@@ -5,7 +5,7 @@
  */
 import { useState } from "react";
 import type { DayRow } from "../../../../shared/admin";
-import { delay, pct, rate, shortDate, span } from "../../ui/format";
+import { delay, pct, perMin, rate, shortDate, span } from "../../ui/format";
 import type { Signals } from "../signals";
 import { Empty, Section, Segmented } from "../ui";
 import { pillars, Pillars } from "../views/Pillars";
@@ -26,14 +26,16 @@ function Days({ days }: { days: DayRow[] }) {
   const dash = <span className="text-outline">—</span>;
   return (
     <div className="overflow-x-auto -mx-6 lg:mx-0 px-6 lg:px-0">
-      <table className="w-full min-w-[760px] border-collapse">
+      <table className="w-full min-w-[980px] border-collapse">
         <thead>
           <tr className="border-b border-outline-variant/20 text-[11px] font-label-badge font-bold uppercase tracking-wider text-on-surface-variant">
             <th className="py-2 pr-3 text-left font-bold">Jour</th>
             <th className="py-2 px-3 text-right font-bold">Séance</th>
             <th className="py-2 px-3 text-right font-bold">Voix diffusée</th>
             <th className="py-2 px-3 text-right font-bold">Disponibilité</th>
-            <th className="py-2 px-3 text-right font-bold">Latence</th>
+            <th className="py-2 px-3 text-right font-bold">Décalage par mot</th>
+            <th className="py-2 px-3 text-right font-bold">Retard max</th>
+            <th className="py-2 px-3 text-right font-bold">Pente max</th>
             <th className="py-2 px-3 text-right font-bold">Transcription</th>
             <th className="py-2 px-3 text-right font-bold">Traduction</th>
             <th className="py-2 px-3 text-right font-bold">Voix</th>
@@ -52,7 +54,9 @@ function Days({ days }: { days: DayRow[] }) {
                 <td className={cell}>{d.sessionMs ? span(d.sessionMs) : dash}</td>
                 <td className={cell}>{d.translatedMs ? span(d.translatedMs) : dash}</td>
                 <td className={`${cell} ${d.availability != null && d.availability < 0.99 ? "text-tertiary" : ""}`}>{d.availability != null ? pct(d.availability, 1) : dash}</td>
-                <td className={`${cell} ${d.e2eMean != null && d.e2eMean > 2500 ? "text-tertiary" : ""}`}>{d.e2eMean != null ? delay(d.e2eMean) : dash}</td>
+                <td className={`${cell} ${d.wordLagMean != null && d.wordLagMean > 6000 ? "text-tertiary" : ""}`}>{d.wordLagMean != null ? delay(d.wordLagMean) : dash}</td>
+                <td className={`${cell} ${d.lagMaxMs != null && d.lagMaxMs > 8000 ? "text-tertiary" : ""}`}>{d.lagMaxMs != null ? delay(d.lagMaxMs) : dash}</td>
+                <td className={`${cell} ${d.lagSlopeMax != null && d.lagSlopeMax > 100 ? "text-tertiary" : ""}`}>{d.lagSlopeMax != null ? perMin(d.lagSlopeMax) : dash}</td>
                 <td className={cell}>{d.confidence != null ? rate(d.confidence) : dash}</td>
                 <td className={cell}>{d.translationOk != null ? rate(d.translationOk) : dash}</td>
                 <td className={cell}>{d.voiceNatural != null ? rate(d.voiceNatural) : dash}</td>
@@ -68,8 +72,16 @@ function Days({ days }: { days: DayRow[] }) {
 
 const METHOD: { term: string; def: string }[] = [
   {
-    term: "Rapidité",
-    def: "Temps écoulé entre le mot prononcé par le formateur et le moment où le téléphone de l'apprenant commence à le dire, mesuré par l'accusé de lecture de chaque téléphone. Moyenne, et 95ᵉ centile sur l'historique.",
+    term: "Rapidité — décalage par mot",
+    def: "Pour chaque mot, temps écoulé entre le moment où le formateur commence à le dire et celui où le téléphone de l'apprenant commence à dire sa traduction. Le départ de chaque voix est mesuré par l'accusé de lecture de chaque téléphone ; la place du mot dans la voix est estimée (mots dits dans l'ordre, à débit régulier). Moyenne, et 95ᵉ centile sur l'historique. Les jours d'avant cette mesure n'ont que l'ancienne : du premier mot reconnu au début de la voix.",
+  },
+  {
+    term: "Retard maximal",
+    def: "Le mot le plus en retard de la journée, hors segments ayant traversé une panne (reconnaissance perdue, texte seul). Cible : 8 secondes au plus.",
+  },
+  {
+    term: "Pente du retard",
+    def: "De combien le décalage moyen grandit par minute, calculé sur dix minutes de séance et relevé chaque minute ; la valeur la plus forte de la journée. Stable : entre −0,1 et +0,1 seconde par minute.",
   },
   {
     term: "Transcription",

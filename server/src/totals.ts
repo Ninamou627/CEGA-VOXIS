@@ -29,6 +29,8 @@ interface TotalsFile {
   e2eHist: number[];
   /** Histogramme de la latence fin de phrase → voix (D19), cases de 100 ms jusqu'à 10 s. */
   endHist: number[];
+  /** Histogramme du décalage par mot (D41), cases de 250 ms jusqu'à 20 s, hors pannes. */
+  wordLagHist: number[];
   voices: Record<string, VoiceTotals>;
 }
 
@@ -37,6 +39,9 @@ const BUCKETS = 40;
 /** Plus fin que le bout-en-bout : la cible est une seconde, il faut voir 0,9 et 1,1. */
 const END_BUCKET_MS = 100;
 const END_BUCKETS = 100;
+/** Décalage par mot : 5 à 15 s en mode « phrases entières », il faut voir au-delà de 10 s. */
+const LAG_BUCKET_MS = 250;
+const LAG_BUCKETS = 80;
 const KEEP_DAYS = 60;
 
 function emptyDay(): DayTotals {
@@ -123,7 +128,9 @@ export class Totals {
     });
   }
 
-  ack(e2eMs: number, endMs: number | null = null) {
+  /** Une écoute, et son décalage par mot (D41) quand il est connu ; une écoute en panne n'y compte pas. */
+  ack(e2eMs: number, endMs: number | null = null, wordLag: { lags: readonly number[]; max: number; outage: boolean } | null = null) {
+    const lag = wordLag && !wordLag.outage && wordLag.lags.length ? wordLag : null;
     this.bump((d) => {
       d.e2eSum += e2eMs;
       d.e2eN++;
@@ -131,13 +138,29 @@ export class Totals {
         d.endSum = (d.endSum ?? 0) + endMs;
         d.endN = (d.endN ?? 0) + 1;
       }
+      if (lag) {
+        d.wordLagSum = (d.wordLagSum ?? 0) + lag.lags.reduce((a, b) => a + b, 0);
+        d.wordLagN = (d.wordLagN ?? 0) + lag.lags.length;
+        d.lagMaxMs = Math.max(d.lagMaxMs ?? -Infinity, lag.max);
+      }
     });
+    if (lag) {
+      for (const ms of lag.lags) {
+        const k = Math.min(LAG_BUCKETS - 1, Math.max(0, Math.floor(ms / LAG_BUCKET_MS)));
+        this.data.wordLagHist[k] = (this.data.wordLagHist[k] ?? 0) + 1;
+      }
+    }
     const i = Math.min(BUCKETS - 1, Math.floor(e2eMs / BUCKET_MS));
     this.data.e2eHist[i] = (this.data.e2eHist[i] ?? 0) + 1;
     if (endMs != null) {
       const j = Math.min(END_BUCKETS - 1, Math.max(0, Math.floor(endMs / END_BUCKET_MS)));
       this.data.endHist[j] = (this.data.endHist[j] ?? 0) + 1;
     }
+  }
+
+  /** Pente du retard sur 10 minutes, relevée chaque minute de séance (D41) : on garde la plus forte du jour. */
+  slopeReading(msPerMin: number) {
+    this.bump((d) => (d.lagSlopeMaxMsPerMin = Math.max(d.lagSlopeMaxMsPerMin ?? -Infinity, msPerMin)));
   }
 
   confidence(c: number) {
@@ -209,6 +232,15 @@ export class Totals {
     return percentileOf(this.data.endHist, END_BUCKETS, END_BUCKET_MS, p);
   }
 
+  /** Percentile du décalage par mot sur tout l'historique (borne haute de la case), et nombre de mots (D41). */
+  wordLagPercentile(p: number): number | null {
+    return percentileOf(this.data.wordLagHist, LAG_BUCKETS, LAG_BUCKET_MS, p);
+  }
+
+  wordLagCount(): number {
+    return this.data.wordLagHist.reduce((a, b) => a + (b ?? 0), 0);
+  }
+
   /** Écoutes datées depuis leur fin de phrase, sur tout l'historique. */
   endCount(): number {
     return this.data.endHist.reduce((a, b) => a + (b ?? 0), 0);
@@ -242,7 +274,7 @@ export class Totals {
   }
 
   private load(): TotalsFile {
-    const fresh: TotalsFile = { since: Date.now(), all: emptyDay(), days: {}, e2eHist: [], endHist: [], voices: {} };
+    const fresh: TotalsFile = { since: Date.now(), all: emptyDay(), days: {}, e2eHist: [], endHist: [], wordLagHist: [], voices: {} };
     if (!existsSync(this.file)) return fresh;
     try {
       const raw = JSON.parse(readFileSync(this.file, "utf8")) as Partial<TotalsFile>;
@@ -252,6 +284,7 @@ export class Totals {
         days: raw.days ?? {},
         e2eHist: raw.e2eHist ?? [],
         endHist: raw.endHist ?? [],
+        wordLagHist: raw.wordLagHist ?? [],
         voices: raw.voices ?? {},
       };
     } catch (err) {
