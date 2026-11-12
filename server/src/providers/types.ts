@@ -84,6 +84,12 @@ export interface MtRequest {
   domain?: string;
   /** Formulation resserrée (D42) : la salle a du retard, dire le segment aussi court que possible. */
   concise?: boolean;
+  /**
+   * Rythme progressif (D43) : `text` continue une phrase dont la salle a déjà entendu le début —
+   * ici en source et tel qu'il a été dit. Le traducteur ne rend que la suite, accordée à ce début,
+   * sans le redire. `context` ne contient alors que les phrases d'avant.
+   */
+  prefix?: { src: string; tgt: string };
 }
 
 export interface MtProvider {
@@ -111,6 +117,13 @@ export interface TtsRequest {
   continuation?: boolean;
   /** Impose une voix (écoute d'essai depuis l'administration) au lieu de celle par défaut. */
   voice?: string;
+  /**
+   * Voix continue (D43, audit 2.4) : cette voix suit la précédente dans la même phrase, ou la
+   * suivante la continuera. Pas de silence de bord de ce côté : le moteur qui sait le régler
+   * (Azure) n'en met pas ; la pause de l'orateur reste rendue par le téléphone (D26).
+   */
+  joinsPrevious?: boolean;
+  joinsNext?: boolean;
 }
 
 export interface TtsResult {

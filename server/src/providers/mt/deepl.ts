@@ -95,7 +95,9 @@ export class DeepLMt implements MtProvider {
       formality: "prefer_more",
     };
     // Le contexte de séance et les segments précédents (source) donnent le fil, sans être traduits.
-    const context = [req.domain, ...req.context.map((c) => c.src)].filter(Boolean).join(" ");
+    // Suite d'une phrase commencée (D43) : DeepL ne sait pas la continuer ; il traduit le groupe
+    // avec, en contexte, le début de la phrase en source et tel que la salle l'a entendu.
+    const context = [req.domain, ...req.context.map((c) => c.src), req.prefix?.src, req.prefix?.tgt].filter(Boolean).join(" ");
     if (context) body.context = context;
     const glossaryId = req.glossary && this.glossaryAllowed(req.from) ? await this.glossaryId(req.from, req.to, req.glossary) : undefined;
     if (glossaryId) body.glossary_id = glossaryId;

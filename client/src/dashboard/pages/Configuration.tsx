@@ -61,6 +61,11 @@ const WHOLE_SENTENCES = [
   { value: "off" as const, label: "En morceaux", title: "Chaque morceau part dès qu'il est reconnu, même au milieu d'une phrase : la voix commence plus tôt" },
 ];
 
+const RHYTHM = [
+  { value: "sentences" as const, label: "Phrases entières", title: "La voix dit des phrases complètes : chaque mot environ 6 à 8 s derrière l'orateur, plus de 10 s sur les phrases longues" },
+  { value: "progressive" as const, label: "Progressif", title: "La voix suit l'orateur par groupes de 6 à 10 mots, traduits dans la suite de la phrase : environ 4 s derrière lui, 6 s au plus" },
+];
+
 const TIGHTEN = [
   { value: "off" as const, label: "Coupé", title: "La traduction reste celle du moteur : au-delà de 3 s de retard, seuls le débit (×1,1) et les pauses rattrapent" },
   { value: "on" as const, label: "Dès 5 s de retard", title: "Claude redit le segment plus court, hésitations et redites retirées ; vérifié avant d'être dit" },
@@ -400,12 +405,22 @@ export function Configuration({ conf, value, dirty, micDb, onChange, onSave, onD
           </Field>
 
           <Field
+            label="Rythme"
+            help="Phrases entières : la salle entend des phrases complètes, mais chaque mot 6 à 8 s après l'orateur, plus de 10 s sur les phrases longues. Progressif : la voix le suit par groupes de sens de 6 à 10 mots, chacun traduit dans la suite de ce qui a déjà été dit, et enchaîne sur une virgule quand la phrase continue — environ 4 s derrière lui, 6 s au plus (rejeu de l'essai 8). Un début de phrase dit tôt ne se reprend pas, et quand l'orateur cherche ses mots, la voix l'attend au milieu de sa phrase."
+            applies="live"
+            changed={changed("speech.rhythm")}
+          >
+            <Segmented value={sp.rhythm} onChange={(x) => set("speech", { rhythm: x })} options={RHYTHM} />
+          </Field>
+
+          <Field
             label="Phrases"
             help="L'orateur hésite au milieu d'une phrase : « It's really an honor to »… Entières, ce morceau attend la suite tant que l'orateur reprend avant 2,5 s (8 s au plus) ; la voix ne s'arrête plus au milieu d'une phrase, mais commence plus tard."
             applies="live"
             changed={changed("speech.wholeSentences")}
           >
             <Segmented value={sp.wholeSentences ? "on" : "off"} onChange={(x) => set("speech", { wholeSentences: x === "on" })} options={WHOLE_SENTENCES} />
+            {sp.rhythm === "progressive" && <Note tone="muted">Sans effet en rythme progressif : les groupes partent sans attendre la fin de la phrase.</Note>}
           </Field>
 
           <Field

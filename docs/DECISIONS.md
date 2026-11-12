@@ -1632,6 +1632,159 @@ simulation (3 : réglage éteint, réglage allumé sur 30 minutes, version refus
 - Rien n'est essayé en séance réelle, ni le bandeau du formateur ni l'alerte du tableau de bord
   regardés à l'écran.
 
+## D43 — Rythme progressif : des groupes de sens traduits dans la suite de la phrase
+
+Huitième correction de l'audit du 10/11/2026 (étapes 2.3 et 2.4, défauts F-04 et F-10).
+
+**Constat.** L'unité de travail était la phrase. Un mot attendait que sa phrase soit reconnue,
+recollée (D32, D33), traduite et synthétisée : 8,0 s de décalage médian aux essais 7 et 8, 11 à
+16 s sur les phrases longues. Les règles qui retiennent un morceau sont propres à l'anglais
+(D33), et elles neutralisaient le premier morceau rapide d'une prise de parole (D25) : retenu
+comme morceau court, il perdait l'avance qu'il était venu prendre.
+
+**Décision.**
+- *Un réglage « Rythme »* (Configuration, appliqué en direct) : *Phrases entières*, le
+  comportement d'avant, **par défaut** tant que le profil d'écoute n'est pas décidé (audit §10,
+  décision 1) ; *Progressif*, ce qui suit.
+- *Des groupes de sens.* En progressif, la segmentation de l'administration est plafonnée
+  (`commitConfig`) :
+  - coupe à la première virgule dès 6 mots ;
+  - 10 mots au plus ;
+  - délai ramené à 3 s.
+  Les réglages plus courts de l'administration l'emportent. La ponctuation et les pauses de
+  l'orateur (fin de tour forcée dès 250 ms, D22) coupent comme avant. Aucun groupe n'attend la
+  fin de sa phrase : la retenue D33 est coupée. Le premier morceau d'une prise de parole part
+  tel quel (F-10). Les morceaux courts au milieu de la parole restent attachés à la suite (D32).
+- *Une traduction dans la suite de la phrase.* Par langue, le pipeline garde les groupes déjà
+  traduits de la phrase en cours (6 au plus ; les plus anciens passent au contexte). Le groupe
+  suivant reçoit ce début, en source et tel que la salle l'a entendu (`MtRequest.prefix`) :
+  - Claude : le début en tour user/assistant, puis la suite marquée « … » ; une consigne du
+    prompt système lui demande de ne rendre que la suite, accordée en genre, nombre et temps,
+    sans rien redire. Pas de réponse pré-remplie : les modèles récents la refusent (400).
+  - DeepL ne sait pas continuer une phrase : il traduit le groupe, avec le début (source et
+    cible) dans `context`, qui oriente sans être traduit.
+  - Une marque « … » reprise par le traducteur est retirée. Un début de phrase redit en entier
+    (deux mots au moins) est retiré lui aussi, et compté (`prefixRepeated`). Une redite partielle
+    est gardée : mieux vaut redire un mot que d'en perdre un.
+- *Quand une phrase est close :*
+  - point d'interrogation ou d'exclamation ;
+  - point, sauf le faux point d'une coupe après un mot qui annonce la suite (D34) ;
+  - 2,5 s de silence (le seuil où D33 tenait déjà la phrase pour abandonnée) ;
+  - échec de la traduction : la salle n'entend pas ce groupe.
+  La phrase close entre alors d'un bloc dans le contexte des suivantes. Une phrase finie que
+  l'orateur enchaîne aussitôt garde sa virgule à la voix (D27), mais la phrase suivante n'est
+  pas traduite comme sa suite. Le premier essai les confondait : « My name is Alonso Cornejo. »
+  devenait la suite de la phrase d'avant.
+- *Voix suspendue* (D27 étendu) : un groupe sans ponctuation finale finit sur une virgule à la
+  voix. L'écran garde le texte tel quel.
+- *Voix continue, première partie de 2.4.* À l'intérieur d'une phrase, la voix Azure n'a pas
+  de silence de bord du côté où la phrase continue (`TtsRequest.joinsPrevious`/`joinsNext`,
+  SSML `Leading-exact`/`Tailing-exact` à 0 ms au lieu de 50 et 150 ms). La pause de l'orateur,
+  elle, reste rendue par le téléphone (D26).
+- *Visible* : `rhythm`, `continued`, `prefixRepeated`, `joinsPrevious` et `joinsNext` sur chaque
+  segment du journal ; `rhythm` sur chaque commit.
+- *Points de suspension* : le point final qui devient virgule (D27) emporte désormais tout un
+  « ... » ou « … ». Seul son dernier point devenait virgule (« le monde est..,», relevé au
+  rejeu). Cela vaut aussi en phrases entières.
+
+**Mesuré — rejeu de l'essai 8, voix modélisée.** L'enregistrement de l'essai 8 (292,7 s,
+629 mots) a été rejoué en temps réel dans le vrai pipeline, avec la vraie reconnaissance
+(AssemblyAI U3.5 Pro) et la vraie traduction (DeepL, Claude en secours, jamais appelé). Un
+téléphone simulé jouait chaque voix à la suite de la précédente, pauses gardées comprises, et
+envoyait ses accusés. Les deux rejeux ont été faits l'un après l'autre, avec les réglages
+enregistrés de l'administration ; seul le rythme changeait.
+
+La voix est **modélisée**, car la clé Azure du `.env` local est refusée (401). Le modèle est calé
+sur les 135 voix Azure (Denise) du journal de l'essai 8 :
+- 224 ms de synthèse (médiane mesurée) ;
+- 47,5 ms par caractère à ×1 (régression sur ces voix) ;
+- les silences de bord D34 mesurés sur la VM : 60 ms avant, 180 ms après ;
+- 0 ms du côté où la phrase continue (non mesuré).
+
+| | Phrases entières (témoin) | Progressif |
+|---|---|---|
+| Segments | 60 | 103 |
+| Mots par segment, médiane / p90 / max | 10 / 18 / 30 | 6 / 10 / 12 |
+| Décalage par mot, médiane | 6,4 s | 4,0 s (4 045 ms) |
+| Décalage par mot, p90 / p95 | 9,7 / 10,5 s | 5,4 / 5,7 s |
+| Décalage par mot, maximum | 12,5 s | 6,4 s |
+| Premier mot d'un segment, médiane | 6,1 s | 3,8 s |
+| Voix prête après le premier mot, médiane | 3,8 s | 2,3 s |
+| Caractères français | 3 866 | 3 912 (+1,2 %) |
+
+En progressif, les groupes ont été coupés ainsi : 63 à la ponctuation, 23 à une fin de tour,
+13 à la virgule, 2 à 10 mots, 2 au délai. 46 groupes ont été traduits comme la suite de leur
+phrase ; aucun n'a redit son début. DeepL ne continue pas la phrase, il ne peut donc pas la
+redire. La traduction prend 236 ms en médiane, 305 ms au p95.
+
+Raccords à l'intérieur d'une phrase (46) :
+- *Voix suivante déjà prête (19 raccords)* : le téléphone enchaîne aussitôt 13 fois. Les 6
+  autres blancs (175 à 350 ms) sont la pause gardée de l'orateur (D26), qui s'était tu 438 à
+  899 ms. Au p95, 268 ms. Ni le silence réel aux bords des voix Azure ni le passage d'un élément
+  `<audio>` à l'autre n'entrent dans ce compte.
+- *Voix suivante pas encore prête (27 raccords)* : le téléphone a rattrapé l'orateur et
+  attend la traduction du groupe suivant. Blanc de 1,2 s en médiane, 4,2 s au p95 : c'est
+  l'orateur qui cherche ses mots, plus le temps de traiter son groupe. Ce silence-là n'existe
+  pas en phrases entières, où la voix attend la phrase complète.
+
+Au regard des cibles de l'audit :
+- *Décalage par mot p50 ≤ 4 s* : 4,0 s, à la limite (45 ms au-dessus).
+- *p95 ≤ 6 s* : tenu (5,7 s).
+- Ces chiffres viennent d'un banc. Le même banc donne 6,4 s en phrases entières, contre 8,0 s
+  mesurés en séance aux essais 7 et 8. Une partie de l'écart vient du code (D34 à D42 depuis) ;
+  l'autre vient de ce que le banc ignore (réseau, téléphone, vraie voix). Le gain mesuré est la
+  différence dans le même banc : −2,4 s en médiane, −4,8 s au p95.
+- *Fidélité au moins égale au mode phrases* : non mesurée. À la lecture des 103 groupes, les
+  suites se lisent comme une seule phrase (« Mais je vais vous dire ce que je dis à mes / jeunes
+  qui travaillent à la Maison Blanche et / que je rencontre aux États-Unis, »).
+- *Écoute à l'aveugle* : à faire.
+- *2.4, blanc ≤ 150 ms au p95 entre deux groupes d'une phrase* : non vérifié, faute de vraie voix
+  et d'enregistrement des écouteurs. Quand la voix est prête, le seul blanc programmé est la
+  pause gardée de l'orateur.
+
+**Vérifié.** 20 tests nouveaux :
+- pipeline (9) :
+  - coupe à la virgule dès 6 mots et à 10 mots, contre la phrase d'un bloc en phrases entières ;
+  - pas de retenue D33 ;
+  - premier morceau d'une prise de parole non retenu ;
+  - début de phrase passé au traducteur, phrase close au contexte d'un bloc ;
+  - virgule à la voix et sans silence de bord, rien de changé en phrases entières ;
+  - phrase finie enchaînée qui n'est pas continuée ;
+  - début redit retiré et compté ;
+  - phrase close par 2,5 s de silence gardée au contexte ;
+  - groupe non traduit qui ne sert pas de début ;
+- `continuation` et `asComma` (5) ;
+- Claude (2 : messages, consigne « … ») ;
+- DeepL (1 : contexte) ;
+- Azure (1 : silences de bord) ;
+- réglages (2 : défaut et fichier ancien, valeur refusée).
+
+333 tests sur 333 ; types vérifiés (serveur, client, poste). Le rejeu progressif a tourné avant
+la correction des points de suspension, qui ne change pas les temps.
+
+**Limites.**
+- *Voix continue ElevenLabs (WebSocket multi-contexte) : reportée.* Les crédits ElevenLabs sont
+  épuisés jusqu'au 19/11 : rien ne pourrait être validé à l'oreille. ElevenLabs garde ses
+  silences de bord et son raccord par `previous_text`.
+- Le silence réel d'Azure à 0 ms n'est pas mesuré : en D34, Azure a rendu 10 à 30 ms de plus
+  que demandé.
+- Un début de phrase dit tôt ne se reprend pas : si la suite le contredit, la salle a entendu
+  les deux.
+- La voix attend l'orateur au milieu de ses phrases (27 raccords sur 46, 1,2 s en médiane) :
+  plus de silences intérieurs qu'en phrases entières, que l'écoute à l'aveugle doit juger.
+- Majuscule en tête de suite : DeepL ne sait pas qu'il continue une phrase. 12 suites sur 46
+  commencent par une majuscule, la plupart à bon droit (l'orateur repart après « euh »), mais pas
+  toutes (« Dans un endroit où il peut »). C'est visible à l'écran, pas à l'oreille.
+- Le faux point de D34 est une règle anglaise. « To ask you this. » a été tenu pour une phrase
+  ouverte, et la phrase suivante traduite comme sa suite (7 suites sur 46 après un point). Une
+  autre langue source n'a ni faux point ni retenue D33 : ses phrases ne se ferment qu'à la
+  ponctuation et aux silences.
+- Un moteur sans ponctuation (AssemblyAI universal-streaming) laisserait toutes les phrases
+  ouvertes jusqu'à 2,5 s de silence : six groupes au plus de début de phrase, le reste au
+  contexte.
+- La consigne de suite donnée à Claude n'a pas servi au rejeu : DeepL est le primaire, et le
+  secours n'a pas été appelé. Ce que Claude en fait reste à lire en séance.
+
 ## Ce que six semaines (au lieu de 48 h) remettent sur la table
 
 Dans l'ordre de valeur : tests automatisés dès le départ (fait) ; multilingue réel

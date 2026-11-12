@@ -32,14 +32,24 @@ function escapeXml(s: string): string {
 const LEADING_SILENCE = "50ms";
 const TAILING_SILENCE = "150ms";
 
+/**
+ * Voix continue (D43, audit 2.4) : une voix qui suit la précédente dans la même phrase, ou que la
+ * suivante continuera, n'a pas de silence de ce côté. Entre deux groupes d'une phrase, le blanc
+ * n'est plus que la pause de l'orateur gardée par le téléphone (D26) et le passage d'un élément
+ * `<audio>` à l'autre.
+ */
+const JOINED_SILENCE = "0ms";
+
 /** Le SSML envoyé à Azure : voix, silences fixés, vitesse. */
-export function azureSsml(voice: string, text: string, speed = 1): string {
+export function azureSsml(voice: string, text: string, speed = 1, joins: { previous?: boolean; next?: boolean } = {}): string {
   const locale = voice.split("-").slice(0, 2).join("-"); // fr-FR-DeniseNeural → fr-FR
   const rate = Math.round((speed - 1) * 100);
+  const leading = joins.previous ? JOINED_SILENCE : LEADING_SILENCE;
+  const tailing = joins.next ? JOINED_SILENCE : TAILING_SILENCE;
   return (
     `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xmlns:mstts="http://www.w3.org/2001/mstts" xml:lang="${locale}">` +
     `<voice name="${voice}">` +
-    `<mstts:silence type="Leading-exact" value="${LEADING_SILENCE}"/><mstts:silence type="Tailing-exact" value="${TAILING_SILENCE}"/>` +
+    `<mstts:silence type="Leading-exact" value="${leading}"/><mstts:silence type="Tailing-exact" value="${tailing}"/>` +
     `<prosody rate="${rate >= 0 ? "+" : ""}${rate}%">${escapeXml(text)}</prosody></voice></speak>`
   );
 }
@@ -53,7 +63,7 @@ export class AzureTts implements TtsProvider {
 
   async synthesize(req: TtsRequest): Promise<TtsResult> {
     const voice = this.opts.voiceByLang?.[req.lang] ?? this.opts.voice;
-    const ssml = azureSsml(voice, req.text, req.speed ?? 1);
+    const ssml = azureSsml(voice, req.text, req.speed ?? 1, { previous: req.joinsPrevious, next: req.joinsNext });
 
     // Connexion gardée ouverte entre deux phrases, comme les autres fournisseurs (D20).
     const res = await providerFetch(`https://${this.opts.region}.tts.speech.microsoft.com/cognitiveservices/v1`, {

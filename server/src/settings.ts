@@ -48,6 +48,8 @@ export function defaultsFrom(cfg: Config): Settings {
       quickStart: true,
       joinShort: true,
       wholeSentences: true,
+      // Le défaut reste celui de D32/D33 tant que le profil d'écoute n'est pas tranché (audit §10).
+      rhythm: "sentences",
       keyterms: cfg.STT_KEYTERMS.join(", "),
       prompt: cfg.STT_PROMPT ?? "",
     },

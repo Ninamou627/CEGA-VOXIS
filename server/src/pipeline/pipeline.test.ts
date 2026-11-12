@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Metrics } from "../metrics";
 import { FallbackMt } from "../providers";
-import type { MtProvider, SttEvents, SttProvider, TtsProvider } from "../providers/types";
-import { Pipeline } from "./pipeline";
+import type { MtProvider, MtRequest, SttEvents, SttProvider, TtsProvider, TtsRequest } from "../providers/types";
+import { asComma, continuation, Pipeline } from "./pipeline";
 
 const T0 = 1_000_000;
 /** Une trame de 100 ms de silence à 16 kHz, PCM 16 bits mono. */
@@ -1417,5 +1417,273 @@ describe("Pipeline — chaîne non bloquante (D39)", () => {
     await vi.advanceTimersByTimeAsync(100);
     expect(r.audio).toEqual([1, 2, 3]);
     await r.pipeline.stop();
+  });
+});
+
+/**
+ * Rythme progressif (D43, audit 2.3 et 2.4) : des groupes de sens de 10 mots au plus, qui partent
+ * sans attendre la fin de leur phrase ; le groupe suivant se traduit dans la suite de ce que la
+ * salle a entendu, et la voix ne marque pas de silence de bord à l'intérieur d'une phrase.
+ */
+describe("Pipeline — rythme progressif (D43)", () => {
+  function progressiveRoom(opts: { rhythm?: "progressive" | "sentences"; translate?: (r: MtRequest) => string } = {}) {
+    const stt = new FakeStt(true);
+    const metrics = new Metrics();
+    const reqs: MtRequest[] = [];
+    const said: TtsRequest[] = [];
+    const shown: string[] = [];
+    const heard: string[] = [];
+    const pmt: MtProvider = {
+      name: "fake-mt",
+      translate: async (r) => {
+        reqs.push({ ...r, context: r.context.map((c) => ({ ...c })) });
+        return opts.translate ? opts.translate(r) : `fr:${r.text}`;
+      },
+    };
+    const ptts: TtsProvider = {
+      name: "fake-tts",
+      synthesize: async (r) => {
+        said.push(r);
+        return { audio: new Uint8Array(1), mime: "audio/mpeg", durMs: 1000 };
+      },
+    };
+    // Réglages d'usine (D32, D33), plus le rythme choisi.
+    const tuning = () => ({
+      commit: {},
+      contextSegments: 2,
+      baseSpeed: 1,
+      followTempo: true,
+      speechThresholdDb: -35,
+      quickStart: true,
+      joinShort: true,
+      wholeSentences: true,
+      rhythm: opts.rhythm ?? ("progressive" as const),
+    });
+    const pipeline = new Pipeline({ stt, mt: pmt, tts: ptts }, { srcLang: "en", targetLangs: ["fr"], sampleRate: 16000, tuning }, metrics);
+    const commits: string[] = [];
+    pipeline.on("src.commit", (e) => commits.push(e.text));
+    pipeline.on("tr.segment", (e) => shown.push(e.text));
+    pipeline.on("audio", (e) => heard.push(e.text));
+    const speak = async (frames: number) => {
+      for (let i = 0; i < frames; i++) {
+        await vi.advanceTimersByTimeAsync(100);
+        pipeline.pushAudio(LOUD);
+      }
+    };
+    const silence = async (frames: number) => {
+      for (let i = 0; i < frames; i++) {
+        await vi.advanceTimersByTimeAsync(100);
+        pipeline.pushAudio(FRAME);
+      }
+    };
+    const words = (at: number, text: string) => text.split(" ").map((t, i) => ({ text: t, startMs: at + i * 200, endMs: at + (i + 1) * 200, isFinal: true }));
+    /** Texte définitif d'un tour : des mots de 200 ms bout à bout à partir de `at` (position du flux). */
+    const final = (at: number, text: string) => stt.ev!.onPartial({ words: words(at, text), isFinal: true });
+    /** Les mêmes mots, reçus un à un au fil de la parole (mots définitifs en cours de tour). */
+    const live = (at: number, text: string) => {
+      const w = words(at, text);
+      for (let n = 1; n <= w.length; n++) stt.ev!.onPartial({ words: w.slice(0, n), isFinal: false });
+    };
+    return { stt, metrics, pipeline, reqs, said, shown, heard, commits, speak, silence, final, live };
+  }
+
+  it("coupe à la virgule dès 6 mots, et à 10 mots au plus ; en phrases entières, la phrase part d'un bloc", async () => {
+    const p = progressiveRoom();
+    await p.pipeline.start();
+    await p.speak(60);
+    p.live(0, "So today we will look at the results, and then we discuss them. one two three four five six seven eight nine ten eleven twelve thirteen fourteen");
+    expect(p.commits).toEqual(["So today we will look at the results,", "and then we discuss them.", "one two three four five six seven eight nine ten"]);
+    await p.pipeline.stop();
+
+    const s = progressiveRoom({ rhythm: "sentences" });
+    await s.pipeline.start();
+    await s.speak(30);
+    s.live(0, "So today we will look at the results, and then we discuss them.");
+    expect(s.commits).toEqual(["So today we will look at the results, and then we discuss them."]);
+    await s.pipeline.stop();
+  });
+
+  it("un groupe coupé avant la fin de sa phrase part aussitôt, au lieu d'attendre la suite (D33)", async () => {
+    const p = progressiveRoom();
+    await p.pipeline.start();
+    await p.speak(13);
+    p.final(300, "It's really an honor to");
+    expect(p.commits).toEqual(["It's really an honor to"]);
+    await p.pipeline.stop();
+  });
+
+  it("le premier morceau d'une prise de parole n'est pas retenu comme morceau court (F-10)", async () => {
+    const p = progressiveRoom();
+    await p.pipeline.start();
+    await p.speak(10);
+    p.final(400, "Um, hello,");
+    expect(p.commits).toEqual(["Um, hello,"]);
+    await p.pipeline.stop();
+
+    const s = progressiveRoom({ rhythm: "sentences" });
+    await s.pipeline.start();
+    await s.speak(10);
+    s.final(400, "Um, hello,");
+    expect(s.commits).toEqual([]); // D32 : il attend la suite
+    await s.pipeline.stop();
+  });
+
+  it("le groupe suivant se traduit dans la suite du début de phrase ; la phrase close entre d'un bloc au contexte", async () => {
+    const p = progressiveRoom();
+    await p.pipeline.start();
+    await p.speak(26);
+    await p.silence(8); // 0,8 s de silence après « them. » : la phrase est finie (D27)
+    p.final(0, "So today we will look at the results,");
+    p.final(1600, "and then we discuss them.");
+    await vi.advanceTimersByTimeAsync(10);
+    await p.speak(10);
+    p.final(3400, "Next we look at security.");
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(p.reqs.map((r) => r.prefix)).toEqual([
+      undefined,
+      { src: "So today we will look at the results,", tgt: "fr:So today we will look at the results," },
+      undefined,
+    ]);
+    expect(p.reqs[1].context).toEqual([]); // la phrase ouverte n'est pas encore du contexte
+    expect(p.reqs[2].context).toEqual([
+      { src: "So today we will look at the results, and then we discuss them.", tgt: "fr:So today we will look at the results, fr:and then we discuss them." },
+    ]);
+    await p.pipeline.stop();
+  });
+
+  it("à l'intérieur d'une phrase, la voix est suspendue sur une virgule et sans silence de bord (2.4)", async () => {
+    // Un traducteur qui ne ponctue pas la fin d'un groupe : la voix y met une virgule.
+    const p = progressiveRoom({ translate: (r) => (r.prefix ? "puis nous en parlerons." : "Aujourd'hui nous verrons les résultats") });
+    await p.pipeline.start();
+    await p.speak(26);
+    await p.silence(8);
+    p.final(0, "So today we will look at the results");
+    p.final(1600, "and then we discuss them.");
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(p.said.map((r) => [r.text, r.joinsPrevious, r.joinsNext])).toEqual([
+      ["Aujourd'hui nous verrons les résultats,", false, true],
+      ["puis nous en parlerons.", true, false],
+    ]);
+    // L'écran n'a pas la virgule ajoutée pour la voix.
+    expect(p.shown).toEqual(["Aujourd'hui nous verrons les résultats", "puis nous en parlerons."]);
+    expect(p.heard).toEqual(p.shown);
+    await p.pipeline.stop();
+
+    // Phrases entières : rien ne change, une voix par phrase avec ses silences.
+    const s = progressiveRoom({ rhythm: "sentences" });
+    await s.pipeline.start();
+    await s.speak(11);
+    await s.silence(8);
+    s.final(300, "People are healthier today.");
+    await vi.advanceTimersByTimeAsync(10);
+    expect(s.said.map((r) => [r.text, r.joinsPrevious, r.joinsNext])).toEqual([["fr:People are healthier today.", false, false]]);
+    expect(s.reqs[0].prefix).toBeUndefined();
+    await s.pipeline.stop();
+  });
+
+  it("une phrase finie que l'orateur enchaîne aussitôt : virgule à la voix, mais la suivante n'en est pas la suite", async () => {
+    const p = progressiveRoom();
+    await p.pipeline.start();
+    await p.speak(8);
+    await p.silence(4); // 0,4 s : il reprend tout de suite (D27)
+    await p.speak(15);
+    p.final(0, "My name is Alonso.");
+    p.final(1200, "I study marketing at university.");
+    await vi.advanceTimersByTimeAsync(10);
+    expect(p.said[0]).toMatchObject({ text: "fr:My name is Alonso,", joinsNext: true });
+    expect(p.reqs[1].prefix).toBeUndefined();
+    expect(p.reqs[1].context).toEqual([{ src: "My name is Alonso.", tgt: "fr:My name is Alonso," }]);
+    await p.pipeline.stop();
+  });
+
+  it("un début de phrase redit par le traducteur est retiré de la voix et compté", async () => {
+    const p = progressiveRoom({
+      translate: (r) => (r.prefix ? "… Aujourd'hui nous verrons les résultats, puis nous en parlerons." : "Aujourd'hui nous verrons les résultats,"),
+    });
+    const segs: Record<string, unknown>[] = [];
+    const event = p.metrics.event.bind(p.metrics);
+    vi.spyOn(p.metrics, "event").mockImplementation((type, data) => {
+      if (type === "segment") segs.push(data as Record<string, unknown>);
+      return event(type, data);
+    });
+    await p.pipeline.start();
+    await p.speak(26);
+    await p.silence(8);
+    p.final(0, "So today we will look at the results,");
+    p.final(1600, "and then we discuss them.");
+    await vi.advanceTimersByTimeAsync(10);
+    expect(p.heard).toEqual(["Aujourd'hui nous verrons les résultats,", "puis nous en parlerons."]);
+    expect(segs.map((e) => [e.rhythm, e.continued, e.prefixRepeated])).toEqual([
+      ["progressive", false, false],
+      ["progressive", true, true],
+    ]);
+    await p.pipeline.stop();
+  });
+
+  it("après 2,5 s de silence, la phrase restée ouverte est close : pas de suite, mais son texte reste au contexte", async () => {
+    const p = progressiveRoom();
+    await p.pipeline.start();
+    await p.speak(16);
+    p.final(0, "So today we will look at the results");
+    await vi.advanceTimersByTimeAsync(10);
+    await p.silence(30);
+    await p.speak(10);
+    p.final(4700, "Next we look at security.");
+    await vi.advanceTimersByTimeAsync(10);
+    expect(p.reqs[1].prefix).toBeUndefined();
+    expect(p.reqs[1].context).toEqual([{ src: "So today we will look at the results", tgt: "fr:So today we will look at the results" }]);
+    await p.pipeline.stop();
+  });
+
+  it("un groupe que la traduction n'a pas rendu ne sert pas de début au suivant", async () => {
+    let n = 0;
+    const p = progressiveRoom({
+      translate: (r) => {
+        if (++n === 2) throw new Error("panne");
+        return `fr:${r.text}`;
+      },
+    });
+    p.pipeline.on("error", () => {});
+    await p.pipeline.start();
+    await p.speak(30);
+    p.final(0, "So today we will look at the results");
+    p.final(1600, "and then we discuss");
+    p.final(2400, "them all in detail.");
+    await vi.advanceTimersByTimeAsync(10);
+    expect(p.reqs.map((r) => r.prefix?.src)).toEqual([undefined, "So today we will look at the results", undefined]);
+    expect(p.reqs[2].context).toEqual([{ src: "So today we will look at the results", tgt: "fr:So today we will look at the results" }]);
+    await p.pipeline.stop();
+  });
+});
+
+describe("continuation — la suite d'une phrase, sans ce que la salle a déjà entendu (D43)", () => {
+  it("retire la marque de suite reprise par le traducteur", () => {
+    expect(continuation("… puis nous en parlerons.", "Aujourd'hui nous verrons les résultats,")).toEqual({ text: "puis nous en parlerons.", repeated: false });
+    expect(continuation("...puis nous en parlerons.", "Aujourd'hui")).toEqual({ text: "puis nous en parlerons.", repeated: false });
+  });
+
+  it("retire un début de phrase redit en entier, ponctuation et casse ignorées", () => {
+    expect(continuation("aujourd'hui nous verrons les résultats puis nous en parlerons.", "Aujourd'hui nous verrons les résultats,")).toEqual({
+      text: "puis nous en parlerons.",
+      repeated: true,
+    });
+  });
+
+  it("garde une redite partielle ou d'un seul mot : mieux vaut redire un mot que d'en perdre un", () => {
+    expect(continuation("très, très bien.", "C'est très")).toEqual({ text: "très, très bien.", repeated: false });
+    expect(continuation("Oui, bien sûr.", "Oui")).toEqual({ text: "Oui, bien sûr.", repeated: false });
+    expect(continuation("Aujourd'hui nous verrons", "Aujourd'hui nous verrons")).toEqual({ text: "Aujourd'hui nous verrons", repeated: false });
+  });
+
+  it("le point final devient une virgule, points de suspension compris (essai 8 : « le monde est..,»)", () => {
+    expect(asComma("Bonjour à tous.")).toBe("Bonjour à tous,");
+    expect(asComma("la vérité, c'est que le monde est...")).toBe("la vérité, c'est que le monde est,");
+    expect(asComma("le monde est …")).toBe("le monde est,");
+  });
+
+  it("une réponse réduite à la marque de suite est gardée telle quelle", () => {
+    expect(continuation("…", "Aujourd'hui nous verrons")).toEqual({ text: "…", repeated: false });
   });
 });

@@ -9,6 +9,10 @@ import { LangSchema } from "./protocol";
 export const MT_ENGINES = ["anthropic", "deepl", "mock"] as const;
 export type MtEngine = (typeof MT_ENGINES)[number];
 
+/** Rythme de l'interprétation (D43) : phrases entières, ou groupes de sens au fil de l'orateur. */
+export const RHYTHMS = ["sentences", "progressive"] as const;
+export type Rhythm = (typeof RHYTHMS)[number];
+
 const TranslationSchema = z.object({
   primary: z.enum(MT_ENGINES),
   secondary: z.enum(["none", ...MT_ENGINES]),
@@ -61,6 +65,14 @@ const SpeechSchema = z
      * suite tant que l'orateur reprend avant 2,5 s : la voix dit des phrases entières, plus tard (D33).
      */
     wholeSentences: z.boolean(),
+    /**
+     * Rythme de l'interprétation (D43). « sentences » : la salle entend des phrases (D32, D33),
+     * environ 8 s après l'orateur. « progressive » : des groupes de sens de 6 à 10 mots, chacun
+     * traduit dans la suite de ce qui a déjà été dit, la voix enchaînant sur une virgule quand la
+     * phrase continue — l'audit en attend un décalage de 4 s environ. Les retenues de « Phrases »
+     * ne s'y appliquent pas.
+     */
+    rhythm: z.enum(RHYTHMS),
     /** Vocabulaire de la formation, séparé par des virgules. */
     keyterms: z.string().max(4000),
     /** Description de la séance pour la reconnaissance (en anglais, ≤ 1500 caractères). */

@@ -16,3 +16,14 @@ describe("voix Azure : SSML (D34)", () => {
     expect(ssml).toContain('<prosody rate="-10%">');
   });
 });
+
+describe("voix Azure : voix continue (D43, audit 2.4)", () => {
+  it("pas de silence de bord du côté où la phrase continue", () => {
+    const both = azureSsml("fr-FR-DeniseNeural", "puis nous en parlerons,", 1, { previous: true, next: true });
+    expect(both).toContain('<mstts:silence type="Leading-exact" value="0ms"/><mstts:silence type="Tailing-exact" value="0ms"/>');
+    const first = azureSsml("fr-FR-DeniseNeural", "Aujourd'hui,", 1, { next: true });
+    expect(first).toContain('<mstts:silence type="Leading-exact" value="50ms"/><mstts:silence type="Tailing-exact" value="0ms"/>');
+    const last = azureSsml("fr-FR-DeniseNeural", "parlerons.", 1, { previous: true });
+    expect(last).toContain('<mstts:silence type="Leading-exact" value="0ms"/><mstts:silence type="Tailing-exact" value="150ms"/>');
+  });
+});

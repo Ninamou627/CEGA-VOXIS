@@ -46,6 +46,14 @@ describe("DeepL", () => {
     expect(body.glossary_id).toBeUndefined();
   });
 
+  it("suite d'une phrase (D43) : son début, en source et tel que dit, rejoint le contexte sans être traduit", async () => {
+    const d = fakeDeepL();
+    await d.mt.translate({ ...req("and then we discuss them."), domain: "Formation", prefix: { src: "So today we will look at the results,", tgt: "Aujourd'hui, nous verrons les résultats," } });
+    const body = d.translations()[0].body;
+    expect(body.text).toEqual(["and then we discuss them."]);
+    expect(body.context).toBe("Formation Previous. So today we will look at the results, Aujourd'hui, nous verrons les résultats,");
+  });
+
   it("crée le glossaire une seule fois, puis le cite à chaque segment", async () => {
     const d = fakeDeepL();
     const g = { pipeline: "chaîne de traitement" };

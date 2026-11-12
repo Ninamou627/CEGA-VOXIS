@@ -36,3 +36,21 @@ describe("réglages : une voix par défaut pour certaines langues seulement", ()
     expect(voice.speed).toBe(1.1);
   });
 });
+
+describe("réglages : rythme de l'interprétation (D43)", () => {
+  it("phrases entières par défaut ; un fichier d'avant le réglage le reçoit sans perdre le reste", () => {
+    expect(defaults.speech.rhythm).toBe("sentences");
+    dir = mkdtempSync(path.join(tmpdir(), "voxis-settings-"));
+    const file = path.join(dir, "settings.json");
+    const { rhythm: _, ...before } = { ...defaults.speech, wholeSentences: false };
+    writeFileSync(file, JSON.stringify({ speech: before }));
+    const speech = new SettingsStore(file, defaults).get().speech;
+    expect(speech.rhythm).toBe("sentences");
+    expect(speech.wholeSentences).toBe(false);
+  });
+
+  it("refuse un rythme inconnu", () => {
+    expect(SettingsSchema.safeParse({ ...defaults, speech: { ...defaults.speech, rhythm: "progressive" } }).success).toBe(true);
+    expect(SettingsSchema.safeParse({ ...defaults, speech: { ...defaults.speech, rhythm: "rapide" } }).success).toBe(false);
+  });
+});

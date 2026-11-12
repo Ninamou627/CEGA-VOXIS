@@ -39,6 +39,8 @@ export function buildSystemPrompt(from: Lang, to: Lang, glossary?: Record<string
     `- Keep numbers, product names, acronyms and code identifiers exactly as spoken.`,
     `- Produce well-punctuated ${LANG_NAME[to]} suitable for a text-to-speech voice.`,
     `- Never answer the speaker, never comment, never ask questions, never add quotes or brackets. If a segment is a fragment, render the fragment.`,
+    // Rythme progressif (D43) : la salle a déjà entendu le début de la phrase, on ne le redit pas.
+    `- A segment that starts with « … » continues the sentence of the previous segment, whose rendering the audience has already heard. Reply with only the continuation, so that your previous reply followed by this one reads as one natural ${LANG_NAME[to]} sentence: never repeat or rephrase what you already said, do not start a new sentence, keep gender, number, tense and word order consistent with it, and do not start your reply with « … ».`,
   ];
   // Formulation resserrée (D42) : la salle a pris du retard, chaque seconde de voix compte.
   if (concise)
@@ -84,7 +86,12 @@ export class AnthropicMt implements MtProvider {
     for (const c of req.context) {
       messages.push({ role: "user", content: c.src }, { role: "assistant", content: c.tgt });
     }
-    messages.push({ role: "user", content: req.text });
+    // Suite d'une phrase commencée (D43) : son début, tel que la salle l'a entendu, puis la suite
+    // marquée « … ». Pas de réponse pré-remplie : les modèles récents la refusent (400).
+    if (req.prefix) {
+      messages.push({ role: "user", content: req.prefix.src }, { role: "assistant", content: req.prefix.tgt });
+      messages.push({ role: "user", content: `… ${req.text}` });
+    } else messages.push({ role: "user", content: req.text });
 
     const params: Anthropic.Beta.MessageCreateParamsNonStreaming = {
       model: t.model,

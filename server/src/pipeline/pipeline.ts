@@ -10,8 +10,9 @@
  */
 import type { MicFrameInfo } from "../../../shared/framing";
 import type { DegradedMode, Lang, PipelineStatus } from "../../../shared/protocol";
+import type { Rhythm } from "../../../shared/settings";
 import type { Metrics } from "../metrics";
-import type { Providers, SttStream, Word } from "../providers/types";
+import type { MtRequest, Providers, SttStream, Word } from "../providers/types";
 import { TypedEmitter } from "../util/emitter";
 import { AudioClock } from "./audio-clock";
 import { PauseDetector } from "./pause";
@@ -44,17 +45,71 @@ export interface PipelineTuning {
   wholeSentences: boolean;
   /** Formulation resserrée dès 5 s de retard (D42), si un moteur sait le faire. Éteint par défaut. */
   tightenWhenLate?: boolean;
+  /** Phrases entières (défaut) ou groupes de sens au fil de l'orateur (D43). */
+  rhythm?: Rhythm;
 }
 
 /** Ce que l'étage traduction passe à l'étage voix (D39). */
 interface Translated {
+  /** Le texte affiché, et celui que la voix dit (D43 : une virgule quand la phrase continue). */
   text: string;
+  speak: string;
   mtMs: number;
   ending: "continues" | "ends" | "unknown" | null;
   pauseAfterMs: number | null;
   readyAt: number;
   /** La formulation resserrée a été retenue (D42). */
   tightened: boolean;
+  /** Le segment continue une phrase dont la salle a déjà entendu le début (D43). */
+  continued: boolean;
+  /** Le traducteur avait redit ce début de phrase ; il a été retiré (D43). */
+  prefixRepeated?: boolean;
+}
+
+/**
+ * Une suite de phrase telle que la voix doit la dire (D43) : sans la marque de suite « … » que le
+ * traducteur a pu reprendre, et sans le début de phrase s'il l'a redit en entier — la salle l'a
+ * déjà entendu. Seule la redite entière est retirée (au moins deux mots) : une redite partielle
+ * peut être celle de l'orateur (« très, très »), et mieux vaut redire un mot que d'en perdre un.
+ */
+export function continuation(text: string, prefixTgt: string): { text: string; repeated: boolean } {
+  let out = text.replace(/^\s*(?:…|\.{2,})\s*/, "");
+  const key = (w: string) => w.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+  const head = prefixTgt.split(/\s+/).map(key).filter(Boolean);
+  const words = out.split(/\s+/).filter(Boolean);
+  let repeated = false;
+  if (head.length >= 2 && words.length > head.length) {
+    const kept = words.filter((w) => key(w));
+    let i = 0;
+    let k = 0;
+    // Les mots du début de phrase, dans l'ordre, en tête de la traduction (ponctuation ignorée).
+    for (; i < words.length && k < head.length; i++) {
+      const w = key(words[i]);
+      if (!w) continue;
+      if (w !== head[k]) break;
+      k++;
+    }
+    if (k === head.length && kept.length > head.length) {
+      out = words.slice(i).join(" ");
+      repeated = true;
+    }
+  }
+  // Une réponse réduite à la marque de suite n'est pas une suite : on garde ce qu'elle disait.
+  return out.trim() ? { text: out, repeated } : { text, repeated: false };
+}
+
+/**
+ * Le point final d'une traduction devient une virgule (D27) — points de suspension compris : le
+ * « … » ou « ... » que le traducteur met à une phrase laissée en suspens devenait « ..,» (D43).
+ */
+export function asComma(text: string): string {
+  return text.replace(/\s*(?:\.+|…)\s*$/, ",");
+}
+
+/** Une entrée de plus dans le contexte d'une langue, qui garde les `keep` plus récentes. */
+function pushContext(ctx: { src: string; tgt: string }[], entry: { src: string; tgt: string }, keep: number): void {
+  ctx.push(entry);
+  while (ctx.length > keep) ctx.shift();
 }
 
 export interface PipelineConfig {
@@ -146,6 +201,24 @@ const DANGLING = new Set([
   "is", "are", "was", "were", "will", "would", "can", "could", "if", "as", "at", "by", "from", "than", "into",
   "our", "your", "their", "its", "my", "this", "these", "those",
 ]);
+/**
+ * Rythme progressif (D43, audit 2.3) : l'unité de travail devient le groupe de sens — une
+ * proposition, 6 à 10 mots, 2 à 4 s de parole —, plus la phrase. Un groupe se ferme sur une
+ * ponctuation, sur une pause de l'orateur (fin de tour forcée, D22), à la première virgule après
+ * 6 mots, à 10 mots au plus, ou au délai de coupe, ramené à 3 s. Les réglages de l'administration
+ * plus courts l'emportent. Rejoué sur l'enregistrement de l'essai 8 (vraie reconnaissance, vraie
+ * traduction, voix modélisée) : décalage par mot de 6,4 à 4,0 s en médiane, de 10,5 à 5,7 s au p95.
+ */
+const PROGRESSIVE_CLAUSE_WORDS = 6;
+const PROGRESSIVE_MAX_WORDS = 10;
+const PROGRESSIVE_TIMEOUT_MS = 3000;
+/**
+ * Une phrase reste ouverte d'un groupe à l'autre tant que l'orateur reprend avant 2,5 s — la
+ * pause au-delà de laquelle D33 tenait déjà la phrase pour abandonnée.
+ */
+const SENTENCE_GAP_MS = MID_PAUSE_MS;
+/** Groupes d'une phrase ouverte gardés comme début de phrase pour le traducteur. */
+const OPEN_GROUPS_KEPT = 6;
 /** Cadence à laquelle on demande aux fournisseurs s'ils ont besoin d'être réchauffés (D20). */
 const WARM_EVERY_MS = 5000;
 /**
@@ -282,6 +355,11 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
   /** Par langue, la file des synthèses : la diffusion garde l'ordre des segments. */
   private ttsChains = new Map<Lang, Promise<void>>();
   private context = new Map<Lang, { src: string; tgt: string }[]>();
+  /**
+   * Rythme progressif (D43) : par langue, les groupes déjà traduits de la phrase en cours, que la
+   * salle a entendus ou entendra. Le groupe suivant se traduit dans leur suite.
+   */
+  private open = new Map<Lang, { src: string; tgt: string }[]>();
   private backlog = 0;
   private degraded: DegradedMode = "none";
   private degradedReason = "";
@@ -334,9 +412,24 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     return this.cfg.tuning?.() ?? DEFAULT_TUNING;
   }
 
-  /** Segmentation de l'administration ; un fournisseur qui marque ses mots définitifs se passe de l'accord. */
+  /** Rythme progressif : groupes de sens au fil de l'orateur (D43). */
+  private get progressive(): boolean {
+    return this.tuning.rhythm === "progressive";
+  }
+
+  /**
+   * Segmentation de l'administration ; un fournisseur qui marque ses mots définitifs se passe de
+   * l'accord. En rythme progressif, des groupes de 10 mots au plus (D43).
+   */
   private commitConfig(): CommitConfig {
-    return { ...DEFAULT_COMMIT, ...this.tuning.commit, agreement: !this.providers.stt.finalWords };
+    const c: CommitConfig = { ...DEFAULT_COMMIT, ...this.tuning.commit, agreement: !this.providers.stt.finalWords };
+    if (this.progressive) {
+      c.maxWords = Math.min(c.maxWords, PROGRESSIVE_MAX_WORDS);
+      c.clauseWords = Math.min(c.clauseWords, PROGRESSIVE_CLAUSE_WORDS, c.maxWords - 1);
+      c.minWords = Math.min(c.minWords, c.clauseWords);
+      c.timeoutMs = Math.min(c.timeoutMs, PROGRESSIVE_TIMEOUT_MS);
+    }
+    return c;
   }
 
   /** L'administration a changé la segmentation : prise en compte dès le prochain mot. */
@@ -475,6 +568,8 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     this.releaseHeld();
     // Micro arrêté : plus rien à rattraper ni d'alerte à donner au formateur.
     this.lag.reset();
+    // La prochaine prise de parole ne continue pas une phrase de celle-ci (D43).
+    this.open.clear();
     this.emit("mic", { on: false });
     this.emitStatus();
   }
@@ -958,9 +1053,17 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
 
   private holds(seg: Segment): boolean {
     if (!this.started || this.muted) return false;
+    // Rythme progressif (D43) : le premier morceau d'une prise de parole part tel quel. Retenu
+    // comme morceau court, il perdait ce qu'il était venu gagner (D25, audit F-10).
+    if (this.progressive && this.opensTurn(seg)) return false;
     if (this.midSentence(seg)) return true;
     if (!this.tuning.joinShort) return false;
     return seg.words.length <= SHORT_WORDS || this.endsOnTitle(seg);
+  }
+
+  /** Ce segment ouvrirait une prise de parole : rien n'est parti avant, ou l'orateur s'était tu. */
+  private opensTurn(seg: Segment): boolean {
+    return this.prevEnd == null || seg.tStart - this.prevEnd > TURN_GAP_MS;
   }
 
   private endsOnTitle(seg: Segment): boolean {
@@ -968,9 +1071,12 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     return last != null && isTitle(last);
   }
 
-  /** La phrase n'est pas finie : pas de ponctuation finale, hésitation, ou mot qui annonce la suite (D33). */
+  /**
+   * La phrase n'est pas finie : pas de ponctuation finale, hésitation, ou mot qui annonce la suite
+   * (D33). En rythme progressif, un groupe part sans attendre la fin de sa phrase (D43).
+   */
   private midSentence(seg: Segment): boolean {
-    if (!this.tuning.wholeSentences || this.cfg.srcLang !== "en") return false;
+    if (this.progressive || !this.tuning.wholeSentences || this.cfg.srcLang !== "en") return false;
     const text = seg.text.trim();
     if (/[?!]["”»)]*$/.test(text)) return false;
     if (!/[.…]["”»)]*$/.test(text)) return true;
@@ -1068,6 +1174,7 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
       words: seg.words.length,
       wordStarts,
       reason: seg.reason,
+      rhythm: this.progressive ? "progressive" : "sentences",
       joined: seg.joined ?? 1,
       heldMs: Math.round(heldMs),
       sttShifts: revised.shifts,
@@ -1093,8 +1200,9 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
       // derrière la précédente ET derrière sa propre traduction. Un appel lent ne bloque plus
       // que sa file ; l'ordre de diffusion reste celui des segments.
       const prevMt = this.mtChains.get(lang) ?? Promise.resolve();
+      const stream = this.streams;
       const translated = prevMt
-        .then(() => this.translateStage(seq, seg, lang, this.streams))
+        .then(() => this.translateStage(seq, seg, lang, stream, gapMs))
         .catch((error: Error) => {
           this.emit("error", { stage: "mt", error });
           return undefined;
@@ -1138,10 +1246,25 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     seg: Segment,
     lang: Lang,
     stream: number,
+    gapMs: number | null = null,
   ): Promise<Translated | undefined> {
     const ctx = this.context.get(lang) ?? [];
     const t0 = Date.now();
-    const req = { text: seg.text, from: this.cfg.srcLang, to: lang, context: ctx };
+    // Rythme progressif (D43) : un groupe qui continue la phrase en cours se traduit dans la
+    // suite de ce que la salle a déjà entendu. Après 2,5 s de silence, la phrase est close.
+    const progressive = this.progressive;
+    const keep = this.tuning.contextSegments;
+    let open = this.open.get(lang) ?? [];
+    if (open.length && (!progressive || gapMs == null || gapMs > SENTENCE_GAP_MS)) {
+      // Phrase laissée ouverte (dernier groupe sans ponctuation finale) : le silence la clôt, elle
+      // entre d'un bloc dans le contexte — le fil n'en est pas perdu.
+      pushContext(ctx, { src: open.map((g) => g.src).join(" "), tgt: open.map((g) => g.tgt).join(" ") }, keep);
+      this.context.set(lang, ctx);
+      this.open.delete(lang);
+      open = [];
+    }
+    const prefix = open.length ? { src: open.map((g) => g.src).join(" "), tgt: open.map((g) => g.tgt).join(" ") } : undefined;
+    const req: MtRequest = { text: seg.text, from: this.cfg.srcLang, to: lang, context: ctx, prefix };
     // Formulation resserrée (D42) : 5 s de retard ou plus, et l'administration l'a permis. Elle
     // part en même temps que la traduction normale, qui reste la référence et le recours.
     const mt = this.providers.mt;
@@ -1158,6 +1281,11 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
       text = await mt.translate(req);
     } catch (error) {
       this.emit("error", { stage: "mt", error: error as Error });
+      // La salle n'entendra pas ce groupe : le suivant ne peut pas en être la suite (D43). Ce
+      // qu'elle a entendu de la phrase reste dans le contexte.
+      if (prefix) pushContext(ctx, prefix, keep);
+      this.context.set(lang, ctx);
+      this.open.delete(lang);
       // Mieux vaut le texte source à l'écran que rien : pas de voix pour ce segment.
       this.emit("tr.segment", { seq, lang, text: seg.text, srcSeq: seq, untranslated: true });
       this.setDegraded("text-only", `traduction indisponible — ${(error as Error).message.slice(0, 200)}`);
@@ -1165,6 +1293,9 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     }
     let tMt = Date.now();
     this.metrics.stage("mt", tMt - t0);
+    // Une suite ne redit pas le début de phrase : marque de suite retirée, début redit retiré (D43).
+    let prefixRepeated = false;
+    if (prefix) ({ text, repeated: prefixRepeated } = continuation(text, prefix.tgt));
     let tightened = false;
     if (tight) {
       let timer: NodeJS.Timeout | undefined;
@@ -1173,6 +1304,7 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
       });
       const r: { text?: string; error?: string; ms: number } = await Promise.race([tight, late]);
       clearTimeout(timer);
+      if (r.text != null && prefix) r.text = continuation(r.text, prefix.tgt).text;
       const check = r.text != null ? checkTightened(text, r.text, lang) : undefined;
       tightened = Boolean(check?.ok);
       this.metrics.event("tighten", {
@@ -1190,16 +1322,69 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
       if (tightened) text = r.text!;
       tMt = Date.now();
     }
+    if (progressive) {
+      const end = this.groupEnding(seg, stream);
+      // Le point d'une phrase qui continue redevient une virgule (D27) ; un groupe coupé avant la
+      // fin de sa phrase finit sur une virgule à la voix : elle reste suspendue, ne conclut pas.
+      let speak = text;
+      if (end.verdict === "continues") {
+        text = asComma(text);
+        speak = /[,;:—–-]\s*$/.test(text) ? text : /[\p{L}\p{N}"'”»)\]]\s*$/u.test(text) ? `${text},` : text;
+      }
+      this.emit("tr.segment", { seq, lang, text, srcSeq: seq });
+      // La traduction ne continue que les phrases restées ouvertes : une phrase finie que
+      // l'orateur enchaîne aussitôt a sa virgule à la voix (D27), mais la suivante est une
+      // nouvelle phrase, pas sa suite (essai court sur l'essai 8 : « My name is Alonso Cornejo. »).
+      if (!this.closesSentence(seg)) {
+        open = [...open, { src: seg.text, tgt: text }];
+        // Phrase très longue : ses premiers groupes passent au contexte, le début gardé reste court.
+        while (open.length > OPEN_GROUPS_KEPT) pushContext(ctx, open.shift()!, keep);
+        this.open.set(lang, open);
+      } else {
+        // La phrase est close : elle entre d'un bloc dans le contexte des suivantes.
+        this.open.delete(lang);
+        pushContext(ctx, { src: prefix ? `${prefix.src} ${seg.text}` : seg.text, tgt: prefix ? `${prefix.tgt} ${text}` : text }, keep);
+      }
+      this.context.set(lang, ctx);
+      return { text, speak, mtMs: tMt - t0, ending: end.verdict, pauseAfterMs: end.pauseMs, readyAt: Date.now(), tightened, continued: prefix != null, prefixRepeated };
+    }
     // Le point d'une phrase qui continue redevient une virgule : la voix ne conclut pas (D27).
     const goesOn = /[.]\s*$/.test(seg.text) ? this.sentenceGoesOn(seg, stream) : { verdict: "unknown" as const, pauseMs: null };
-    if (goesOn.verdict === "continues") text = text.replace(/\.\s*$/, ",");
+    if (goesOn.verdict === "continues") text = asComma(text);
     this.emit("tr.segment", { seq, lang, text, srcSeq: seq });
 
-    ctx.push({ src: seg.text, tgt: text });
-    const keep = this.tuning.contextSegments;
-    while (ctx.length > keep) ctx.shift();
+    pushContext(ctx, { src: seg.text, tgt: text }, keep);
     this.context.set(lang, ctx);
-    return { text, mtMs: tMt - t0, ending: /[.]\s*$/.test(seg.text) ? goesOn.verdict : null, pauseAfterMs: goesOn.pauseMs, readyAt: Date.now(), tightened };
+    return { text, speak: text, mtMs: tMt - t0, ending: /[.]\s*$/.test(seg.text) ? goesOn.verdict : null, pauseAfterMs: goesOn.pauseMs, readyAt: Date.now(), tightened, continued: false };
+  }
+
+  /**
+   * Rythme progressif (D43) : la voix de ce groupe conclut-elle ? Point d'interrogation ou
+   * d'exclamation : oui. Point : la pause qui suit en décide (D27) ; dans le doute, elle conclut,
+   * comme avant. Sans ponctuation finale — coupé à 10 mots, à une virgule, à une pause, au délai —,
+   * la voix reste suspendue sur une virgule, sans silence de fin.
+   */
+  private groupEnding(seg: Segment, stream: number): { verdict: "continues" | "ends" | "unknown"; pauseMs: number | null } {
+    const text = seg.text.trim();
+    if (/[?!]["”»)\]]*$/.test(text)) return { verdict: "ends", pauseMs: null };
+    if (/[.…]["”»)\]]*$/.test(text)) {
+      const g = this.sentenceGoesOn(seg, stream);
+      return g.verdict === "continues" ? g : { verdict: "ends", pauseMs: g.pauseMs };
+    }
+    return { verdict: "continues", pauseMs: null };
+  }
+
+  /**
+   * Rythme progressif (D43) : ce groupe achève-t-il sa phrase, pour la traduction ? Oui sur une
+   * ponctuation finale, sauf le faux point d'une coupe après un mot qui annonce la suite (D34).
+   * Sinon le groupe suivant se traduit dans sa suite.
+   */
+  private closesSentence(seg: Segment): boolean {
+    const text = seg.text.trim();
+    if (/[?!]["”»)\]]*$/.test(text)) return true;
+    if (!/[.…]["”»)\]]*$/.test(text)) return false;
+    const last = (text.toLowerCase().match(/[\p{L}']+/gu) ?? []).at(-1);
+    return !(this.cfg.srcLang === "en" && last != null && DANGLING.has(last));
   }
 
   /**
@@ -1217,7 +1402,12 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
   ): Promise<void> {
     const tSpeak = Date.now();
     const chainWaitMs = Math.max(0, tSpeak - tr.readyAt);
-    const text = tr.text;
+    const text = tr.speak;
+    // Voix continue (D43, audit 2.4) : à l'intérieur d'une phrase, la voix ne marque pas de
+    // silence de bord — la pause de l'orateur, elle, reste rendue par le téléphone (D26).
+    const progressive = this.progressive;
+    const joinsPrevious = progressive && tr.continued;
+    const joinsNext = progressive && tr.ending === "continues";
     try {
       const queueMs = this.metrics.snapshot().queueP50Ms;
       const aheadMs = Math.max(0, (this.roomFreeAt.get(lang) ?? 0) - Date.now());
@@ -1242,7 +1432,7 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
         this.speed = speed;
         this.emitStatus();
       }
-      const a = await this.providers.tts.synthesize({ text, lang, speed, continuation: true });
+      const a = await this.providers.tts.synthesize({ text, lang, speed, continuation: true, joinsPrevious, joinsNext });
       const tTts = Date.now();
       this.metrics.stage("tts", tTts - tSpeak);
       this.tempo.learn(lang, text.length, a.durMs, speed);
@@ -1255,7 +1445,7 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
         durMs: a.durMs,
         tOrigin: seg.tOrigin,
         srcSeq: seq,
-        text,
+        text: tr.text,
         bytes: a.audio,
         voice: a.voice,
         // En retard, la pause du formateur n'est plus rendue : le téléphone enchaîne (D42).
@@ -1286,6 +1476,11 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
         lagTier: lag.tier,
         retardMs: lag.retardMs,
         tightened: tr.tightened,
+        rhythm: progressive ? "progressive" : "sentences",
+        continued: tr.continued,
+        prefixRepeated: tr.prefixRepeated ?? false,
+        joinsPrevious,
+        joinsNext,
       });
       if (this.degraded === "text-only") this.setDegraded("none", "synthèse rétablie");
     } catch (error) {
