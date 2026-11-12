@@ -94,6 +94,12 @@ const providers = makeProviders(cfg, settings, {
     app.log.info({ stage }, "primaire rétabli");
     pipeline.reportDegraded("none", `${stage.toUpperCase()} primaire rétabli`);
   },
+  // Le secours, parti en parallèle parce que le primaire tardait, a répondu le premier (D39) :
+  // pas un mode dégradé — le primaire sert toujours —, mais ça se compte.
+  onHedge: (stage, ms) => {
+    app.log.info({ stage, ms: Math.round(ms) }, "secours retenu : le primaire tardait");
+    metrics.event("hedge", { stage, ms: Math.round(ms) });
+  },
 });
 const room = new Room(cfg.SESSION_ID, cfg.SRC_LANG, cfg.TARGET_LANGS);
 const pipeline = new Pipeline(

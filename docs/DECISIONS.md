@@ -1263,8 +1263,9 @@ regardé dans un navigateur : les chiffres ci-dessus sont ceux qu'il lit.
   de la voix (`LiveProsody`, ~5 ms par trame de 100 ms sur le poste de développement) : la boucle
   d'événements du serveur se fige, pour toutes les salles, 3,4 s dans le pire cas (40 s rejouées et
   40 s en attente, mesuré hors réseau) ; ~1,5 s estimées pour la coupure de 20 s du banc, ~0,15 s
-  avant D37 (3 s rejouées). À corriger ; la manière est à décider. Cette analyse coûte aussi ~5 %
-  d'un cœur par formateur, en continu.
+  avant D37 (3 s rejouées). Corrigé en D39 : l'analyse passe par tranches bornées — 86 ms de
+  figement au plus, mesuré sur le même pire cas. Cette analyse coûte aussi ~5 % d'un cœur par
+  formateur, en continu ; cela reste.
 - À la reprise du STT, l'audio rejoué attend dans notre connexion vers AssemblyAI (4,4 s et 8,9 s
   au plus, contre 0 dans la séance témoin) : l'alerte « La voix du formateur part avec … de
   retard » s'affiche, et son texte accuse la connexion du PC, à tort. Elle date d'avant D37 ; la
@@ -1322,6 +1323,61 @@ dérive d'un ulp de la position flottante, corrigée en passant la position en e
   garde-fou de langue reste le dernier recours).
 - Les nouveaux réglages n'ont pas été regardés dans un navigateur (pas de micro ici) : types et
   tests seulement.
+
+## D39 — Un appel lent ne bloque plus la chaîne : deux files, secours en course, analyse bornée
+
+Quatrième correction de l'audit du 10/11/2026 (étape 1.4, défaut F-06).
+
+**Constat.**
+- Traduction et voix d'un segment vivaient dans la même promesse, en série par langue : un seul
+  appel lent retardait tous les segments suivants des deux étages, et aucun secours ne partait
+  avant l'échec du primaire (délais internes : 6 s traduction, 10 s voix).
+- Limite relevée en D37 : à la réouverture du STT, le rejeu passait d'un bloc par l'analyse de la
+  hauteur (~5 ms par trame de 100 ms) ; la boucle d'événements se figeait, pour toutes les salles,
+  3,4 s dans le pire cas mesuré.
+
+**Décision.**
+- *Deux files ordonnées par langue* (`pipeline.ts`). La traduction du segment suivant part pendant
+  que la voix du précédent se synthétise ; la diffusion garde l'ordre des segments (la file des
+  voix est série). L'attente du tour de la voix se journalise (`chainWaitMs`, événement `segment`).
+- *Secours en course* (`Hedge`, qui remplace `Breaker` en gardant ses règles : secours seul 60 s
+  après une panne du primaire, retour au primaire quand il répond). Si le primaire n'a pas répondu
+  après 0,6 s (traduction) ou 1 s (voix), le secours part en parallèle et la première réponse est
+  retenue ; sa lenteur seule n'ouvre pas le disjoncteur. Au-delà de 2 s (traduction) ou 4 s
+  (voix), l'étage abandonne : texte source affiché, ou segment sans voix signalé — mieux vaut
+  borné que tard. La course gagnée se journalise (`hedge` : étage, ms) sans passer en mode dégradé.
+- *Analyse de la hauteur par tranches* (`ProsodyFeed`). Au plus 500 ms d'audio analysées par tour
+  de boucle, le reste au tour suivant ; le rejeu part au STT d'un bloc comme avant (~0,1 ms par
+  trame), l'analyse suit en tranches (~20 fois le temps réel). Décrire un segment force l'analyse
+  jusqu'à sa fin : la description ne lit jamais un trou.
+
+**Mesuré.** Le pire cas de D37 rejoué (40 s rejouées plus 40 s en attente, hors réseau, ton voisé) :
+le figement maximal de la boucle passe de 3,4 s à 86 ms (les cinq pires écarts : 86, 36, 29, 29,
+27 ms, minuterie de 5 ms en sonde).
+
+**Vérifié.** 269 tests sur 269 (17 nouveaux entre D38 et D39, 3 de `Breaker` repris par `Hedge`) ;
+types vérifiés. Le recouvrement a son test (la traduction 2
+commence avant la fin de la voix 1 — il échoue sur l'ancienne chaîne série), la course aussi (un
+primaire muet sur un segment : le secours répond à 0,6 s, les suivants ne l'attendent pas, pas de
+mode dégradé), le disjoncteur garde ses tests (adaptés de `Breaker`), et la rafale d'analyse ne
+passe plus d'un bloc (test qui échoue sans les tranches).
+
+**Limites.**
+- L'« attente en chaîne p95 < 0,2 s sur une séance » de l'audit reste à lire en séance réelle :
+  `chainWaitMs` est au journal, pas encore mesuré en vrai.
+- À l'échéance (2 s), une traduction qui serait arrivée à 2,5 s est perdue quand le secours est en
+  panne lui aussi : le texte source s'affiche. C'est le choix de l'audit.
+- Sans secours configuré, rien ne change : les délais internes des fournisseurs (6 s, 10 s)
+  s'appliquent — les ramener à 2 s et 4 s sans personne derrière ferait perdre des segments lents
+  mais réussis.
+- Le registre du secours n'est pas celui du primaire (risque noté à l'audit) : inchangé, visible
+  au journal (`voice`, bascules).
+- Les segments payés deux fois (course partie) restent à compter en séance (`hedge` au journal) ;
+  l'audit les attend entre 1 et 5 %.
+- L'alerte « La voix du formateur part avec … de retard », qui accuse à tort la connexion du PC
+  après une réouverture du STT (limite D37), n'est pas retouchée ici.
+- L'analyse de la hauteur coûte toujours ~5 % d'un cœur par formateur, en continu : l'alléger
+  (recherche de hauteur à fréquence réduite) reste une piste, non faite.
 
 ## Ce que six semaines (au lieu de 48 h) remettent sur la table
 

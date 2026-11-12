@@ -25,21 +25,41 @@ export async function retryTransient<T>(call: () => Promise<T>, delayMs = 300, o
   }
 }
 
+export interface HedgeHooks {
+  /** Le primaire vient d'échouer (erreur ou délai dépassé) ; le secours prend le relais. */
+  onFallback: (err: Error) => void;
+  /** Le primaire répond de nouveau. */
+  onRecover: () => void;
+  /** Le secours, parti en parallèle parce que le primaire tardait, a répondu le premier. */
+  onHedge?: (ms: number) => void;
+}
+
+const timeoutError = (ms: number) => Object.assign(new Error(`sans réponse en ${ms} ms`), { name: "TimeoutError" });
+
 /**
- * Disjoncteur primaire / secours, commun aux étages.
+ * Secours en parallèle, avec disjoncteur (D39, F-06).
  *
- * À la première erreur du primaire, le secours prend le relais pour ce segment ET
- * pour les suivants pendant `cooldownMs` : on ne paie pas un aller-retour raté à
- * chaque segment quand une API est en panne ou sans crédit. Le primaire est
- * réessayé une fois le délai écoulé ; s'il répond, on revient dessus.
+ * Le primaire est appelé ; s'il n'a pas répondu après `hedgeAfterMs`, le secours part en
+ * parallèle et la première réponse est retenue — un appel lent ne bloque plus la chaîne, au
+ * prix d'un segment payé deux fois quand le primaire traîne. Sa lenteur seule ne le
+ * disqualifie pas pour les segments suivants : il reste le primaire.
+ *
+ * Au-delà de `deadlineMs`, l'étage abandonne : mieux vaut un segment sans voix qu'une salle
+ * qui attend (le texte source reste affiché).
+ *
+ * À la première erreur du primaire — un refus, ou rien à l'échéance —, le secours prend le
+ * relais pour ce segment ET les suivants pendant `cooldownMs` (l'ancien `Breaker`) : on ne
+ * paie pas un aller-retour raté à chaque segment quand une API est en panne ou sans crédit.
+ * Le primaire est réessayé une fois le délai écoulé ; s'il répond, on revient dessus.
  */
-export class Breaker {
+export class Hedge {
   /** Instant de la dernière panne du primaire ; null = disjoncteur fermé. */
   private openedAt: number | null = null;
 
   constructor(
-    private readonly onFallback: (err: Error) => void,
-    private readonly onRecover: () => void,
+    private readonly hedgeAfterMs: number,
+    private readonly deadlineMs: number,
+    private readonly hooks: HedgeHooks,
     private readonly cooldownMs = 60_000,
     private readonly now: () => number = () => Date.now(),
   ) {}
@@ -48,19 +68,87 @@ export class Breaker {
     return this.openedAt !== null && this.now() - this.openedAt < this.cooldownMs;
   }
 
-  async call<T>(primary: () => Promise<T>, backup: () => Promise<T>): Promise<T> {
-    if (this.usingBackup) return backup();
-    try {
-      const out = await primary();
-      if (this.openedAt !== null) {
-        this.openedAt = null;
-        this.onRecover();
-      }
-      return out;
-    } catch (err) {
-      this.openedAt = this.now();
-      this.onFallback(err as Error);
-      return backup();
-    }
+  call<T>(primary: () => Promise<T>, backup: () => Promise<T>): Promise<T> {
+    if (this.usingBackup) return this.withDeadline(backup());
+    return new Promise<T>((resolve, reject) => {
+      const t0 = this.now();
+      let settled = false;
+      let backupStarted = false;
+      let primaryErr: Error | null = null;
+      let backupErr: Error | null = null;
+      const timers: NodeJS.Timeout[] = [];
+      const settle = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        for (const t of timers) clearTimeout(t);
+        fn();
+      };
+      const startBackup = () => {
+        if (backupStarted || settled) return;
+        backupStarted = true;
+        backup().then(
+          (v) =>
+            settle(() => {
+              // Parti parce que le primaire tardait (pas d'erreur) : c'est une course gagnée,
+              // le disjoncteur reste fermé.
+              if (!primaryErr) this.hooks.onHedge?.(this.now() - t0);
+              resolve(v);
+            }),
+          (e) => {
+            backupErr = e as Error;
+            if (primaryErr) settle(() => reject(primaryErr));
+          },
+        );
+      };
+      primary().then(
+        (v) =>
+          settle(() => {
+            if (this.openedAt !== null) {
+              this.openedAt = null;
+              this.hooks.onRecover();
+            }
+            resolve(v);
+          }),
+        (e) => {
+          if (settled) return;
+          primaryErr = e as Error;
+          this.openedAt = this.now();
+          this.hooks.onFallback(primaryErr);
+          if (backupErr) return settle(() => reject(primaryErr));
+          startBackup();
+        },
+      );
+      timers.push(setTimeout(startBackup, this.hedgeAfterMs));
+      timers.push(
+        setTimeout(() => {
+          settle(() => {
+            if (!primaryErr) {
+              // Rien du primaire à l'échéance : une panne, pour ce segment et les suivants.
+              primaryErr = timeoutError(this.deadlineMs);
+              this.openedAt = this.now();
+              this.hooks.onFallback(primaryErr);
+            }
+            reject(backupErr ?? primaryErr);
+          });
+        }, this.deadlineMs),
+      );
+    });
+  }
+
+  /** Disjoncteur ouvert : le secours seul, mais l'échéance tient toujours. */
+  private withDeadline<T>(p: Promise<T>): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const t = setTimeout(() => reject(timeoutError(this.deadlineMs)), this.deadlineMs);
+      p.then(
+        (v) => {
+          clearTimeout(t);
+          resolve(v);
+        },
+        (e) => {
+          clearTimeout(t);
+          reject(e as Error);
+        },
+      );
+    });
   }
 }

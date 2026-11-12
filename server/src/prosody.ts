@@ -365,3 +365,83 @@ export class LiveProsody {
     this.frames = [];
   }
 }
+
+/**
+ * Alimente `LiveProsody` sans figer la boucle d'événements (D39, F-06). L'analyse coûte
+ * ~5 ms par trame de 100 ms (mesuré, poste de développement) : au rejeu d'une réouverture
+ * STT, la passer d'un bloc — jusqu'à 40 s rejouées plus 40 s d'attente — figeait le serveur
+ * jusqu'à 3,4 s, pour toutes les salles (limite relevée en D37). Ici, au plus `budgetMs`
+ * d'audio analysées par tour de boucle ; le reste attend le tour suivant (`setImmediate`),
+ * entre lesquels le réseau et les autres salles respirent. L'analyse va ~20 fois plus vite
+ * que le temps réel : la file se résorbe bien avant que le STT ne rende ces mots.
+ *
+ * `drainTo` force l'analyse jusqu'à une position : un segment se décrit toujours sur de
+ * l'audio déjà analysé, même si la file n'a pas fini de se résorber.
+ */
+export class ProsodyFeed {
+  private q: Uint8Array[] = [];
+  private turnBytes = 0;
+  private fedBytes = 0;
+  private scheduled = false;
+  private readonly budgetBytes: number;
+  private readonly bytesPerMs: number;
+
+  constructor(
+    private readonly live: LiveProsody,
+    sampleRate: number,
+    budgetMs = 500,
+  ) {
+    this.bytesPerMs = (sampleRate * 2) / 1000;
+    this.budgetBytes = Math.round(budgetMs * this.bytesPerMs);
+  }
+
+  /** Position analysée, en ms du flux. */
+  get fedMs(): number {
+    return this.fedBytes / this.bytesPerMs;
+  }
+
+  /** Audio en attente d'analyse (ms), pour le diagnostic. */
+  get pendingMs(): number {
+    return this.q.reduce((a, f) => a + f.byteLength, 0) / this.bytesPerMs;
+  }
+
+  push(pcm: Uint8Array): void {
+    this.q.push(pcm);
+    this.pump();
+  }
+
+  /** Nouveau flux STT : la file et l'analyse repartent de zéro, comme ses horodatages. */
+  reset(): void {
+    this.q = [];
+    this.turnBytes = 0;
+    this.fedBytes = 0;
+    this.live.reset();
+  }
+
+  /** Analyse tout ce qui précède `ms` (position du flux), quoi qu'il en coûte : un segment à décrire. */
+  drainTo(ms: number): void {
+    while (this.q.length && this.fedMs < ms) this.feed(this.q.shift()!);
+  }
+
+  private feed(pcm: Uint8Array) {
+    this.live.push(pcm);
+    this.fedBytes += pcm.byteLength;
+    this.turnBytes += pcm.byteLength;
+  }
+
+  private pump() {
+    while (this.q.length && this.turnBytes < this.budgetBytes) this.feed(this.q.shift()!);
+    // Budget du tour atteint : la suite — et la remise à zéro du budget — au tour suivant.
+    if (this.q.length || this.turnBytes >= this.budgetBytes) this.schedule();
+  }
+
+  private schedule() {
+    if (this.scheduled) return;
+    this.scheduled = true;
+    setImmediate(() => {
+      this.scheduled = false;
+      this.turnBytes = 0;
+      this.pump();
+    });
+  }
+}

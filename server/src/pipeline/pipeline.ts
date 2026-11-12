@@ -1,9 +1,12 @@
 /**
  * Orchestration : audio → STT → commit → traduction → TTS, une fois par langue cible.
  *
- * Par langue, les segments sont traités en série (une chaîne de promesses) : l'ordre
- * de diffusion est garanti, et un retard se voit immédiatement dans `backlog` au lieu
- * de se cacher dans de la concurrence. C'est aussi une contre-pression naturelle.
+ * Par langue, deux files ordonnées (D39, F-06) : la traduction du segment suivant part
+ * pendant que la voix de celui-ci se synthétise, au lieu d'attendre dans la même chaîne.
+ * La diffusion garde l'ordre des segments (la file des voix est série), un retard se voit
+ * immédiatement dans `backlog` au lieu de se cacher dans de la concurrence, et c'est aussi
+ * une contre-pression naturelle. Avant D39, un seul appel lent (traduction OU voix)
+ * retardait tous les segments suivants des deux étages.
  */
 import type { MicFrameInfo } from "../../../shared/framing";
 import type { DegradedMode, Lang, PipelineStatus } from "../../../shared/protocol";
@@ -13,7 +16,7 @@ import { TypedEmitter } from "../util/emitter";
 import { AudioClock } from "./audio-clock";
 import { PauseDetector } from "./pause";
 import { MAX_SPEED, Tempo } from "./tempo";
-import { LiveProsody } from "../prosody";
+import { LiveProsody, ProsodyFeed } from "../prosody";
 import { VoiceProfile, type SegmentProsody } from "./voice-profile";
 import { CommitGate, DEFAULT_COMMIT, isTitle, joinSegments, type CommitConfig, type Segment } from "./commit";
 
@@ -252,7 +255,10 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
   private seq = 0;
   private muted = false;
   private tickTimer?: NodeJS.Timeout;
-  private chains = new Map<Lang, Promise<void>>();
+  /** Par langue, la file des traductions : celle du segment suivant part pendant la voix (D39). */
+  private mtChains = new Map<Lang, Promise<unknown>>();
+  /** Par langue, la file des synthèses : la diffusion garde l'ordre des segments. */
+  private ttsChains = new Map<Lang, Promise<void>>();
   private context = new Map<Lang, { src: string; tgt: string }[]>();
   private backlog = 0;
   private degraded: DegradedMode = "none";
@@ -271,6 +277,11 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
   private tempo = new Tempo();
   /** Hauteur et énergie de la voix du formateur, analysées au fil de l'audio (D28). */
   private live: LiveProsody;
+  /**
+   * L'alimente par tranches bornées (D39) : le rejeu d'une réouverture STT, passé d'un bloc
+   * par l'analyse, figeait la boucle d'événements jusqu'à 3,4 s, pour toutes les salles.
+   */
+  private liveFeed: ProsodyFeed;
   /** Ses habitudes depuis le démarrage du micro, auxquelles chaque segment se compare. */
   private voice: VoiceProfile;
   /** Morceau court qui attend la suite (D32) ; `since` : depuis quand, pour ne pas attendre sans fin. */
@@ -285,6 +296,7 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     this.clock = new AudioClock(cfg.sampleRate);
     this.pause = new PauseDetector(cfg.sampleRate);
     this.live = new LiveProsody(cfg.sampleRate);
+    this.liveFeed = new ProsodyFeed(this.live, cfg.sampleRate);
     this.voice = new VoiceProfile(cfg.srcLang);
     this.gate = new CommitGate(this.commitConfig(), undefined, {
       spokenAt: (ms) => this.clock.spokenAt(ms),
@@ -503,7 +515,7 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     this.heardMs = 0;
     this.heardThroughMs = 0;
     this.pause.reset();
-    this.live.reset();
+    this.liveFeed.reset();
     // Un flux qui rendait encore son retard s'efface : ses mots se mêleraient à ceux du nouveau.
     this.draining = undefined;
     this.stt = stream;
@@ -514,7 +526,7 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
       stream.sendAudio(f.pcm);
       this.clock.push(f.pcm.byteLength, f.at);
       this.pause.push(f.pcm, this.tuning.speechThresholdDb);
-      this.live.push(f.pcm);
+      this.liveFeed.push(f.pcm);
       // Rejouées, les trames restent à rejouer si ce flux tombe à son tour : datées dans celui-ci.
       f.end = this.clock.audioMs;
     }
@@ -669,7 +681,7 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     this.audio.forwarded++;
     this.metrics.audio(pcm);
     this.stt.sendAudio(pcm);
-    this.live.push(pcm);
+    this.liveFeed.push(pcm);
     this.emit("stt.audio", { pcm });
     this.clock.push(pcm.byteLength, at);
     const silentMs = this.pause.push(pcm, this.tuning.speechThresholdDb);
@@ -951,10 +963,13 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     // Le premier segment de la prise de parole est parti, par quelque chemin que ce soit.
     if (turnStart) this.turnOpen = false;
     // La voix du formateur sur ce segment (D28) : l'audio du flux en cours, entre ses bornes réelles.
-    const prosody =
-      seg.startPos != null && seg.endPos != null
-        ? this.voice.describe(this.live.between(seg.startPos, seg.endPos), seg.startPos, seg.endPos, seg.words, seg.text, this.tuning.speechThresholdDb)
-        : undefined;
+    let prosody: SegmentProsody | undefined;
+    if (seg.startPos != null && seg.endPos != null) {
+      // L'analyse a pu être mise en file (rejeu d'une réouverture, D39) : complétée jusqu'à
+      // la fin du segment avant de le décrire — le STT, plus lent qu'elle, arrive après.
+      this.liveFeed.drainTo(seg.endPos);
+      prosody = this.voice.describe(this.live.between(seg.startPos, seg.endPos), seg.startPos, seg.endPos, seg.words, seg.text, this.tuning.speechThresholdDb);
+    }
     this.emit("src.commit", {
       seq,
       text: seg.text,
@@ -1013,15 +1028,26 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
 
     for (const lang of this.cfg.targetLangs) {
       this.backlog++;
-      const prev = this.chains.get(lang) ?? Promise.resolve();
-      const next = prev
-        .then(() => this.process(seq, seg, lang, gapMs, turnStart, this.streams))
-        .catch((error: Error) => this.emit("error", { stage: "mt", error }))
+      // Deux files ordonnées (D39) : la traduction s'enchaîne derrière la précédente, la voix
+      // derrière la précédente ET derrière sa propre traduction. Un appel lent ne bloque plus
+      // que sa file ; l'ordre de diffusion reste celui des segments.
+      const prevMt = this.mtChains.get(lang) ?? Promise.resolve();
+      const translated = prevMt
+        .then(() => this.translateStage(seq, seg, lang, this.streams))
+        .catch((error: Error) => {
+          this.emit("error", { stage: "mt", error });
+          return undefined;
+        });
+      this.mtChains.set(lang, translated);
+      const prevTts = this.ttsChains.get(lang) ?? Promise.resolve();
+      const next = Promise.all([prevTts, translated])
+        .then(([, tr]) => (tr ? this.speakStage(seq, seg, lang, tr, gapMs, turnStart) : undefined))
+        .catch((error: Error) => this.emit("error", { stage: "tts", error }))
         .finally(() => {
           this.backlog--;
           this.emitStatus();
         });
-      this.chains.set(lang, next);
+      this.ttsChains.set(lang, next);
     }
     this.emitStatus();
   }
@@ -1041,7 +1067,17 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     return { verdict: "ends", pauseMs: Math.round(p.ms) };
   }
 
-  private async process(seq: number, seg: Segment, lang: Lang, gapMs: number | null, turnStart: boolean, stream: number) {
+  /**
+   * Étage traduction (file MT, D39) : moteur, verdict « la phrase continue » (D27), contexte
+   * de séance. Rend `undefined` quand la traduction a échoué : le texte source est déjà
+   * affiché, il n'y aura pas de voix pour ce segment.
+   */
+  private async translateStage(
+    seq: number,
+    seg: Segment,
+    lang: Lang,
+    stream: number,
+  ): Promise<{ text: string; mtMs: number; ending: "continues" | "ends" | "unknown" | null; pauseAfterMs: number | null; readyAt: number } | undefined> {
     const ctx = this.context.get(lang) ?? [];
     const t0 = Date.now();
 
@@ -1058,7 +1094,7 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
       // Mieux vaut le texte source à l'écran que rien : pas de voix pour ce segment.
       this.emit("tr.segment", { seq, lang, text: seg.text, srcSeq: seq, untranslated: true });
       this.setDegraded("text-only", `traduction indisponible — ${(error as Error).message.slice(0, 200)}`);
-      return;
+      return undefined;
     }
     const tMt = Date.now();
     this.metrics.stage("mt", tMt - t0);
@@ -1071,7 +1107,25 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     const keep = this.tuning.contextSegments;
     while (ctx.length > keep) ctx.shift();
     this.context.set(lang, ctx);
+    return { text, mtMs: tMt - t0, ending: /[.]\s*$/.test(seg.text) ? goesOn.verdict : null, pauseAfterMs: goesOn.pauseMs, readyAt: Date.now() };
+  }
 
+  /**
+   * Étage voix (file TTS, D39) : vitesse, synthèse, diffusion. Il commence quand sa traduction
+   * est prête ET que la voix du segment précédent est partie — `chainWaitMs` mesure cette
+   * seconde attente, celle que l'audit demande de surveiller (p95 < 0,2 s).
+   */
+  private async speakStage(
+    seq: number,
+    seg: Segment,
+    lang: Lang,
+    tr: { text: string; mtMs: number; ending: "continues" | "ends" | "unknown" | null; pauseAfterMs: number | null; readyAt: number },
+    gapMs: number | null,
+    turnStart: boolean,
+  ): Promise<void> {
+    const tSpeak = Date.now();
+    const chainWaitMs = Math.max(0, tSpeak - tr.readyAt);
+    const text = tr.text;
     try {
       const queueMs = this.metrics.snapshot().queueP50Ms;
       const aheadMs = Math.max(0, (this.roomFreeAt.get(lang) ?? 0) - Date.now());
@@ -1095,7 +1149,7 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
       }
       const a = await this.providers.tts.synthesize({ text, lang, speed, continuation: true });
       const tTts = Date.now();
-      this.metrics.stage("tts", tTts - tMt);
+      this.metrics.stage("tts", tTts - tSpeak);
       this.tempo.learn(lang, text.length, a.durMs, speed);
       this.roomFreeAt.set(lang, Math.max(this.roomFreeAt.get(lang) ?? 0, tTts) + a.durMs);
       this.emit("audio", {
@@ -1114,8 +1168,9 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
         seq,
         lang,
         tOrigin: seg.tOrigin,
-        mtMs: tMt - t0,
-        ttsMs: tTts - tMt,
+        mtMs: tr.mtMs,
+        ttsMs: tTts - tSpeak,
+        chainWaitMs: Math.round(chainWaitMs),
         readyMs: tTts - seg.tOrigin,
         endReadyMs: tTts - seg.tEnd,
         durMs: a.durMs,
@@ -1129,8 +1184,8 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
         aheadMs,
         predictedMs: tempo?.predictedMs ?? null,
         budgetMs: tempo?.budgetMs ?? null,
-        ending: /[.]\s*$/.test(seg.text) ? goesOn.verdict : null,
-        pauseAfterMs: goesOn.pauseMs,
+        ending: tr.ending,
+        pauseAfterMs: tr.pauseAfterMs,
       });
       if (this.degraded === "text-only") this.setDegraded("none", "synthèse rétablie");
     } catch (error) {

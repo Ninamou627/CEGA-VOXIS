@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Metrics } from "../metrics";
+import { FallbackMt } from "../providers";
 import type { MtProvider, SttEvents, SttProvider, TtsProvider } from "../providers/types";
 import { Pipeline } from "./pipeline";
 
@@ -1289,6 +1290,132 @@ describe("Pipeline — phrases entières (D33)", () => {
     expect(r.commits).toHaveLength(0);
     await r.speak(10);
     expect(r.commits.map((c) => c.text)).toEqual(["It's really an honor to"]);
+    await r.pipeline.stop();
+  });
+});
+
+/**
+ * Chaîne non bloquante (D39, F-06). Avant : traduction et voix d'un segment dans la même
+ * promesse, en série par langue — un appel lent retardait tous les segments suivants des
+ * deux étages. Désormais deux files ordonnées, et le secours part en course quand le
+ * primaire tarde (`Hedge`, testé à part) ; l'ordre de diffusion reste celui des segments.
+ */
+describe("Pipeline — chaîne non bloquante (D39)", () => {
+  const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  function slowRoom(opts: { mt?: MtProvider; mtMs?: (call: number) => number; ttsMs?: (call: number) => number }) {
+    const stt = new FakeStt(true);
+    const metrics = new Metrics();
+    const tuning = () => ({ commit: {}, contextSegments: 2, baseSpeed: 1, followTempo: true, speechThresholdDb: -35, quickStart: true, joinShort: false, wholeSentences: false });
+    let mtCall = 0;
+    const mtSpans: { call: number; t0: number; t1: number }[] = [];
+    const mt: MtProvider =
+      opts.mt ??
+      ({
+        name: "slow-mt",
+        translate: async (r) => {
+          const call = ++mtCall;
+          const t0 = Date.now();
+          await delay(opts.mtMs?.(call) ?? 0);
+          mtSpans.push({ call, t0, t1: Date.now() });
+          return `fr:${r.text}`;
+        },
+      } satisfies MtProvider);
+    let ttsCall = 0;
+    const ttsSpans: { call: number; t0: number; t1: number }[] = [];
+    const tts: TtsProvider = {
+      name: "slow-tts",
+      synthesize: async () => {
+        const call = ++ttsCall;
+        const t0 = Date.now();
+        await delay(opts.ttsMs?.(call) ?? 0);
+        ttsSpans.push({ call, t0, t1: Date.now() });
+        return { audio: new Uint8Array(1), mime: "audio/mpeg", durMs: 500 };
+      },
+    };
+    const pipeline = new Pipeline({ stt, mt, tts }, { srcLang: "en", targetLangs: ["fr"], sampleRate: 16000, tuning }, metrics);
+    const audio: number[] = [];
+    const tr: { seq: number; text: string }[] = [];
+    pipeline.on("audio", (e) => audio.push(e.seq));
+    pipeline.on("tr.segment", (e) => tr.push({ seq: e.seq, text: e.text }));
+    const speak = async (frames: number) => {
+      for (let i = 0; i < frames; i++) {
+        await vi.advanceTimersByTimeAsync(100);
+        pipeline.pushAudio(LOUD);
+      }
+    };
+    /** Trois phrases reconnues coup sur coup : trois tours clos, trois segments commis à la suite. */
+    const commit3 = () => {
+      for (let i = 0; i < 3; i++) {
+        stt.ev!.onPartial({
+          words: [
+            { text: `mot${i}`, startMs: 100 + i * 900, endMs: 400 + i * 900, isFinal: true },
+            { text: "suite.", startMs: 450 + i * 900, endMs: 800 + i * 900, isFinal: true },
+          ],
+          isFinal: true,
+        });
+        stt.ev!.onUtteranceEnd();
+      }
+    };
+    return { pipeline, audio, tr, speak, commit3, mtSpans, ttsSpans };
+  }
+
+  it("une voix lente ne retarde plus la traduction des segments suivants", async () => {
+    const r = slowRoom({ ttsMs: (call) => (call === 1 ? 3000 : 0) });
+    await r.pipeline.start();
+    await r.speak(30);
+    r.commit3();
+    await vi.advanceTimersByTimeAsync(150);
+    // Les trois traductions sont parties et affichées pendant que la première voix se synthétise.
+    expect(r.tr.map((t) => t.seq)).toEqual([1, 2, 3]);
+    expect(r.audio).toEqual([]);
+    // La diffusion garde l'ordre des segments.
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(r.audio).toEqual([1, 2, 3]);
+    await r.pipeline.stop();
+  });
+
+  it("la traduction du segment suivant part pendant la voix du précédent", async () => {
+    const r = slowRoom({ mtMs: () => 400, ttsMs: () => 400 });
+    await r.pipeline.start();
+    await r.speak(30);
+    r.commit3();
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(r.audio).toEqual([1, 2, 3]);
+    // La traduction 2 a commencé avant la fin de la voix 1 : les files se recouvrent.
+    const mt2 = r.mtSpans.find((s) => s.call === 2)!;
+    const tts1 = r.ttsSpans.find((s) => s.call === 1)!;
+    expect(mt2.t0).toBeLessThan(tts1.t1);
+    // En série (avant D39), la dernière voix serait prête à 3 × 800 ms ; en recouvrement, à 1 600 ms.
+    expect(tts1.t1 - r.mtSpans.find((s) => s.call === 1)!.t0).toBeLessThanOrEqual(900);
+    await r.pipeline.stop();
+  });
+
+  it("un primaire qui ne répond pas sur un segment : le secours répond en course, rien ne s'accumule", async () => {
+    let call = 0;
+    const primary: MtProvider = {
+      name: "primaire",
+      translate: async (r) => {
+        if (++call === 1) await delay(60_000); // le premier segment ne répondra jamais à temps
+        return `fr:${r.text}`;
+      },
+    };
+    const backup: MtProvider = { name: "secours", translate: async (r) => `fb:${r.text}` };
+    const onFallback = vi.fn();
+    const onHedge = vi.fn();
+    const mt = new FallbackMt(primary, backup, { onFallback, onRecover: vi.fn(), onHedge });
+    const r = slowRoom({ mt });
+    await r.pipeline.start();
+    await r.speak(30);
+    r.commit3();
+    // 0,6 s : le secours part en course et répond ; les segments suivants ne l'attendent pas.
+    // (Le point final peut devenir virgule : l'orateur enchaîne, D27 — sans rapport avec D39.)
+    await vi.advanceTimersByTimeAsync(700);
+    expect(r.tr.map((t) => t.text.slice(0, -1))).toEqual(["fb:mot0 suite", "fr:mot1 suite", "fr:mot2 suite"]);
+    expect(onHedge).toHaveBeenCalledTimes(1);
+    expect(onFallback).not.toHaveBeenCalled(); // lent n'est pas en panne : le segment 2 a repris le primaire
+    await vi.advanceTimersByTimeAsync(100);
+    expect(r.audio).toEqual([1, 2, 3]);
     await r.pipeline.stop();
   });
 });

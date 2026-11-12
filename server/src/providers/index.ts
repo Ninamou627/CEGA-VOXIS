@@ -3,7 +3,7 @@ import type { Lang } from "../../../shared/protocol";
 import type { Config } from "../config";
 import { parseGlossary, parseKeyterms, type MtEngine, type Settings } from "../settings";
 import type { MtProvider, MtRequest, Providers, TtsProvider, TtsRequest, TtsResult } from "./types";
-import { Breaker, retryTransient } from "./fallback";
+import { Hedge, retryTransient } from "./fallback";
 import { MockStt } from "./stt/mock";
 import { AssemblyAiStt } from "./stt/assemblyai";
 import { DeepgramStt } from "./stt/deepgram";
@@ -19,7 +19,20 @@ export interface FallbackHooks {
   onFallback: (stage: "mt" | "tts", err: Error) => void;
   /** Le primaire répond de nouveau. */
   onRecover: (stage: "mt" | "tts") => void;
+  /** Le secours, parti en parallèle parce que le primaire tardait (D39), a répondu le premier. */
+  onHedge?: (stage: "mt" | "tts", ms: number) => void;
 }
+
+/**
+ * Secours lancé en parallèle quand le primaire tarde, premier arrivé retenu (D39, F-06).
+ * Traduction : médiane mesurée 0,36 s pour MT + TTS réunis (audit §3.2) — à 0,6 s, le primaire
+ * traîne déjà ; échéance à 2 s. Voix : la synthèse porte l'audio entier, on lui laisse 1 s ;
+ * échéance à 4 s. Sans secours configuré, rien ne change : le délai du fournisseur s'applique.
+ */
+export const MT_HEDGE_AFTER_MS = 600;
+export const MT_DEADLINE_MS = 2000;
+export const TTS_HEDGE_AFTER_MS = 1000;
+export const TTS_DEADLINE_MS = 4000;
 
 /**
  * Une voix qui échoue pour une raison passagère est redemandée une fois, au même moteur :
@@ -43,22 +56,23 @@ export class RetryingTts implements TtsProvider {
 }
 
 export class FallbackTts implements TtsProvider {
-  private breaker: Breaker;
+  private hedge: Hedge;
   constructor(
     private primary: TtsProvider,
     private backup: TtsProvider,
     hooks: FallbackHooks,
   ) {
-    this.breaker = new Breaker(
-      (e) => hooks.onFallback("tts", e),
-      () => hooks.onRecover("tts"),
-    );
+    this.hedge = new Hedge(TTS_HEDGE_AFTER_MS, TTS_DEADLINE_MS, {
+      onFallback: (e) => hooks.onFallback("tts", e),
+      onRecover: () => hooks.onRecover("tts"),
+      onHedge: (ms) => hooks.onHedge?.("tts", ms),
+    });
   }
   get name(): string {
     return `${this.primary.name}→${this.backup.name}`;
   }
   synthesize(req: TtsRequest): Promise<TtsResult> {
-    return this.breaker.call(
+    return this.hedge.call(
       () => this.primary.synthesize(req),
       () => this.backup.synthesize(req),
     );
@@ -70,22 +84,23 @@ export class FallbackTts implements TtsProvider {
 }
 
 export class FallbackMt implements MtProvider {
-  private breaker: Breaker;
+  private hedge: Hedge;
   constructor(
     private primary: MtProvider,
     private backup: MtProvider,
     hooks: FallbackHooks,
   ) {
-    this.breaker = new Breaker(
-      (e) => hooks.onFallback("mt", e),
-      () => hooks.onRecover("mt"),
-    );
+    this.hedge = new Hedge(MT_HEDGE_AFTER_MS, MT_DEADLINE_MS, {
+      onFallback: (e) => hooks.onFallback("mt", e),
+      onRecover: () => hooks.onRecover("mt"),
+      onHedge: (ms) => hooks.onHedge?.("mt", ms),
+    });
   }
   get name(): string {
     return `${this.primary.name}→${this.backup.name}`;
   }
   translate(req: MtRequest): Promise<string> {
-    return this.breaker.call(
+    return this.hedge.call(
       () => this.primary.translate(req),
       () => this.backup.translate(req),
     );
@@ -168,6 +183,7 @@ function makeTts(kind: Config["TTS_PROVIDER"], cfg: Config, settings: () => Sett
 const defaultHooks: FallbackHooks = {
   onFallback: (stage, e) => console.warn(`[${stage}] bascule sur le secours :`, e.message),
   onRecover: (stage) => console.info(`[${stage}] primaire rétabli`),
+  onHedge: (stage, ms) => console.info(`[${stage}] secours retenu (${Math.round(ms)} ms) : le primaire tardait`),
 };
 
 export interface RoomProviders extends Providers {

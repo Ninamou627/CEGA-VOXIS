@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { wavHeader } from "./providers/tts/mock";
-import { analyzeFrames, pearson, readWav, spanFeatures, speechThreshold, syllables, wordErrorRate, type Pcm } from "./prosody";
+import { analyzeFrames, LiveProsody, pearson, ProsodyFeed, readWav, spanFeatures, speechThreshold, syllables, wordErrorRate, type Pcm } from "./prosody";
 
 const SR = 16000;
 
@@ -91,7 +91,6 @@ describe("débit, corrélation, intelligibilité", () => {
 
 describe("LiveProsody — la même analyse, au fil de l'audio (D28)", () => {
   it("donne les mêmes fenêtres que l'analyse d'un bloc, trame de 50 ms après trame", async () => {
-    const { LiveProsody } = await import("./prosody");
     const pcm = voice([{ ms: 600, hz: (t) => 140 + 80 * t }, { ms: 300 }, { ms: 900, hz: (t) => 220 - 60 * t }, { ms: 200 }]);
     const whole = analyzeFrames(pcm);
     const live = new LiveProsody(SR);
@@ -108,5 +107,83 @@ describe("LiveProsody — la même analyse, au fil de l'audio (D28)", () => {
       if (whole[i].f0 == null) expect(got[i].f0).toBeNull();
       else expect(got[i].f0!).toBeCloseTo(whole[i].f0!, 0);
     }
+  });
+});
+
+/**
+ * `ProsodyFeed` (D39) : l'analyse de la hauteur ne fige plus la boucle d'événements. Une
+ * rafale (rejeu d'une réouverture STT, D37) s'analyse par tranches bornées, dans l'ordre ;
+ * un segment à décrire force l'analyse jusqu'à sa fin ; un nouveau flux remet tout à zéro.
+ */
+/** Une trame de 100 ms à 16 kHz. Son premier octet la numérote, pour vérifier l'ordre. */
+const frame = (n: number) => {
+  const b = new Uint8Array(3200);
+  b[0] = n % 256;
+  return b;
+};
+describe("ProsodyFeed — l'analyse par tranches bornées (D39)", () => {
+  let live: LiveProsody;
+  let fed: number[];
+  let feed: ProsodyFeed;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    live = new LiveProsody(16000);
+    fed = [];
+    vi.spyOn(live, "push").mockImplementation((pcm: Uint8Array) => fed.push(pcm[0]));
+    feed = new ProsodyFeed(live, 16000, 500);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("au fil de l'eau, chaque trame est analysée tout de suite", () => {
+    feed.push(frame(1));
+    feed.push(frame(2));
+    expect(fed).toEqual([1, 2]);
+    expect(feed.fedMs).toBe(200);
+    expect(feed.pendingMs).toBe(0);
+  });
+
+  it("une rafale s'analyse par tranches de 500 ms d'audio, pas d'un bloc", async () => {
+    for (let i = 0; i < 100; i++) feed.push(frame(i)); // 10 s d'un coup
+    // Dans ce tour de boucle : le budget (5 trames de 100 ms), pas plus.
+    expect(fed.length).toBe(5);
+    expect(feed.pendingMs).toBe(9500);
+    // Les tours suivants résorbent la file, l'ordre intact.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fed.length).toBeGreaterThan(5);
+    await vi.runAllTimersAsync();
+    expect(fed).toEqual(Array.from({ length: 100 }, (_, i) => i));
+    expect(feed.fedMs).toBe(10_000);
+  });
+
+  it("ce qui arrive pendant la résorption passe derrière la file, dans l'ordre", async () => {
+    for (let i = 0; i < 20; i++) feed.push(frame(i)); // 2 s en attente
+    feed.push(frame(20)); // le direct continue
+    expect(fed.length).toBe(5); // rien ne double la file
+    await vi.advanceTimersByTimeAsync(10);
+    expect(fed).toEqual(Array.from({ length: 21 }, (_, i) => i));
+  });
+
+  it("décrire un segment force l'analyse jusqu'à sa fin, sans attendre la résorption", () => {
+    for (let i = 0; i < 100; i++) feed.push(frame(i));
+    feed.drainTo(3000); // un segment finit à 3 s
+    expect(feed.fedMs).toBeGreaterThanOrEqual(3000);
+    expect(fed.length).toBe(30);
+    expect(feed.pendingMs).toBe(7000);
+  });
+
+  it("un nouveau flux STT vide la file et repart de zéro", async () => {
+    for (let i = 0; i < 50; i++) feed.push(frame(i));
+    feed.reset();
+    expect(feed.fedMs).toBe(0);
+    expect(feed.pendingMs).toBe(0);
+    feed.push(frame(200));
+    await vi.advanceTimersByTimeAsync(10);
+    // Les 45 trames en attente de l'ancien flux ne sont jamais analysées.
+    expect(fed.filter((n) => n === 200)).toHaveLength(1);
+    expect(fed.length).toBe(6);
+    expect(feed.fedMs).toBe(100);
   });
 });
