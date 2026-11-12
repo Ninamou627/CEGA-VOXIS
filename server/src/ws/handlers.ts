@@ -9,6 +9,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { RawData, WebSocket, WebSocketServer } from "ws";
+import { catchupLines, type RecentLine } from "../../../shared/catchup";
 import { decodeMicFrame, encodeFrame } from "../../../shared/framing";
 import { ClientEventSchema, PROTOCOL_VERSION, type AudioHeader, type JoinEvent, type Lang, type ServerEvent } from "../../../shared/protocol";
 import { COOKIE_NAME, cookieValue, type Auth } from "../auth";
@@ -51,13 +52,13 @@ function toBytes(data: RawData): Uint8Array {
 /** Messages binaires reçus, tous rôles confondus (diagnostic). */
 export let binaryFrames = 0;
 
-/** Derniers segments diffusés, pour retrouver ce qu'un apprenant signale. */
+/**
+ * Derniers segments diffusés : pour retrouver ce qu'un apprenant signale, et pour renvoyer à
+ * un apprenant revenu d'une coupure le texte qu'il a manqué (D40).
+ */
 const RECENT_SEGMENTS = 60;
-interface RecentSegment {
-  seq: number;
-  srcText: string;
-  tOrigin: number;
-  tgt: Partial<Record<Lang, string>>;
+interface RecentSegment extends RecentLine {
+  untranslated: Partial<Record<Lang, boolean>>;
   /** Voix qui a dit le segment, par langue : un signalement « voix » se compte à cette voix. */
   voices: Partial<Record<Lang, string>>;
 }
@@ -71,11 +72,22 @@ export function attachWs(wss: WebSocketServer, ctx: WsContext): void {
    * « micro ouvert » de la nouvelle, et l'enregistrement de la séance s'arrêterait.
    */
   let pipelineStopping: Promise<void> = Promise.resolve();
+  /**
+   * Ce démarrage du serveur (D40). Les numéros de segment repartent de zéro avec lui : une page
+   * revenue d'un autre démarrage ne peut pas dire « j'en étais au 150 » à celui-ci.
+   */
+  const epoch = randomUUID().slice(0, 8);
 
   const recent = new Map<number, RecentSegment>();
   function remember(seq: number, patch: Partial<RecentSegment>) {
-    const cur = recent.get(seq) ?? { seq, srcText: "", tOrigin: Date.now(), tgt: {}, voices: {} };
-    recent.set(seq, { ...cur, ...patch, tgt: { ...cur.tgt, ...patch.tgt }, voices: { ...cur.voices, ...patch.voices } });
+    const cur = recent.get(seq) ?? { seq, srcText: "", tOrigin: Date.now(), tgt: {}, untranslated: {}, voices: {} };
+    recent.set(seq, {
+      ...cur,
+      ...patch,
+      tgt: { ...cur.tgt, ...patch.tgt },
+      untranslated: { ...cur.untranslated, ...patch.untranslated },
+      voices: { ...cur.voices, ...patch.voices },
+    });
     while (recent.size > RECENT_SEGMENTS) recent.delete(recent.keys().next().value!);
   }
 
@@ -87,7 +99,7 @@ export function attachWs(wss: WebSocketServer, ctx: WsContext): void {
     room.broadcast({ t: "src.commit", seq: e.seq, text: e.text, tOrigin: e.tOrigin, reason: e.reason });
   });
   pipeline.on("tr.segment", (e) => {
-    remember(e.seq, { tgt: { [e.lang]: e.text } });
+    remember(e.seq, { tgt: { [e.lang]: e.text }, untranslated: { [e.lang]: !!e.untranslated } });
     if (e.untranslated) totals.untranslated();
     else totals.translated();
     room.broadcast({ t: "tr.segment", ...e }, (p) => p.role !== "listener" || p.lang === e.lang);
@@ -185,6 +197,24 @@ export function attachWs(wss: WebSocketServer, ctx: WsContext): void {
         const { e2eMs: e2e, endMs } = metrics.ack(me.id, evt.seq, evt.tOrigin, evt.queueMs);
         totals.ack(e2e, endMs);
         if (e2e > 8000) log.warn({ id: me.id, e2e, endMs, queueMs: evt.queueMs }, "client très en retard");
+        return;
+      }
+      // Le téléphone n'a pas pu jouer un segment, nouvel essai compris (D40) : avant, rien ne
+      // le disait ; désormais le journal et le tableau de bord le voient.
+      if (evt.t === "play.fail") {
+        if (me.role !== "listener") return sendErr("not_listener", "réservé aux apprenants");
+        const lang = me.lang ?? room.langs[0];
+        metrics.playFail();
+        metrics.event("play.fail", {
+          id: me.id,
+          seq: evt.seq,
+          reason: evt.reason,
+          attempts: evt.attempts,
+          player: evt.player,
+          lang,
+          voice: recent.get(evt.seq)?.voices[lang] ?? null,
+        });
+        log.warn({ id: me.id, seq: evt.seq, reason: evt.reason, attempts: evt.attempts, player: evt.player }, "segment non joué sur un téléphone");
         return;
       }
       if (evt.t === "resync") {
@@ -388,7 +418,17 @@ export function attachWs(wss: WebSocketServer, ctx: WsContext): void {
         pipeline: pipeline.status,
         settings: clientSettings(ctx.settings()),
         resumeSeq,
+        epoch,
       });
+
+      // Apprenant revenu d'une coupure (D40) : le texte manqué, dans ce même tour de boucle —
+      // ce qui se fige ensuite lui arrive en direct, rien ne tombe entre les deux.
+      if (me.role === "listener" && evt.resume) {
+        const since = evt.resume.epoch === epoch ? evt.resume.seq : null;
+        const lines = catchupLines(recent.values(), { lang, since, now: Date.now() });
+        if (lines.length) room.send(me, { t: "catchup", lines });
+        metrics.event("catchup", { id, since, sameEpoch: since != null, lines: lines.length });
+      }
     }
 
     ws.on("close", (code: number) => {

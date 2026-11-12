@@ -1,4 +1,5 @@
 import { keptPauseMs } from "../../../shared/playback";
+import { PLAY_ATTEMPTS, PlayGuard, type PlayFailReason } from "../../../shared/playguard";
 
 /**
  * Lecteur de segments audio, avec deux implémentations derrière la même interface :
@@ -35,6 +36,11 @@ export interface Player {
   readonly queueMs: number;
   readonly playing: Playing | undefined;
   onStart?: (meta: SegmentMeta) => void;
+  /**
+   * Un segment n'a pas pu être joué, nouvel essai compris (D40) : la page le signale au
+   * serveur. La file, elle, est déjà passée à la suite.
+   */
+  onFail?: (meta: SegmentMeta, reason: PlayFailReason, attempts: number) => void;
   unlock(): Promise<void>;
   enqueue(bytes: Uint8Array, mime: string, meta: SegmentMeta): Promise<void>;
   /** « Revenir au direct » : vide la file et coupe ce qui joue. */
@@ -79,7 +85,10 @@ async function routeTo(el: HTMLMediaElement, deviceId: string): Promise<void> {
 export class WebAudioPlayer implements Player {
   readonly kind = "webaudio" as const;
   onStart?: (meta: SegmentMeta) => void;
+  onFail?: (meta: SegmentMeta, reason: PlayFailReason, attempts: number) => void;
   private ctx?: AudioContext;
+  /** Change à chaque `flush` : un décodage en cours au moment du vidage ne planifie plus rien. */
+  private gen = 0;
   private gain?: GainNode;
   private nextTime = 0;
   private chain: Promise<void> = Promise.resolve();
@@ -120,12 +129,34 @@ export class WebAudioPlayer implements Player {
     return this.chain;
   }
 
+  /**
+   * Décode, un nouvel essai compris (D40) ; `undefined` si le fichier reste illisible — signalé.
+   * Seul l'échec de décodage est gardé ici : une fois planifiée, une source Web Audio joue tant
+   * que le contexte tourne, et un contexte suspendu (écran verrouillé d'iOS) est le cas pour
+   * lequel `ElementPlayer` est le lecteur par défaut.
+   */
+  private async decode(ctx: AudioContext, bytes: Uint8Array, meta: SegmentMeta, gen: number): Promise<AudioBuffer | undefined> {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        // slice() : decodeAudioData détache le buffer, et la charge utile est une vue sur la trame.
+        return await ctx.decodeAudioData(bytes.slice().buffer);
+      } catch (err) {
+        if (gen !== this.gen) return undefined;
+        if (attempt < PLAY_ATTEMPTS) continue;
+        console.warn(`[audio] segment ${meta.seq} illisible après ${attempt} essais`, err);
+        this.onFail?.(meta, "error", attempt);
+        return undefined;
+      }
+    }
+  }
+
   private async schedule(bytes: Uint8Array, meta: SegmentMeta) {
     const ctx = this.ctx;
     if (!ctx || !this.gain) return;
+    const gen = this.gen;
     if (ctx.state === "suspended") await ctx.resume().catch(() => {});
-    // slice() : decodeAudioData détache le buffer, et la charge utile est une vue sur la trame.
-    const buf = await ctx.decodeAudioData(bytes.slice().buffer);
+    const buf = await this.decode(ctx, bytes, meta, gen);
+    if (!buf || gen !== this.gen) return;
     const now = ctx.currentTime;
     // Une partie de la pause du formateur, tant que le retard reste faible (D26).
     const late = Math.max(0, this.nextTime - now) * 1000;
@@ -167,6 +198,7 @@ export class WebAudioPlayer implements Player {
     this.nextTime = 0;
     this.current = undefined;
     this.chain = Promise.resolve();
+    this.gen++;
   }
 
   setMuted(muted: boolean): void {
@@ -227,7 +259,8 @@ function silentWav(ms = 50): string {
 export class ElementPlayer implements Player {
   readonly kind = "element" as const;
   onStart?: (meta: SegmentMeta) => void;
-  private els: HTMLAudioElement[] = [new Audio(), new Audio()];
+  onFail?: (meta: SegmentMeta, reason: PlayFailReason, attempts: number) => void;
+  private els: HTMLAudioElement[];
   private i = 0;
   /** `at` : arrivée dans la file, pour savoir combien de temps le segment a attendu. */
   private queue: { url: string; meta: SegmentMeta; at: number }[] = [];
@@ -239,6 +272,13 @@ export class ElementPlayer implements Player {
   private muted = false;
   private volume = 1;
   private sinkId = "";
+  /** Le segment en cours et sa garde (D40) : `flush` les abandonne. */
+  private active?: { guard: PlayGuard; url: string };
+
+  /** `makeAudio` : un faux élément dans les tests ; dans la page, deux vrais `<audio>`. */
+  constructor(makeAudio: () => HTMLAudioElement = () => new Audio()) {
+    this.els = [makeAudio(), makeAudio()];
+  }
 
   /** Les deux éléments alternent : la sortie choisie s'applique aux deux. */
   async setOutputDevice(deviceId: string): Promise<void> {
@@ -305,27 +345,51 @@ export class ElementPlayer implements Player {
     this.play(item);
   }
 
+  /**
+   * Joue un segment sous garde (D40) : « durée + 2 s » depuis son vrai départ, un nouvel essai
+   * sur échec, puis signalement et passage à la suite. Avant, une erreur ou un refus passait
+   * en silence à la suite, et un élément qui ne finissait jamais bloquait toute la file.
+   */
   private play(item: { url: string; meta: SegmentMeta; at: number }) {
     const el = this.els[this.i];
     this.i ^= 1;
     el.muted = this.muted;
     el.volume = this.volume;
-    if (el.src !== item.url) el.src = item.url;
-    el.onplaying = () => {
-      this.current = { meta: item.meta, startedAt: performance.now() };
-      this.onStart?.(item.meta);
-    };
-    const done = () => {
-      el.onplaying = null;
-      el.onended = null;
-      el.onerror = null;
-      URL.revokeObjectURL(item.url);
-      this.lastEndedAt = performance.now();
-      this.next();
-    };
-    el.onended = done;
-    el.onerror = done;
-    el.play().catch(done);
+    let started = false;
+    const guard: PlayGuard = new PlayGuard(item.meta.durMs, {
+      play: (attempt, after) => {
+        el.onplaying = () => {
+          guard.playing(attempt);
+          if (started) return; // une reprise après blocage n'est pas un nouveau départ
+          started = true;
+          this.current = { meta: item.meta, startedAt: performance.now() };
+          this.onStart?.(item.meta);
+        };
+        el.onended = () => guard.ended(attempt);
+        el.onerror = () => guard.failed("error", attempt);
+        // Fichier illisible, ou élément resté au début : on recharge. Bloqué en cours de route,
+        // ou lecture refusée : on relance là où il en était, sans répéter le début.
+        const reload = after === "error" || (after === "stalled" && el.currentTime < 0.05);
+        if (reload || el.src !== item.url) {
+          el.src = item.url;
+          el.load();
+        }
+        el.play().catch(() => guard.failed("refused", attempt));
+      },
+      fail: (reason, attempts) => {
+        console.warn(`[audio] segment ${item.meta.seq} non joué (${reason}, ${attempts} essais)`);
+        this.onFail?.(item.meta, reason, attempts);
+      },
+      done: () => {
+        this.release(el);
+        if (this.active?.guard === guard) this.active = undefined;
+        URL.revokeObjectURL(item.url);
+        this.lastEndedAt = performance.now();
+        this.next();
+      },
+    });
+    this.active = { guard, url: item.url };
+    guard.start();
     // Double tampon : le segment suivant est déjà chargé dans l'autre élément.
     const peek = this.queue[0];
     if (peek) {
@@ -337,17 +401,25 @@ export class ElementPlayer implements Player {
     }
   }
 
+  /** Plus rien de cet élément ne compte : un élément bloqué qui repartirait reste muet. */
+  private release(el: HTMLAudioElement) {
+    el.onplaying = null;
+    el.onended = null;
+    el.onerror = null;
+    if (!el.paused) el.pause();
+  }
+
   flush(): void {
     if (this.pauseTimer) clearTimeout(this.pauseTimer);
     this.pauseTimer = undefined;
     for (const q of this.queue) URL.revokeObjectURL(q.url);
     this.queue = [];
-    for (const el of this.els) {
-      el.onended = null;
-      el.onerror = null;
-      el.onplaying = null;
-      el.pause();
+    if (this.active) {
+      this.active.guard.cancel();
+      URL.revokeObjectURL(this.active.url);
+      this.active = undefined;
     }
+    for (const el of this.els) this.release(el);
     this.busy = false;
     this.current = undefined;
   }

@@ -26,6 +26,23 @@ export type DegradedMode = "none" | "text-only" | "backup-mt" | "backup-tts" | "
 export const ReportKindSchema = z.enum(["transcription", "translation", "slow", "voice", "audio"]);
 export type ReportKind = z.infer<typeof ReportKindSchema>;
 
+/**
+ * Pourquoi un segment n'a pas été joué, nouvel essai compris (D40) : fichier illisible,
+ * lecture refusée par le navigateur, ou rien dans « durée + 2 s ».
+ */
+export const PlayFailReasonSchema = z.enum(["error", "refused", "stalled"]);
+export type PlayFailReason = z.infer<typeof PlayFailReasonSchema>;
+
+/** Une ligne de texte figée que l'apprenant a manquée pendant une coupure (D40). */
+export interface CatchupLine {
+  seq: number;
+  src: string;
+  tOrigin: number;
+  /** Absente : la traduction n'était pas encore arrivée ; elle suivra en direct. */
+  tgt?: string;
+  untranslated?: boolean;
+}
+
 export interface PipelineStatus {
   stt: string;
   mt: string;
@@ -100,6 +117,8 @@ export interface StatsPayload {
    * La page s'en sert après un redémarrage du serveur, qui ne connaît plus sa captation.
    */
   micSeq?: number | null;
+  /** Segments qu'un téléphone n'a pas pu jouer, nouvel essai compris, sur 60 s (D40). */
+  playFails?: number;
   pipeline: PipelineStatus;
   uptimeS: number;
 }
@@ -143,7 +162,18 @@ export type ServerEvent =
        * ne la connaît pas : première admission, ou serveur redémarré depuis.
        */
       resumeSeq?: number;
+      /**
+       * Identifie ce démarrage du serveur (D40) : les numéros de segment repartent de zéro avec
+       * lui. Une page qui revient avec un autre `epoch` ne peut pas comparer ses numéros.
+       */
+      epoch?: string;
     }
+  /**
+   * Apprenant revenu d'une coupure (D40) : les lignes de texte figées qu'il a manquées, dans
+   * l'ordre, cinq minutes au plus. Envoyé juste après `hello`, avant tout le direct. Jamais
+   * d'audio : la voix reprend au direct (D35).
+   */
+  | { t: "catchup"; lines: CatchupLine[] }
   /** Un administrateur a enregistré des réglages : les clients s'y accordent tout de suite. */
   | { t: "settings"; settings: ClientSettings }
   /** Hypothèse STT courante, complète et révisable. Écran uniquement. */
@@ -235,6 +265,11 @@ export const ClientEventSchema = z.discriminatedUnion("t", [
      * reconnexion renvoie les dernières trames et le serveur écarte celles qu'il a déjà (D37).
      */
     capture: z.string().max(32).optional(),
+    /**
+     * Apprenant qui revient (D40) : le démarrage du serveur qu'il connaissait (`epoch` de
+     * `hello`) et le dernier segment reçu en entier. Le serveur renvoie le texte qui suit.
+     */
+    resume: z.object({ epoch: z.string().max(32), seq: z.number().int().min(-1) }).optional(),
   }),
   /** Envoyé au démarrage effectif de la lecture d'un segment. Base de la mesure bout-en-bout. */
   z.object({
@@ -252,6 +287,17 @@ export const ClientEventSchema = z.discriminatedUnion("t", [
    * le serveur retrouve les textes et horodate — l'apprenant ne ressaisit rien.
    */
   z.object({ t: z.literal("report"), kind: ReportKindSchema, seq: z.number().int().optional(), e2eMs: z.number().nullable().optional() }),
+  /**
+   * Un segment n'a pas pu être joué sur le téléphone, nouvel essai compris (D40). Avant, la
+   * page passait à la suite sans rien dire : un fichier illisible ne se voyait nulle part.
+   */
+  z.object({
+    t: z.literal("play.fail"),
+    seq: z.number().int(),
+    reason: PlayFailReasonSchema,
+    attempts: z.number().int().min(1).max(5),
+    player: z.enum(["element", "webaudio"]),
+  }),
   /** « Revenir au direct » : le client a vidé sa file. */
   z.object({ t: z.literal("resync"), droppedMs: z.number().optional() }),
   z.object({ t: z.literal("lecturer.mute"), muted: z.boolean() }),

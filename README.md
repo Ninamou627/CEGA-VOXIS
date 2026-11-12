@@ -48,7 +48,8 @@ latence — est donc exercé pour de vrai, sans dépenser un centime.
 | Durée MP3 exacte pour la file | `server/src/util/mp3.ts` | ✅ vérifié |
 | Vitesse adaptative serveur + lecture locale (dérive) | `pipeline.ts`, `client/src/lib/player.ts` | ✅ |
 | Guide certificat DNS-01 | `docs/CERTIFICAT.md` | ✅ |
-| Salle, mutex de parole, fan-out | `server/src/room.ts`, `ws/handlers.ts` | ✅ |
+| Salle, mutex de parole, fan-out ; au retour d'une coupure, le texte manqué renvoyé (5 min au plus), la voix reprend au direct (D40) | `server/src/room.ts`, `ws/handlers.ts`, `shared/catchup.ts` | ✅ testé |
+| Lecture gardée sur le téléphone : « durée + 2 s », un nouvel essai, puis échec signalé au journal et au tableau de bord (D40) | `client/src/lib/player.ts`, `shared/playguard.ts` | ✅ testé |
 | Métriques JSONL + bout-en-bout mesuré à l'ack | `server/src/metrics.ts` | ✅ |
 | Page apprenant (maquette VOXIS : écoute, volume, transcription, boutons flottants) | `client/src/listener` | ✅ |
 | Studio de question : micro (30 s max) **ou** question écrite, retour bilingue | `client/src/listener/views/Studio.tsx` | ✅ |

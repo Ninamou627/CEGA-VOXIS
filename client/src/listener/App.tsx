@@ -40,6 +40,8 @@ const TROUBLE_E2E_MS = 4000;
 const TROUBLE_QUEUE_MS = 5000;
 /** Cadence à laquelle la file affichée se met à jour. */
 const QUEUE_EVERY_MS = 500;
+/** Serveur redémarré : les lignes déjà affichées passent sous cette clé (D40). */
+const EPOCH_SHIFT = 1e9;
 
 type Hello = Extract<ServerEvent, { t: "hello" }>;
 type AskStatus = "idle" | "sending" | "done" | "failed";
@@ -88,6 +90,11 @@ export function App() {
   const [showText, setShowText] = useState(true);
   const [alert, setAlert] = useState<string>();
   const [reportSent, setReportSent] = useState(false);
+  /**
+   * Une voix n'a pas pu être jouée, nouvel essai compris (D40). Affiché 20 s après le dernier
+   * échec, pas jusqu'à la voix suivante : elle suit aussitôt, l'apprenant n'aurait rien vu.
+   */
+  const [playFail, setPlayFail] = useState(false);
   /** Passage figé à l'ouverture de la feuille : on signale ce qu'on a entendu, pas la suite. */
   const [reportOn, setReportOn] = useState<{ seq?: number; src?: string; tgt?: string; e2eMs: number | null }>();
 
@@ -111,6 +118,15 @@ export function App() {
   /** L'apprenant a réglé son volume : le réglage de l'administration ne l'écrase plus. */
   const volumeTouched = useRef(false);
   const reportTimer = useRef<number>(undefined);
+  /**
+   * Où en est la page, pour le rattrapage du texte au retour d'une coupure (D40) : le démarrage
+   * du serveur qu'elle connaît, et le dernier segment reçu en entier (traduction comprise).
+   */
+  const epochRef = useRef<string>(undefined);
+  const lastSeqRef = useRef<number | null>(null);
+  /** Langue de la liaison en cours : les rappels du socket ne voient pas l'état React. */
+  const langRef = useRef<Lang>(lang);
+  const playFailTimer = useRef<number>(undefined);
 
   useEffect(() => {
     const id = setInterval(() => {
@@ -143,6 +159,8 @@ export function App() {
   const trouble =
     degraded?.mode === "text-only" || degraded?.mode === "stt-lost"
       ? "La voix s'est arrêtée — signalez-le"
+      : playFail
+        ? "Une voix n'a pas pu être jouée — signalez-le"
       : queueMs > TROUBLE_QUEUE_MS || (stats?.e2eP50 ?? 0) > TROUBLE_E2E_MS
         ? "La traduction a du retard — signalez-le"
         : lines[lines.length - 1]?.untranslated
@@ -167,10 +185,22 @@ export function App() {
     return () => clearInterval(id);
   }, []);
 
-  /** Ouvre le WebSocket de salle ; un ancien socket qu'on ferme ne parle plus à l'écran. */
+  /**
+   * Ouvre le WebSocket de salle ; un ancien socket qu'on ferme ne parle plus à l'écran. Le
+   * `join` est relu à chaque reconnexion : il dit au serveur où la page en était (D40).
+   */
   function connect(l: Lang) {
+    langRef.current = l;
     const s: SalleSocket = new SalleSocket(
-      { t: "join", role: "listener", session, lang: l, code, ua: navigator.userAgent.slice(0, 200) },
+      () => ({
+        t: "join",
+        role: "listener",
+        session,
+        lang: l,
+        code,
+        ua: navigator.userAgent.slice(0, 200),
+        resume: epochRef.current ? { epoch: epochRef.current, seq: lastSeqRef.current ?? -1 } : undefined,
+      }),
       {
         onState: (st) => sock.current === s && setConn(st),
         onEvent: (e) => sock.current === s && handleEvent(e),
@@ -189,6 +219,13 @@ export function App() {
       if (meta.replay) return;
       sock.current?.send({ t: "ack", seq: meta.seq, tOrigin: meta.tOrigin, queueMs: p.queueMs });
     };
+    // Un segment non joué, nouvel essai compris (D40) : la page le dit au serveur et à l'apprenant.
+    p.onFail = (meta, reason, attempts) => {
+      sock.current?.send({ t: "play.fail", seq: meta.seq, reason, attempts, player: p.kind });
+      setPlayFail(true);
+      clearTimeout(playFailTimer.current);
+      playFailTimer.current = window.setTimeout(() => setPlayFail(false), ALERT_SHOW_MS);
+    };
     p.setVolume(volume / 100);
     player.current = p;
     void requestWakeLock();
@@ -204,6 +241,11 @@ export function App() {
     ring.current = [];
     setLines([]);
     setPartial("");
+    clearTimeout(playFailTimer.current);
+    setPlayFail(false);
+    // Nouvelle langue : on repart du direct, sans rattrapage de l'ancienne (D40).
+    epochRef.current = undefined;
+    lastSeqRef.current = null;
     sock.current?.close();
     connect(l);
   }
@@ -217,6 +259,14 @@ export function App() {
     switch (e.t) {
       case "hello":
         clockOffset.current = e.tServer - Date.now();
+        // Serveur redémarré (D40) : ses numéros de segment repartent de zéro. Les lignes à
+        // l'écran changent de clé, sinon un nouveau segment 3 se fondrait dans l'ancien 3.
+        if (epochRef.current && e.epoch !== epochRef.current) {
+          setLines((prev) => prev.map((l) => ({ ...l, seq: l.seq - EPOCH_SHIFT })));
+          envelopes.current.clear();
+          lastSeqRef.current = null;
+        }
+        epochRef.current = e.epoch;
         helloRef.current = e;
         setHello(e);
         applyDefaultVolume(e.settings.listenerVolume);
@@ -229,9 +279,20 @@ export function App() {
       case "src.commit":
         setPartial("");
         upsert(e.seq, { src: e.text, tOrigin: e.tOrigin });
+        if (langRef.current === helloRef.current?.srcLang) received(e.seq); // pas de traduction à attendre
         break;
       case "tr.segment":
         upsert(e.seq, { tgt: e.text, untranslated: e.untranslated });
+        received(e.seq);
+        break;
+      case "catchup":
+        // Le texte manqué pendant la coupure (D40) ; la voix, elle, reprend au direct.
+        setLines((prev) => {
+          let next = prev;
+          for (const c of e.lines) next = merged(next, c.seq, { src: c.src, tOrigin: c.tOrigin, ...(c.tgt != null ? { tgt: c.tgt, untranslated: c.untranslated } : {}) });
+          return next;
+        });
+        for (const c of e.lines) if (c.tgt != null) received(c.seq);
         break;
       case "floor":
         setFloor(e.floor);
@@ -268,11 +329,21 @@ export function App() {
   }
 
   function upsert(seq: number, patch: Partial<Line>) {
-    setLines((prev) => {
-      const i = prev.findIndex((l) => l.seq === seq);
-      const next = i >= 0 ? prev.map((l, j) => (j === i ? { ...l, ...patch } : l)) : [...prev, { seq, ...patch }];
-      return next.slice(-12);
-    });
+    setLines((prev) => merged(prev, seq, patch));
+  }
+
+  /** Dernier segment reçu en entier : le rattrapage reprendra après lui (D40). */
+  function received(seq: number) {
+    lastSeqRef.current = Math.max(lastSeqRef.current ?? -1, seq);
+  }
+
+  /** Les lignes restent dans l'ordre de la parole : une ligne rattrapée vient à sa place (D40). */
+  function merged(prev: Line[], seq: number, patch: Partial<Line>): Line[] {
+    const i = prev.findIndex((l) => l.seq === seq);
+    if (i >= 0) return prev.map((l, j) => (j === i ? { ...l, ...patch } : l));
+    const next = [...prev, { seq, ...patch }];
+    if (prev.length && prev[prev.length - 1].seq > seq) next.sort((a, b) => a.seq - b.seq);
+    return next.slice(-12);
   }
 
   function handleAudio(h: AudioHeader, bytes: Uint8Array) {

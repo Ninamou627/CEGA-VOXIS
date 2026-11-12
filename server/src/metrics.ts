@@ -73,6 +73,8 @@ export class Metrics {
   /** Retard montant de chaque trame datée, et son manquant constaté à l'arrivée (D37). */
   private uplinks: { t: number; ms: number }[] = [];
   private gaps: { t: number; ms: number }[] = [];
+  /** Segments qu'un téléphone n'a pas pu jouer, nouvel essai compris (D40). */
+  private playFails: number[] = [];
   private lastSpeechAt: number | null = null;
   readonly startedAt = Date.now();
   /** Démarrage du micro en cours : le silence se compte à partir de là, pas du lancement du serveur. */
@@ -156,6 +158,11 @@ export class Metrics {
     this.gaps.push({ t: Date.now(), ms });
   }
 
+  /** Un téléphone n'a pas pu jouer un segment (D40) : compté pour le tableau de bord. */
+  playFail(): void {
+    this.playFails.push(Date.now());
+  }
+
   micReset(): void {
     this.mic = [];
     this.captureAt = null;
@@ -214,6 +221,7 @@ export class Metrics {
       micCapture: this.captureAt && now - this.captureAt.t < 15_000 ? Math.round(this.captureAt.ratio * 100) / 100 : null,
       uplinkP50Ms: percentile((this.uplinks = this.uplinks.filter((u) => u.t >= cutoff)).map((u) => u.ms), 50),
       audioGapMs: (this.gaps = this.gaps.filter((g) => g.t >= cutoff)).reduce((a, g) => a + g.ms, 0),
+      playFails: (this.playFails = this.playFails.filter((t) => t >= cutoff)).length,
       uptimeS: Math.round((now - this.startedAt) / 1000),
     };
   }

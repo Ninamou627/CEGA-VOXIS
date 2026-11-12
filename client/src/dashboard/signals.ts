@@ -274,6 +274,17 @@ export function computeAlerts(sig: Signals): Alert[] {
     out.push({ id: "e2e", severity: end > 2000 ? "crit" : "warn", title: `Latence élevée : ${delay(end)}`, detail: "De la fin de la phrase à la voix, médiane sur la dernière minute ; la cible est 1 s.", to: "supervision" });
   const q = st?.queueMaxMs ?? null;
   if (q != null && q > 5000) out.push({ id: "drift", severity: "warn", title: `Dérive : un téléphone a ${delay(q)} de retard en file`, detail: "Rien n'est sauté : le retard se résorbe pendant les pauses de l'orateur, ou l'apprenant revient au direct.", to: "supervision", stage: "tts" });
+  // Voix non jouées sur les téléphones, nouvel essai compris (D40) : avant, rien ne le disait.
+  const fails = st?.playFails ?? 0;
+  if (fails > 0)
+    out.push({
+      id: "play-fail",
+      severity: "warn",
+      title: fails > 1 ? `${fails} voix n'ont pas pu être jouées sur les téléphones` : "Une voix n'a pas pu être jouée sur un téléphone",
+      detail: "Sur la dernière minute, après un nouvel essai : fichier illisible, lecture refusée par le téléphone ou lecture bloquée. Le texte est resté affiché ; le journal (play.fail) dit quel segment et quelle voix.",
+      to: "supervision",
+      stage: "tts",
+    });
 
   for (const stage of ["stt", "mt", "tts"] as const) {
     const e = sig.overview?.lastErrors[stage];

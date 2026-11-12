@@ -1053,7 +1053,8 @@ garder 5 minutes de voix sur le serveur et de renvoyer à la page celles qu'elle
 reçues. Refusé : après une coupure, on reprend sur le direct. Une voix gardée pour être jouée
 plus tard retarderait le direct. Les voix et les lignes de texte émises pendant une coupure
 sont donc perdues pour cet apprenant. Ce qui était déjà arrivé dans la page avant la coupure
-se joue normalement.
+se joue normalement. (Depuis D40, les lignes de texte sont renvoyées au retour ; les voix,
+non.)
 
 **Mesuré en local**, avec le vrai `attachWs`, le pipeline en fournisseurs simulés, la page
 d'écoute construite dans un navigateur, et un relais TCP qu'on fige sans rien fermer :
@@ -1085,7 +1086,7 @@ de sonde. Quand son ancienne liaison s'est fermée d'elle-même, il est entré 3
 - Une page elle-même endormie plus de 6 s (onglet gelé, veille) peut se reconnecter sans
   nécessité. Coût : une reconnexion.
 - Le lecteur à deux `<audio>` (ElementPlayer) n'a toujours pas de garde si `ended` ne vient
-  jamais.
+  jamais. Corrigé en D40 : « durée + 2 s », un nouvel essai, puis signalement.
 
 ## D36 — Les mots figés se retrouvent par alignement, plus par leur rang
 
@@ -1378,6 +1379,87 @@ passe plus d'un bloc (test qui échoue sans les tranches).
   après une réouverture du STT (limite D37), n'est pas retouchée ici.
 - L'analyse de la hauteur coûte toujours ~5 % d'un cœur par formateur, en continu : l'alléger
   (recherche de hauteur à fréquence réduite) reste une piste, non faite.
+
+## D40 — Le lecteur est gardé, ses échecs se voient ; le texte manqué revient
+
+Cinquième correction de l'audit du 10/11/2026 (étape 1.5, défaut F-08).
+
+**Constat.**
+- Page d'écoute, lecteur par défaut (`ElementPlayer`) : une erreur de lecture ou un `play()`
+  refusé passait au segment suivant sans rien dire — ni le journal ni le tableau de bord ne le
+  voyaient. Un élément qui ne finissait jamais (ni `ended`, ni `error`) figeait toute la file
+  jusqu'à « Revenir au direct » (limite notée en D35).
+- `WebAudioPlayer` : un fichier illisible n'était qu'un avertissement dans la console ; un
+  décodage en cours pendant « Revenir au direct » planifiait encore sa voix.
+- Après une coupure, les lignes de texte figées pendant celle-ci étaient perdues pour
+  l'apprenant (D35).
+
+**Décision.**
+- *Garde de lecture* (`shared/playguard.ts`, branchée dans `client/src/lib/player.ts`). Chaque
+  segment a « durée + 2 s » pour finir (3 s au moins), comptées depuis son vrai départ
+  (`playing`) : un téléphone lent qui met 2,9 s à charger n'est pas compté en échec. Un échec
+  (erreur, refus, garde échue) vaut un nouvel essai : rechargement pour un fichier illisible ou un
+  élément resté au début, relance sur place pour un blocage en cours de route (sans répéter le
+  début). Au second échec, la file passe à la suite et la page envoie `play.fail` (segment,
+  raison, essais, lecteur). Chaque essai est numéroté : un événement tardif de l'essai précédent
+  ne compte pas pour le suivant.
+- `WebAudioPlayer` : un nouvel essai de décodage, puis `play.fail` ; un décodage en cours au
+  moment du vidage ne planifie plus rien.
+- *Signalé partout.* Journal : événement `play.fail` avec la langue et la voix du segment, et un
+  avertissement « segment non joué sur un téléphone ». Stats : `playFails` sur 60 s. Tableau de
+  bord : alerte « Une voix n'a pas pu être jouée sur un téléphone » (étage voix). Apprenant :
+  « Une voix n'a pas pu être jouée — signalez-le », affiché 20 s après le dernier échec. Effacé
+  à la voix suivante, il disparaissait aussitôt : vu à l'essai dans le navigateur.
+- *Texte rattrapé* (`shared/catchup.ts`). La page dit à son retour où elle en était
+  (`join.resume` : le démarrage du serveur qu'elle connaît, le dernier segment reçu en entier,
+  traduction comprise). Le serveur renvoie les lignes figées qui suivent (`catchup`), juste après
+  `hello` et dans le même tour de boucle : rien ne tombe entre le rattrapage et le direct.
+  Bornes : 5 minutes, et les 60 segments que le serveur garde. La voix, elle, reprend toujours
+  au direct : D35 tient.
+- *Démarrage du serveur* (`epoch` dans `hello`). Les numéros de segment repartent de zéro quand
+  le serveur redémarre. Une page revenue d'un autre démarrage reçoit tout le texte récent, et ses
+  lignes déjà affichées changent de clé — sans cela, un nouveau segment 3 se fondait dans
+  l'ancien 3, défaut antérieur à D40.
+- Protocole toujours en version 1 : tout ce qui est ajouté est facultatif, et page et serveur
+  sont livrés ensemble.
+
+**Vérifié.**
+- 290 tests sur 290 (21 nouveaux) ; types vérifiés (serveur, client, poste).
+  - La garde seule (6 tests), puis le vrai `ElementPlayer` sur un faux `<audio>` (5) : fichier
+    corrompu signalé après deux essais et voix suivante jouée ; erreur passagère sans
+    signalement ; lecture bloquée, la file repart ; lecture refusée ; « Revenir au direct »
+    pendant un blocage, rien de signalé.
+  - `catchupLines` (5), puis le vrai `attachWs` sur un vrai WebSocket (5) : coupure pendant que
+    7 segments se figent, les 7 lignes au retour, dans l'ordre, juste après `hello`, et la
+    traduction encore en route arrive ensuite en direct ; autre démarrage, tout le texte récent ;
+    `play.fail` au journal avec la voix, et compté ; message mal formé refusé.
+- Dans un navigateur (le Chromium du volet de l'application), page d'écoute de développement,
+  serveur local sur simulateurs (aucune clé, toute connexion hors de la machine bloquée),
+  formateur simulé :
+  - coupure de 20 s, toute reconnexion refusée pendant 20 s : la page est revenue avec `resume`
+    (dernier segment reçu : 16) et a reçu `catchup` 17 à 20, le 20 sans sa traduction ; la
+    traduction 20 puis les segments 21 et 22 sont arrivés en direct. État de la page : 11 à 22,
+    sans trou (elle garde 12 lignes). Le journal du formateur confirme 17 à 20 figés pendant la
+    coupure.
+  - fichier audio corrompu injecté (octets du segment 34 remplacés) : deux essais, `play.fail`
+    (34, error, 2 essais, element) envoyé, voix 35 jouée aussitôt ; « segment non joué sur un
+    téléphone » au journal du serveur ; `playFails: 1` dans les stats ; alerte affichée à
+    l'apprenant.
+
+**Limites.**
+- Pas encore essayé sur un vrai téléphone lent, ni sur iOS écran verrouillé : la marge de 2 s
+  part du vrai départ, mais un blocage en cours de route de plus de 2 s compte comme un essai
+  raté (relancé sur place).
+- La garde ne voit pas une voix jouée sans son (sortie coupée par le système) : la lecture
+  « finit » normalement.
+- Web Audio : seul le décodage est gardé. Un contexte suspendu (écran verrouillé d'iOS) n'est
+  pas détecté — c'est le cas pour lequel `ElementPlayer` est le lecteur par défaut.
+- Lectures refusées en série (iOS après une interruption, sans geste de l'apprenant) : un
+  signalement par segment ; la file se vide aussi vite qu'avant.
+- Seule une reconnexion rattrape : une première ouverture ou un changement de langue repart du
+  direct, sans texte. Au-delà de 5 minutes ou de 60 segments, le début de la coupure manque.
+- L'alerte du tableau de bord est vérifiée par les stats reçues (`playFails`), pas regardée à
+  l'écran : il faut la connexion d'administration.
 
 ## Ce que six semaines (au lieu de 48 h) remettent sur la table
 

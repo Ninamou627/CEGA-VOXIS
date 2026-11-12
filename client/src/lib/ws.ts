@@ -1,7 +1,9 @@
 /**
  * Client WebSocket de salle : reconnexion automatique avec backoff, rejoint la
  * session à chaque ouverture, sépare les messages texte (événements) des trames
- * binaires (audio). À la reconnexion on reprend au direct — jamais de rattrapage.
+ * binaires (audio). À la reconnexion, la voix reprend au direct — jamais de rattrapage
+ * audio ; le texte manqué, lui, est renvoyé (D40) : `join` peut être une fonction, relue à
+ * chaque ouverture, pour dire au serveur où la page en était.
  *
  * Liaison figée (D35) : une coupure réseau peut laisser le socket ouvert sans que plus
  * rien n'arrive. Le navigateur ne le ferme alors pas avant plusieurs minutes, puis livre
@@ -34,7 +36,7 @@ export class SalleSocket {
   private watch?: number;
 
   constructor(
-    private join: JoinEvent,
+    private join: JoinEvent | (() => JoinEvent),
     private h: SocketHandlers,
   ) {}
 
@@ -60,7 +62,7 @@ export class SalleSocket {
       this.attempt = 0;
       this.lastHeard = Date.now();
       this.h.onState("open");
-      this.send(this.join);
+      this.send(typeof this.join === "function" ? this.join() : this.join);
     };
     ws.onmessage = (ev) => {
       this.lastHeard = Date.now();
