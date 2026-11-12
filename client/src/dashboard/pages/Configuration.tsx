@@ -61,6 +61,11 @@ const WHOLE_SENTENCES = [
   { value: "off" as const, label: "En morceaux", title: "Chaque morceau part dès qu'il est reconnu, même au milieu d'une phrase : la voix commence plus tôt" },
 ];
 
+const TIGHTEN = [
+  { value: "off" as const, label: "Coupé", title: "La traduction reste celle du moteur : au-delà de 3 s de retard, seuls le débit (×1,1) et les pauses rattrapent" },
+  { value: "on" as const, label: "Dès 5 s de retard", title: "Claude redit le segment plus court, hésitations et redites retirées ; vérifié avant d'être dit" },
+];
+
 const dec = (x: number, digits = 1) => x.toFixed(digits).replace(".", ",");
 const db = (x: number) => `${x > 0 ? "+" : x < 0 ? "−" : ""}${Math.abs(x)} dB`;
 
@@ -261,6 +266,20 @@ export function Configuration({ conf, value, dirty, micDb, onChange, onSave, onD
             ) : (
               <Note>Ces réglages concernent les modèles Claude ; {engine(t.primary)?.label ?? t.primary} n'en a pas d'équivalent.</Note>
             )}
+          </Field>
+
+          <Field
+            label="Formulation resserrée"
+            help="Quand la salle a 5 s de retard ou plus, Claude redit le segment plus court : hésitations et redites retirées, jamais un fait, un nombre, un nom ni une négation. Chaque version est vérifiée avant d'être dite (nombres, noms, négations) ; sinon la traduction normale part. Change le texte entendu : coupé par défaut."
+            applies="live"
+            changed={changed("translation.tightenWhenLate")}
+          >
+            <Segmented
+              value={t.tightenWhenLate ? "on" : "off"}
+              onChange={(x) => set("translation", { tightenWhenLate: x === "on" })}
+              options={TIGHTEN.map((x) => (x.value === "on" && !engine("anthropic")?.available ? { ...x, disabled: true, title: "Il faut le moteur Claude : sa clé d'API manque sur le serveur" } : x))}
+            />
+            {t.tightenWhenLate && !engine("anthropic")?.available && <Note>Sans moteur Claude, rien n'est resserré : seuls le débit et les pauses rattrapent.</Note>}
           </Field>
 
           <Field label="Délai maximal" help="Au-delà, l'appel est abandonné : le moteur secondaire prend le relais, ou le texte source s'affiche." applies="live" changed={changed("translation.timeoutMs")}>

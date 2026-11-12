@@ -11,6 +11,7 @@ import { CAPTURE_ALERT_BELOW } from "../../../shared/capture";
 import { MicUplink } from "../../../shared/uplink";
 import type { AudioHeader, ClientSettings, FloorState, Lang, ServerEvent, StatsPayload } from "../../../shared/protocol";
 import { desktop } from "../lib/desktop";
+import { LANGS } from "../ui/langs";
 import { listMics, listOutputs, startMic, type MicHandle } from "../lib/mic";
 import { askToNotify, notifyIfUnseen } from "../lib/notify";
 import { WebAudioPlayer } from "../lib/player";
@@ -428,6 +429,13 @@ export function App() {
   const silentS = stats?.micSilentS ?? null;
   // 20 s sans parole : au-delà d'une pause normale de formateur, en deçà du doute.
   const serverSilent = running && !muted && serverDb != null && serverDb < roomSettings.speechThresholdDb && (silentS ?? 0) >= roomSettings.silenceAlertS;
+  // La salle a 8 s de retard ou plus dans une langue (D42, palier 3) : seule une pause de
+  // l'orateur la laisse rattraper sans rien sauter.
+  const behind = running
+    ? (Object.entries(stats?.pipeline.lag ?? {}) as [Lang, { tier: number; retardMs: number }][])
+        .filter(([, s]) => s.tier >= 3)
+        .sort((a, b) => b[1].retardMs - a[1].retardMs)
+    : [];
   const srcLang: Lang = hello?.srcLang ?? "en";
   const tgtLang: Lang = hello?.langs[0] ?? "fr";
   const asking = floor.state === "question";
@@ -469,7 +477,7 @@ export function App() {
         onStop={requestStop}
       />
       <main className="flex-1 w-full max-w-[1780px] mx-auto p-4 md:p-6 lg:p-7 flex flex-col gap-5">
-        {(err || degraded || serverSilent || (running && captureLoss != null)) && (
+        {(err || degraded || serverSilent || (running && captureLoss != null) || behind.length > 0) && (
           <div className="flex flex-col gap-2">
             {err && (
               <div className="bg-error-container text-on-error-container border border-error/30 rounded-xl px-4 py-3 text-sm" role="alert">
@@ -485,6 +493,12 @@ export function App() {
               <div className="bg-error-container text-on-error-container border border-error/30 rounded-xl px-4 py-3 text-sm" role="alert">
                 Le serveur reçoit du silence ({serverDb} dB depuis {silentS} s). Ce n'est pas le bon micro, ou son niveau est trop bas : choisissez-en un
                 autre dans le panneau audio, et vérifiez le niveau d'entrée dans Windows.
+              </div>
+            )}
+            {behind.length > 0 && (
+              <div className="bg-error-container text-on-error-container border border-error/30 rounded-xl px-4 py-3 text-sm" role="alert">
+                La traduction a pris {Math.round(behind[0][1].retardMs / 1000)} s de retard sur vous ({behind.map(([l]) => LANGS[l].nameFr).join(", ")}). Marquez une
+                pause de quelques secondes : la voix rattrape pendant vos silences, sans rien sauter.
               </div>
             )}
             {running && captureLoss != null && (

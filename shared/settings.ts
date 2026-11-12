@@ -25,6 +25,12 @@ const TranslationSchema = z.object({
   domain: z.string().max(1500),
   /** Une paire « terme = rendu » par ligne. */
   glossary: z.string().max(4000),
+  /**
+   * Formulation resserrée quand la salle a 5 s de retard ou plus (D42) : Claude redit le segment
+   * plus court — hésitations et redites retirées —, vérifié avant d'être dit (nombres, noms,
+   * négations). Change le texte entendu : éteint par défaut, c'est une décision produit.
+   */
+  tightenWhenLate: z.boolean(),
 });
 
 const SpeechSchema = z

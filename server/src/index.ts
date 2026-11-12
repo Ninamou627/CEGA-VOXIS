@@ -119,6 +119,7 @@ const pipeline = new Pipeline(
         quickStart: s.speech.quickStart,
         joinShort: s.speech.joinShort,
         wholeSentences: s.speech.wholeSentences,
+        tightenWhenLate: s.translation.tightenWhenLate,
       };
     },
   },

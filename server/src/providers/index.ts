@@ -121,14 +121,23 @@ export class FallbackMt implements MtProvider {
  */
 export class SwitchableMt implements MtProvider {
   private chain!: MtProvider;
+  /**
+   * Formulation resserrée (D42) : toujours par Claude, quel que soit le primaire — DeepL ne sait
+   * pas raccourcir. Absente sans moteur Claude utilisable ; pas de secours : la traduction
+   * normale, partie en même temps, en tient lieu.
+   */
+  readonly tighten?: (req: MtRequest) => Promise<string>;
 
   constructor(
     private readonly engines: Partial<Record<MtEngine, MtProvider>>,
     private readonly hooks: FallbackHooks,
     private readonly settings: () => Settings,
     private readonly srcLang: Lang,
+    tightener?: MtProvider,
   ) {
     this.rebuild();
+    const tighten = tightener?.tighten?.bind(tightener);
+    if (tighten) this.tighten = (req) => tighten(this.withSession(req));
   }
 
   get name(): string {
@@ -144,10 +153,15 @@ export class SwitchableMt implements MtProvider {
   }
 
   translate(req: MtRequest): Promise<string> {
+    return this.chain.translate(this.withSession(req));
+  }
+
+  /** Glossaire (dans le sens de la requête) et contexte de séance, relus à chaque segment. */
+  private withSession(req: MtRequest): MtRequest {
     const t = this.settings().translation;
     const glossary = parseGlossary(t.glossary);
     const oriented = !glossary || req.from === this.srcLang ? glossary : Object.fromEntries(Object.entries(glossary).map(([k, v]) => [v, k]));
-    return this.chain.translate({ ...req, glossary: oriented, domain: t.domain.trim() || undefined });
+    return { ...req, glossary: oriented, domain: t.domain.trim() || undefined };
   }
 
   warm(force?: boolean): Promise<void> {
@@ -246,7 +260,8 @@ export function makeProviders(cfg: Config, settings: () => Settings, hooks: Fall
     if (primary === cfg.MT_PROVIDER) throw new Error(`moteur de traduction « ${primary} » indisponible (clé manquante ?)`);
     console.warn(`[providers] moteur de traduction « ${primary} » indisponible : simulateur en attendant`);
   }
-  const mt = new SwitchableMt(engines, hooks, settings, cfg.SRC_LANG);
+  const claude = mtEngines.find((e) => e.id === "anthropic")?.available ? engines.anthropic : undefined;
+  const mt = new SwitchableMt(engines, hooks, settings, cfg.SRC_LANG, claude);
 
   // ---- voix -----------------------------------------------------------------------
   // Chaque moteur retente une panne passagère ; un refus du primaire passe au secours (D33).

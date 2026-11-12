@@ -16,6 +16,8 @@ import { TypedEmitter } from "../util/emitter";
 import { AudioClock } from "./audio-clock";
 import { PauseDetector } from "./pause";
 import { MAX_SPEED, Tempo } from "./tempo";
+import { LagControl, type LagState, type LagTier } from "./lagcontrol";
+import { checkTightened } from "./tighten";
 import { LiveProsody, ProsodyFeed } from "../prosody";
 import { VoiceProfile, type SegmentProsody } from "./voice-profile";
 import { CommitGate, DEFAULT_COMMIT, isTitle, joinSegments, type CommitConfig, type Segment } from "./commit";
@@ -40,6 +42,19 @@ export interface PipelineTuning {
   joinShort: boolean;
   /** Un morceau qui s'arrête au milieu d'une phrase attend la suite et part avec elle (D33). */
   wholeSentences: boolean;
+  /** Formulation resserrée dès 5 s de retard (D42), si un moteur sait le faire. Éteint par défaut. */
+  tightenWhenLate?: boolean;
+}
+
+/** Ce que l'étage traduction passe à l'étage voix (D39). */
+interface Translated {
+  text: string;
+  mtMs: number;
+  ending: "continues" | "ends" | "unknown" | null;
+  pauseAfterMs: number | null;
+  readyAt: number;
+  /** La formulation resserrée a été retenue (D42). */
+  tightened: boolean;
 }
 
 export interface PipelineConfig {
@@ -57,6 +72,11 @@ const DEFAULT_TUNING: PipelineTuning = { commit: {}, contextSegments: 2, baseSpe
  * 200 et 300 ms ont donné le même découpage sur la fixture.
  */
 const FORCE_PAUSE_MS = 250;
+/**
+ * Formulation resserrée (D42) : elle a au plus 1,5 s de plus que la traduction normale. Elle ne
+ * part qu'au-delà de 5 s de retard : la voix attendra de toute façon, ce délai ne s'entend pas.
+ */
+const TIGHTEN_GRACE_MS = 1500;
 /** Le texte définitif arrive 0,17 à 0,55 s après la commande (mesuré) : le délai de coupe l'attend. */
 const FORCE_HOLD_MS = 1000;
 /** Parole minimale depuis la dernière coupe avant d'en demander une autre : ~4 mots. */
@@ -233,6 +253,8 @@ export interface PipelineEvents extends Record<string, unknown> {
     pauseMs?: number;
   };
   degraded: { mode: DegradedMode; reason: string };
+  /** Le palier du contrôleur de retard d'une langue change (D42). */
+  lag: { lang: Lang; tier: LagTier; from: LagTier; retardMs: number };
   status: PipelineStatus;
   error: { stage: "stt" | "mt" | "tts"; error: Error };
 }
@@ -275,6 +297,9 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
   private roomFreeAt = new Map<Lang, number>();
   /** Débit de la voix traduite, appris segment après segment (D26). */
   private tempo = new Tempo();
+  /** Contrôleur du retard de chaque langue (D42). */
+  private lag = new LagControl();
+  private ticks = 0;
   /** Hauteur et énergie de la voix du formateur, analysées au fil de l'audio (D28). */
   private live: LiveProsody;
   /**
@@ -328,7 +353,34 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
       muted: this.muted,
       degraded: this.degraded,
       speed: this.speed,
+      lag: Object.keys(this.lag.snapshot()).length ? this.lag.snapshot() : undefined,
     };
+  }
+
+  /**
+   * Retard de la file d'une langue (D42) : combien de temps une voix prête maintenant attendrait
+   * avant d'être entendue. Le modèle du serveur (chaque voix occupe la salle pendant sa durée) ou
+   * les accusés des téléphones (ack + leur file, médiane), le plus grand des deux : le modèle
+   * ignore les pauses gardées, les téléphones lents et les nouveaux essais (D40).
+   */
+  private retardMs(lang: Lang): number {
+    const free = Math.max(this.roomFreeAt.get(lang) ?? 0, this.metrics.phonesFreeAt(lang) ?? 0);
+    return Math.max(0, free - Date.now());
+  }
+
+  /**
+   * Palier du contrôleur pour une langue, réévalué maintenant ; un changement est journalisé et
+   * diffusé. `rise` faux : relevé de chaque seconde, qui ne fait que descendre (voir LagControl).
+   */
+  private lagTier(lang: Lang, rise = true): LagState {
+    const retardMs = this.retardMs(lang);
+    const { tier, from } = this.lag.update(lang, retardMs, rise);
+    if (tier !== from) {
+      this.metrics.event("lag.tier", { lang, from, to: tier, retardMs: Math.round(retardMs) });
+      this.emit("lag", { lang, tier, from, retardMs: Math.round(retardMs) });
+      this.emitStatus();
+    }
+    return this.lag.get(lang);
   }
 
   /**
@@ -382,6 +434,8 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     this.tickTimer = setInterval(() => {
       this.handle(this.gate.tick());
       this.checkHeld();
+      // Le retard se résorbe aussi sans nouveau segment (pause de l'orateur) : réévalué chaque seconde.
+      if (++this.ticks % 10 === 0) for (const lang of this.cfg.targetLangs) this.lagTier(lang, false);
     }, 100);
     this.emitStatus();
   }
@@ -419,6 +473,8 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     // zéro, sans hériter des mots (ni de leurs instants) de cette prise.
     this.handle(this.gate.onUtteranceEnd());
     this.releaseHeld();
+    // Micro arrêté : plus rien à rattraper ni d'alerte à donner au formateur.
+    this.lag.reset();
     this.emit("mic", { on: false });
     this.emitStatus();
   }
@@ -1082,18 +1138,24 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     seg: Segment,
     lang: Lang,
     stream: number,
-  ): Promise<{ text: string; mtMs: number; ending: "continues" | "ends" | "unknown" | null; pauseAfterMs: number | null; readyAt: number } | undefined> {
+  ): Promise<Translated | undefined> {
     const ctx = this.context.get(lang) ?? [];
     const t0 = Date.now();
+    const req = { text: seg.text, from: this.cfg.srcLang, to: lang, context: ctx };
+    // Formulation resserrée (D42) : 5 s de retard ou plus, et l'administration l'a permis. Elle
+    // part en même temps que la traduction normale, qui reste la référence et le recours.
+    const mt = this.providers.mt;
+    const tight =
+      this.tuning.tightenWhenLate && mt.tighten && this.lagTier(lang).tier >= 2
+        ? mt.tighten(req).then(
+            (t): { text?: string; error?: string; ms: number } => ({ text: t, ms: Date.now() - t0 }),
+            (e: Error) => ({ error: e.message.slice(0, 160), ms: Date.now() - t0 }),
+          )
+        : undefined;
 
     let text: string;
     try {
-      text = await this.providers.mt.translate({
-        text: seg.text,
-        from: this.cfg.srcLang,
-        to: lang,
-        context: ctx,
-      });
+      text = await mt.translate(req);
     } catch (error) {
       this.emit("error", { stage: "mt", error: error as Error });
       // Mieux vaut le texte source à l'écran que rien : pas de voix pour ce segment.
@@ -1101,8 +1163,33 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
       this.setDegraded("text-only", `traduction indisponible — ${(error as Error).message.slice(0, 200)}`);
       return undefined;
     }
-    const tMt = Date.now();
+    let tMt = Date.now();
     this.metrics.stage("mt", tMt - t0);
+    let tightened = false;
+    if (tight) {
+      let timer: NodeJS.Timeout | undefined;
+      const late = new Promise<{ error: string; ms: number }>((resolve) => {
+        timer = setTimeout(() => resolve({ error: "trop lente", ms: Date.now() - t0 }), TIGHTEN_GRACE_MS);
+      });
+      const r: { text?: string; error?: string; ms: number } = await Promise.race([tight, late]);
+      clearTimeout(timer);
+      const check = r.text != null ? checkTightened(text, r.text, lang) : undefined;
+      tightened = Boolean(check?.ok);
+      this.metrics.event("tighten", {
+        seq,
+        lang,
+        used: tightened,
+        reason: r.error ?? check?.reason ?? null,
+        normalChars: text.length,
+        tightChars: r.text?.length ?? null,
+        ms: r.ms,
+        numbers: check?.numbers ?? null,
+        names: check?.names ?? null,
+        negations: check?.negations ?? null,
+      });
+      if (tightened) text = r.text!;
+      tMt = Date.now();
+    }
     // Le point d'une phrase qui continue redevient une virgule : la voix ne conclut pas (D27).
     const goesOn = /[.]\s*$/.test(seg.text) ? this.sentenceGoesOn(seg, stream) : { verdict: "unknown" as const, pauseMs: null };
     if (goesOn.verdict === "continues") text = text.replace(/\.\s*$/, ",");
@@ -1112,7 +1199,7 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     const keep = this.tuning.contextSegments;
     while (ctx.length > keep) ctx.shift();
     this.context.set(lang, ctx);
-    return { text, mtMs: tMt - t0, ending: /[.]\s*$/.test(seg.text) ? goesOn.verdict : null, pauseAfterMs: goesOn.pauseMs, readyAt: Date.now() };
+    return { text, mtMs: tMt - t0, ending: /[.]\s*$/.test(seg.text) ? goesOn.verdict : null, pauseAfterMs: goesOn.pauseMs, readyAt: Date.now(), tightened };
   }
 
   /**
@@ -1124,7 +1211,7 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     seq: number,
     seg: Segment,
     lang: Lang,
-    tr: { text: string; mtMs: number; ending: "continues" | "ends" | "unknown" | null; pauseAfterMs: number | null; readyAt: number },
+    tr: Translated,
     gapMs: number | null,
     turnStart: boolean,
   ): Promise<void> {
@@ -1134,19 +1221,22 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     try {
       const queueMs = this.metrics.snapshot().queueP50Ms;
       const aheadMs = Math.max(0, (this.roomFreeAt.get(lang) ?? 0) - Date.now());
+      // Dès 3 s de retard (D42, palier 1) : plus de pause gardée, débit porté vers ×1,1.
+      const lag = this.lagTier(lang);
+      const catchUp = lag.tier >= 1;
       const sourceMs = seg.tEnd - seg.tStart;
       let speed: number;
       let tempo: { predictedMs: number; budgetMs: number; target: number } | undefined;
       if (this.tuning.followTempo) {
         // Le segment dans le temps du formateur, file des téléphones comprise (D26).
         // Après un long silence, la pause n'appartient pas au temps du segment : la salle l'a déjà eue.
-        const d = this.tempo.speedFor(lang, { chars: text.length, sourceMs, gapMs: turnStart ? null : gapMs, aheadMs, preference: this.tuning.baseSpeed });
+        const d = this.tempo.speedFor(lang, { chars: text.length, sourceMs, gapMs: turnStart ? null : gapMs, aheadMs, preference: this.tuning.baseSpeed, catchUp });
         speed = d.speed;
         tempo = d;
       } else {
         // La vitesse choisie par l'administration, et le rattrapage de la dérive par-dessus.
         const drift = this.speedForQueue(queueMs);
-        speed = Math.min(MAX_SPEED, Math.max(0.7, this.tuning.baseSpeed * drift));
+        speed = catchUp ? MAX_SPEED : Math.min(MAX_SPEED, Math.max(0.7, this.tuning.baseSpeed * drift));
       }
       if (speed !== this.speed) {
         this.speed = speed;
@@ -1168,7 +1258,8 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
         text,
         bytes: a.audio,
         voice: a.voice,
-        pauseMs: gapMs != null ? Math.max(0, Math.round(gapMs)) : undefined,
+        // En retard, la pause du formateur n'est plus rendue : le téléphone enchaîne (D42).
+        pauseMs: gapMs != null && !catchUp ? Math.max(0, Math.round(gapMs)) : undefined,
       });
       this.metrics.event("segment", {
         seq,
@@ -1192,6 +1283,9 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
         budgetMs: tempo?.budgetMs ?? null,
         ending: tr.ending,
         pauseAfterMs: tr.pauseAfterMs,
+        lagTier: lag.tier,
+        retardMs: lag.retardMs,
+        tightened: tr.tightened,
       });
       if (this.degraded === "text-only") this.setDegraded("none", "synthèse rétablie");
     } catch (error) {

@@ -56,6 +56,19 @@ export interface PipelineStatus {
    * (D26) ou, réglage « constant », la vitesse de base et le rattrapage de la dérive.
    */
   speed: number;
+  /** Retard de la file de chaque langue et palier du contrôleur (D42) ; absent tant qu'aucune voix n'est partie. */
+  lag?: Partial<Record<Lang, LagState>>;
+}
+
+/**
+ * Palier du contrôleur de retard (D42) : 0 sous 3 s ; 1 dès 3 s (plus de pause gardée, débit
+ * jusqu'à ×1,1) ; 2 dès 5 s (formulation resserrée, si le réglage la permet) ; 3 dès 8 s (alerte).
+ */
+export type LagTier = 0 | 1 | 2 | 3;
+export interface LagState {
+  tier: LagTier;
+  /** Temps qu'une voix prête maintenant attendrait avant d'être entendue (ms). */
+  retardMs: number;
 }
 
 export interface StatsPayload {

@@ -82,11 +82,19 @@ export interface MtRequest {
   glossary?: Record<string, string>;
   /** Contexte linguistique de la séance : sujet, public, registre. */
   domain?: string;
+  /** Formulation resserrée (D42) : la salle a du retard, dire le segment aussi court que possible. */
+  concise?: boolean;
 }
 
 export interface MtProvider {
   readonly name: string;
   translate(req: MtRequest): Promise<string>;
+  /**
+   * Formulation resserrée (D42) : la même traduction, plus courte — hésitations et redites
+   * retirées, jamais un fait, un nombre, un nom ni une négation. Absente si aucun moteur ne sait
+   * le faire (DeepL traduit, il ne reformule pas).
+   */
+  tighten?(req: MtRequest): Promise<string>;
   /**
    * Garde chaude la connexion (D20) : appelé à l'ouverture du micro (`force`), puis
    * régulièrement — le fournisseur n'envoie une requête gratuite que s'il est resté inactif.

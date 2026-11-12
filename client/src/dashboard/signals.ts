@@ -5,9 +5,10 @@
  */
 import type { OverviewResponse, RecentReport, Stage } from "../../../shared/admin";
 import { CAPTURE_ALERT_BELOW } from "../../../shared/capture";
-import type { ClientSettings, StatsPayload } from "../../../shared/protocol";
+import type { ClientSettings, Lang, LagState, StatsPayload } from "../../../shared/protocol";
 import type { ConnState } from "../lib/ws";
 import { delay, perMin, span } from "../ui/format";
+import { LANGS } from "../ui/langs";
 import { REPORT_LABEL } from "../ui/reports";
 import type { Health, SessionInfo } from "./types";
 import type { Tone } from "./ui";
@@ -291,6 +292,21 @@ export function computeAlerts(sig: Signals): Alert[] {
     });
   const q = st?.queueMaxMs ?? null;
   if (q != null && q > 5000) out.push({ id: "drift", severity: "warn", title: `Dérive : un téléphone a ${delay(q)} de retard en file`, detail: "Rien n'est sauté : le retard se résorbe pendant les pauses de l'orateur, ou l'apprenant revient au direct.", to: "supervision", stage: "tts" });
+  // Contrôleur de retard (D42) : dès 8 s, le formateur est alerté, et l'administration ici.
+  for (const [lang, s] of Object.entries(st?.pipeline.lag ?? {}) as [Lang, LagState][]) {
+    if (s.tier < 2) continue;
+    out.push({
+      id: `lag-${lang}`,
+      severity: s.tier >= 3 ? "crit" : "warn",
+      title: `La traduction en ${LANGS[lang].nameFr} a ${delay(s.retardMs)} de retard`,
+      detail:
+        s.tier >= 3
+          ? "Débit au maximum, pauses retirées : le formateur est invité à marquer une pause. Rien n'est sauté."
+          : "Débit au maximum, pauses retirées, formulation resserrée si elle est permise (Configuration). Rien n'est sauté.",
+      to: "supervision",
+      stage: "tts",
+    });
+  }
   // Voix non jouées sur les téléphones, nouvel essai compris (D40) : avant, rien ne le disait.
   const fails = st?.playFails ?? 0;
   if (fails > 0)

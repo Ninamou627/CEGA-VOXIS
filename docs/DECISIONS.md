@@ -1532,6 +1532,106 @@ panne écartées, pente seulement au-delà de 3 minutes.
 - Les pages du tableau de bord sont vérifiées par les types, pas regardées à l'écran : il faut
   la connexion d'administration.
 
+## D42 — Le retard est borné sans rien sauter : un contrôleur par langue
+
+Septième correction de l'audit du 10/11/2026 (étape 2.2, défaut F-05).
+
+**Constat.** Depuis D32, plus rien ne bornait le retard en parole continue : le téléphone ne
+saute plus rien et n'accélère plus, et la voix ne rattrape que pendant les pauses de l'orateur.
+Dès que la voix dure plus que la parole (langue cible plus longue, orateur dense), la file des
+téléphones grandit sans fin, et personne n'en est prévenu.
+
+**Décision.**
+- *Un contrôleur par langue* (`pipeline/lagcontrol.ts`), nourri par la file estimée et par les
+  accusés. Le retard qu'il suit est celui de la file : combien de temps une voix prête maintenant
+  attendrait avant d'être entendue. Deux estimations, la plus grande l'emporte : le modèle du
+  serveur (chaque voix envoyée occupe la salle pendant sa durée) et les accusés des téléphones de
+  la langue (instant de l'accusé + leur file, médiane sur les 20 dernières secondes), qui voient
+  ce que le modèle ignore — pauses gardées, téléphone lent, nouvel essai de D40.
+  - Pourquoi la file et pas le décalage par mot (D41) : en phrases entières, le décalage par mot
+    contient le temps de dire la phrase (5 à 8 s aux essais), que ni le débit ni les pauses ne
+    rattrapent. Des paliers posés sur lui resserreraient sans raison.
+  - Le retard se juge quand une voix se prépare. Juste après l'envoi d'une voix, la file la
+    compte aussi : un relevé pris à cet instant dépasse d'une voix entière ce qu'attendra la
+    suivante (dents de scie). Seule une décision de segment peut donc monter d'un palier ; le
+    relevé de chaque seconde ne fait que descendre, quand la file se vide pendant un silence.
+- *Paliers*, avec 1 s d'hystérésis à la descente :
+  - sous 3 s : rien de plus que D26 ;
+  - dès 3 s : plus de pause gardée envoyée au téléphone, et la vitesse portée vers ×1,1 (par pas
+    de 0,05, D30 ; en vitesse fixe, ×1,1 aussitôt) ;
+  - dès 5 s : en plus, la formulation resserrée, si l'administration l'a permise ;
+  - dès 8 s : en plus, une alerte au formateur (bandeau : « La traduction a pris … de retard sur
+    vous … Marquez une pause de quelques secondes : la voix rattrape pendant vos silences, sans
+    rien sauter. ») et au tableau de bord (critique ; avertissement dès 5 s).
+- *Formulation resserrée*, un réglage de Configuration (« Formulation resserrée »), **éteint par
+  défaut**, impossible à allumer sans le moteur Claude. Au palier 2, Claude traduit le segment
+  une seconde fois, en parallèle, avec une consigne de concision : retirer hésitations, redites
+  et formules en trop, ne jamais perdre ni changer un fait, un nombre, un nom, une négation ou
+  une condition. La version resserrée a 1,5 s après la traduction normale pour arriver, puis un
+  garde-fou (`pipeline/tighten.ts`) la compare à la traduction normale, dans la même langue :
+  - plus courte d'au moins 3 %, et pas sous 40 % de la normale ;
+  - chaque nombre présent (en chiffres, ou en toutes lettres en français, anglais, espagnol et
+    portugais) ;
+  - chaque nom propre ou sigle présent ;
+  - chaque négation encore là, sur le même mot (le mot qu'elle porte dans sa proposition).
+  On compare des présences, pas des occurrences : une redite est justement ce qui doit tomber.
+  Sinon, la traduction normale part. Chaque essai se journalise (`tighten` : retenu ou motif du
+  refus, longueurs, ce qui a été vérifié).
+- *Visible* : palier et retard par langue dans le statut du pipeline (Supervision,
+  « Rattrapage »), changements de palier au journal (`lag.tier`), et sur chaque segment le
+  palier, le retard et s'il a été resserré.
+
+**Mesuré — en simulation seulement.** Le vrai pipeline, des moteurs simulés, et un téléphone
+simulé qui joue chaque voix à la suite de la précédente (pauses gardées comprises) et envoie ses
+accusés avec sa file. Parole dense : segments de 3 s, 150 ms de blanc. Cas d'effort : chaque voix
+dure 25 % de plus que la parole à ×1 — même à ×1,1, elle reste plus longue. La version
+resserrée simulée retire 2 mots sur 8 : une hypothèse, pas une mesure.
+
+| | Pente du décalage par mot | Retard maximal par mot | File maximale | Alerte (palier 3) |
+|---|---|---|---|---|
+| Réglage éteint, 10 min | +7,24 s/min | 75,5 s | 81,6 s | oui |
+| Réglage allumé, 30 min | −0,004 s/min (minutes 5 à 30) · +0,007 s/min (0 à 30) | 8,8 s (dès la minute 0 comme de 5 à 30) | 5,5 s | jamais |
+
+Avec le réglage allumé, 280 resserrages ont été demandés sur 569 segments. En retard,
+aucune pause gardée n'est envoyée ; la vitesse ne dépasse jamais ×1,1. Une version resserrée
+refusée par le garde-fou laisse partir la traduction normale : le retard grandit alors comme
+réglage éteint, et l'alerte part.
+
+Au regard de la cible de l'audit (sur 30 minutes de parole dense : pente entre −0,1 et
++0,1 s/min, retard maximal ≤ 8 s, 100 % des entités gardées) :
+- la pente est tenue ;
+- la file ne dépasse pas 5,5 s, mais le retard maximal *par mot* atteint 8,8 s : il
+  ajoute à la file le temps de dire le segment. Si la cible « ≤ 8 s » vise le décalage par mot,
+  elle n'est pas tenue dans ce cas d'effort. En phrases entières, une phrase de 10 s donne au
+  moins 11 s sur son premier mot, quoi que fasse le contrôleur : c'est l'étape 2.3 qui borne
+  cela ;
+- les entités : le garde-fou vérifie nombres, noms et négations, pas les faits qui n'en ont
+  pas ; aucune mesure sur de vraies traductions.
+
+**Vérifié.** 13 tests nouveaux : contrôleur (4 : paliers franchis, hystérésis, une langue
+indépendante de l'autre, relevé hors décision qui ne fait que descendre), fin de file des
+téléphones d'une langue lue dans leurs accusés (1), garde-fou (5 : version
+acceptée, nombre, nom ou négation perdus, négation qui change d'objet, nombres en toutes
+lettres et négations élidées, trop court ou pas plus court, nom passé en début de phrase),
+simulation (3 : réglage éteint, réglage allumé sur 30 minutes, version refusée). 313 tests sur
+313 ; types vérifiés (serveur, client, poste).
+
+**Limites.**
+- Réglage éteint (le défaut), le retard n'est pas borné dès que la voix dure plus d'environ
+  10 % de plus que la parole : ×1,1 ne compense pas au-delà. L'alerte le dit, le formateur peut
+  marquer une pause ; rien n'est sauté.
+- Le gain du resserrage sur une vraie parole n'est pas mesuré : ce que Claude retire vraiment,
+  et combien de versions le garde-fou refuse, restent à lire au journal (`tighten`) en séance.
+- Dans le cas d'effort, une version resserrée a été demandée pour près de la moitié des
+  segments (280 sur 569) : la salle entend alors souvent une formulation plus courte que la
+  traduction normale, et chaque demande coûte un second appel à Claude, retenu ou non.
+- Le garde-fou ne vérifie pas un fait sans nombre, sans nom et sans négation ; pas de contrôle
+  des noms en arabe (pas de majuscules), ni d'un nom en début de phrase de la traduction normale.
+- La file des téléphones est vue par leurs accusés : un téléphone qui n'en envoie plus ne compte
+  plus, et le modèle du serveur ignore les pauses gardées.
+- Rien n'est essayé en séance réelle, ni le bandeau du formateur ni l'alerte du tableau de bord
+  regardés à l'écran.
+
 ## Ce que six semaines (au lieu de 48 h) remettent sur la table
 
 Dans l'ordre de valeur : tests automatisés dès le départ (fait) ; multilingue réel

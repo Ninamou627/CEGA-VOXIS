@@ -57,6 +57,11 @@ export interface TempoInput {
   aheadMs: number;
   /** Réglage « Vitesse de la voix » de l'administration : multiplie le résultat et ses bornes. */
   preference: number;
+  /**
+   * La salle a 3 s de retard ou plus (D42, palier 1) : la vitesse visée est le plafond, ×1,1,
+   * toujours atteinte par pas de MAX_STEP pour ne pas s'entendre (D30).
+   */
+  catchUp?: boolean;
 }
 
 export interface TempoDecision {
@@ -87,7 +92,7 @@ export class Tempo {
     const budgetMs = Math.max(available * MIN_BUDGET_SHARE, available - DRAIN * Math.max(0, x.aheadMs));
     const needed = budgetMs > 0 ? predictedMs / budgetMs : 1;
     const lo = clamp(MIN_SPEED * x.preference, PROVIDER_MIN, MAX_SPEED);
-    const target = clamp(needed * x.preference, lo, MAX_SPEED);
+    const target = x.catchUp ? MAX_SPEED : clamp(needed * x.preference, lo, MAX_SPEED);
     const prev = this.last.get(lang);
     // Une prise de parole (ou le premier segment) repart près du milieu ; sinon, un petit pas.
     const window: [number, number] = x.gapMs == null || prev == null ? [TURN_MIN * x.preference, TURN_MAX * x.preference] : [prev - MAX_STEP, prev + MAX_STEP];

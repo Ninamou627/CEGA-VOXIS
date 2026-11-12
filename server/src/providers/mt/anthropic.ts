@@ -26,7 +26,7 @@ export interface AnthropicTuning {
 
 const LANG_NAME: Record<Lang, string> = { en: "English", fr: "French", es: "Spanish", ar: "Arabic", pt: "Portuguese" };
 
-export function buildSystemPrompt(from: Lang, to: Lang, glossary?: Record<string, string>, domain?: string): string {
+export function buildSystemPrompt(from: Lang, to: Lang, glossary?: Record<string, string>, domain?: string, concise = false): string {
   const lines = [
     `You are a professional simultaneous interpreter working in a training room. The speaker talks in ${LANG_NAME[from]}; the audience listens in ${LANG_NAME[to]} through earphones.`,
     `You receive the speech one short segment at a time. Each user message is the next segment; each of your replies is ONLY its ${LANG_NAME[to]} rendering.`,
@@ -40,6 +40,15 @@ export function buildSystemPrompt(from: Lang, to: Lang, glossary?: Record<string
     `- Produce well-punctuated ${LANG_NAME[to]} suitable for a text-to-speech voice.`,
     `- Never answer the speaker, never comment, never ask questions, never add quotes or brackets. If a segment is a fragment, render the fragment.`,
   ];
+  // Formulation resserrée (D42) : la salle a pris du retard, chaque seconde de voix compte.
+  if (concise)
+    lines.push(
+      ``,
+      `The audience is now several seconds behind the speaker. Render each segment as briefly as natural ${LANG_NAME[to]} allows:`,
+      `- Remove every hesitation, filler, repetition, self-correction and redundant phrase; prefer the shorter wording.`,
+      `- Never drop or change a fact, a number, a name, a negation or a condition. Keep every number exactly as in the original, in digits if spoken as digits.`,
+      `- If nothing can be removed without losing information, render the segment normally.`,
+    );
   if (domain) lines.push(``, `About this session (subject, audience, register):`, domain);
   if (glossary && Object.keys(glossary).length) {
     lines.push(``, `Glossary (always use these renderings):`);
@@ -82,7 +91,7 @@ export class AnthropicMt implements MtProvider {
       // La réflexion adaptative compte dans ce plafond (Opus 5.5 réfléchit toujours) :
       // 1024 évite de tronquer une traduction courte, sans rien coûter s'il n'est pas atteint.
       max_tokens: 1024,
-      system: [{ type: "text", text: buildSystemPrompt(req.from, req.to, req.glossary, req.domain), cache_control: { type: "ephemeral" } }],
+      system: [{ type: "text", text: buildSystemPrompt(req.from, req.to, req.glossary, req.domain, req.concise), cache_control: { type: "ephemeral" } }],
       messages,
     };
     // Chaque modèle ne reçoit que ce qu'il accepte : un paramètre refusé est un 400.
@@ -106,5 +115,10 @@ export class AnthropicMt implements MtProvider {
       .trim();
     if (!text) throw new Error("traduction vide");
     return text;
+  }
+
+  /** Formulation resserrée (D42) : la même traduction, consigne de concision en plus (son propre cache). */
+  tighten(req: MtRequest): Promise<string> {
+    return this.translate({ ...req, concise: true });
   }
 }

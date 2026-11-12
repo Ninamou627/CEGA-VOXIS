@@ -55,4 +55,17 @@ describe("indicateurs de premier rang en direct (D41)", () => {
     expect(m.snapshot().lagSlopeMsPerMin).toBe(594); // 100 ms pour 10,1 s entre deux écoutes
   });
 
+  it("dit quand les téléphones d'une langue auront fini leur voix", () => {
+    const m = new Metrics();
+    const t0 = 1_000_000;
+    heard(m, 1, t0, t0 + 3500, "a", "fr"); // file 3 s → libre à t0 + 6500
+    vi.setSystemTime(t0 + 3600);
+    m.ack("b", 1, t0 + 800, 5000, "fr"); // libre à t0 + 8600
+    vi.setSystemTime(t0 + 3700);
+    m.ack("c", 1, t0 + 800, 4000, "fr"); // libre à t0 + 7700
+    expect(m.phonesFreeAt("fr")).toBe(t0 + 7700);
+    expect(m.phonesFreeAt("es")).toBeNull();
+    vi.setSystemTime(t0 + 30_000);
+    expect(m.phonesFreeAt("fr")).toBeNull(); // plus aucun ack récent
+  });
 });

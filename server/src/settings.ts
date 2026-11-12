@@ -34,6 +34,7 @@ export function defaultsFrom(cfg: Config): Settings {
       glossary: Object.entries(cfg.MT_GLOSSARY)
         .map(([k, v]) => `${k} = ${v}`)
         .join("\n"),
+      tightenWhenLate: false,
     },
     speech: {
       inputGainDb: 0,

@@ -6,7 +6,8 @@
  * voix » (D19) n'est plus qu'un étage parmi les autres : il récompensait l'attente de phrases
  * entières. Le premier son d'une prise de parole reste donné à part.
  */
-import type { StatsPayload } from "../../../../shared/protocol";
+import type { Lang, LagState, StatsPayload } from "../../../../shared/protocol";
+import { LANGS } from "../../ui/langs";
 import { delay, perMin } from "../../ui/format";
 import { Sparkline } from "../../ui/Sparkline";
 import type { Sample } from "../types";
@@ -43,6 +44,12 @@ function Trend({
 }
 
 const toneOf = (v: number | null, warn: number, crit: number): Tone => (v == null ? "idle" : v > crit ? "crit" : v > warn ? "warn" : "ok");
+
+/** « FR 1 · 3,4 s » : palier et retard de file de chaque langue (D42). */
+function lagText(lag: Partial<Record<Lang, LagState>> | undefined): string {
+  const e = Object.entries(lag ?? {}) as [Lang, LagState][];
+  return e.length ? e.map(([l, s]) => `${LANGS[l].short} ${s.tier} · ${delay(s.retardMs)}`).join("  ") : "—";
+}
 
 /** Cibles de l'audit : décalage par mot p50 ≤ 4 s et p95 ≤ 6 s (mode progressif), retard ≤ 8 s, pente entre −0,1 et +0,1 s/min. */
 const WORD_LAG_OK_MS = 4000;
@@ -94,6 +101,11 @@ export function Trends({ history, stats }: { history: Sample[]; stats?: StatsPay
             hint: stats?.firstP50 != null ? `prise de parole : ${delay(stats.firstP50)} (${stats.firstN})` : "début du segment → son",
           },
           { k: "File du téléphone", v: stats?.queueMaxMs != null ? delay(stats.queueMaxMs) : "—", hint: "le plus en retard" },
+          {
+            k: "Rattrapage",
+            v: lagText(pl?.lag),
+            hint: "palier du contrôleur (D42) : 1 dès 3 s, 2 dès 5 s, 3 dès 8 s",
+          },
           { k: "Voix du formateur", v: stats?.uplinkP50Ms != null ? delay(stats.uplinkP50Ms) : "—", hint: "captée → reçue par le serveur" },
           { k: "Reconnaissance", v: sg?.endCommitP50 != null ? delay(sg.endCommitP50) : "—", hint: "fin de phrase → segment figé" },
           { k: "Retard du texte", v: sg?.sttLagP50 != null ? delay(sg.sttLagP50) : "—", hint: "mot prononcé → texte reçu" },

@@ -31,6 +31,8 @@ const KEEP_SEGMENTS = 500;
 const LAG_WINDOW_MS = 600_000;
 /** Sous 3 minutes de mesures, la pente ne dit rien (essai 8 rejoué : ± 1 s/min sur 1,5 min). */
 const SLOPE_MIN_SPAN_MIN = 3;
+/** Files signalées par les téléphones prises en compte par le contrôleur de retard (D42). */
+const QUEUE_RECENT_MS = 20_000;
 
 function percentile(values: number[], p: number): number | null {
   if (!values.length) return null;
@@ -88,7 +90,7 @@ export class Metrics {
   onFirstPlay?: (seq: number, at: number) => void;
   /** Seuil de « parole » (dBFS) : en dessous, le micro reçoit du silence. Réglable dans l'administration. */
   speechDb = -35;
-  private queues = new Map<string, { t: number; ms: number }>();
+  private queues = new Map<string, { t: number; ms: number; lang?: Lang }>();
   private mic: { t: number; db: number }[] = [];
   /** Dernier relevé de captation envoyé par la page formateur (D34). */
   private captureAt: { t: number; ratio: number } | null = null;
@@ -135,6 +137,17 @@ export class Metrics {
     this.outages = this.outages.filter((o) => o.to >= now - LAG_WINDOW_MS);
   }
 
+  /**
+   * Quand les téléphones d'une langue auront fini la voix qu'ils ont reçue : médiane, sur les
+   * acks des 20 dernières secondes, de « instant de l'ack + file du téléphone » (D42). Null sans ack
+   * récent. La file d'un téléphone compte le segment qui vient de démarrer.
+   */
+  phonesFreeAt(lang: Lang): number | null {
+    const now = Date.now();
+    const v = [...this.queues.values()].filter((q) => q.lang === lang && q.t >= now - QUEUE_RECENT_MS).map((q) => q.t + q.ms);
+    return percentile(v, 50);
+  }
+
   /** Ack d'un client : début de lecture effectif d'un segment. `lang` : la langue qu'il écoute. */
   ack(participantId: string, seq: number, tOrigin: number, queueMs: number, lang?: Lang): AckLatency {
     const now = Date.now();
@@ -164,7 +177,7 @@ export class Metrics {
       if (known.turnStart) this.first.push({ t: now, ms: startMs! });
       this.onFirstPlay?.(seq, now);
     }
-    this.queues.set(participantId, { t: now, ms: queueMs });
+    this.queues.set(participantId, { t: now, ms: queueMs, lang });
     this.event("ack", { participantId, seq, lang: lang ?? null, e2eMs, endMs, startMs, queueMs, wordLagMs: wordLag?.mean ?? null, wordLagMaxMs: wordLag?.max ?? null });
     return { e2eMs, endMs, startMs, wordLag };
   }
