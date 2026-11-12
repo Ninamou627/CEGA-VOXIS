@@ -13,6 +13,9 @@
  *                      tgt  — traduction, fichier de sa voix, durée
  *                      play — premier téléphone qui commence à le jouer
  *   0001-fr.mp3 …    la voix de chaque segment, telle que diffusée
+ *   stt.jsonl        tout ce que le STT a envoyé, tel quel : hypothèses, textes définitifs, fins
+ *                    de tour, tours écartés — `npm run gate` rejoue le découpage dessus (D36) ;
+ *                    et le début de chaque flux, avec le contexte qui lui a été rejoué (D37)
  *   session.json     repères de temps, écrit à l'arrêt
  *
  * Tous les instants sont en ms depuis le début de source.wav. Les mots du STT y sont placés
@@ -46,6 +49,13 @@ export interface RecordedVoice {
   mime: string;
   durMs: number;
   bytes: Uint8Array;
+}
+
+/** Un message du STT : hypothèse du tour, texte définitif, fin de tour ou tour écarté. */
+export interface RecordedTurn {
+  stream: number;
+  kind: "partial" | "final" | "end" | "discard";
+  words: Word[];
 }
 
 export class SessionRecorder {
@@ -97,10 +107,18 @@ export class SessionRecorder {
     if (!last || at - last[0] >= MARK_EVERY_MS) this.marks.push([at, Math.round(this.ms)]);
   }
 
-  /** Un flux STT s'ouvre : ses horodatages partent de la position courante. */
-  stream(n: number): void {
+  /**
+   * Un flux STT s'ouvre : ses horodatages partent de la position courante, moins le contexte
+   * rejoué en tête (D37), qui est la fin de ce qui est déjà enregistré. Au premier flux d'un
+   * enregistrement, ce contexte vient de la prise d'avant (liaison reprise, D35) : ses mots ont
+   * des positions négatives, avant le début de source.wav.
+   */
+  stream(n: number, warmupMs = 0, at = Date.now()): void {
     if (this.fd == null) return;
-    this.streams.set(n, this.ms);
+    const offset = this.ms - warmupMs;
+    this.streams.set(n, offset);
+    // De quoi rejouer le découpage (D36) : où le flux commence, et sa part de contexte rejoué (D37).
+    this.line({ kind: "stream", stream: n, atMs: this.toMs(at), offsetMs: Math.round(offset), warmupMs: Math.round(warmupMs) }, "stt.jsonl");
   }
 
   segment(s: RecordedSegment): void {
@@ -120,6 +138,22 @@ export class SessionRecorder {
       words,
       prosody: s.prosody ?? null,
     });
+  }
+
+  /**
+   * Ce que le STT vient d'envoyer, tel quel. Les segments ne gardent que ce que le découpage a
+   * retenu : sans les hypothèses, impossible de dire après coup si un mot manquant n'a jamais
+   * été reconnu ou s'il s'est perdu au découpage (D36).
+   */
+  turn(h: RecordedTurn, at = Date.now()): void {
+    const offset = this.streams.get(h.stream);
+    if (offset == null) return;
+    const words = h.words.map((w) => ({
+      text: w.text,
+      ...(w.startMs != null && w.endMs != null ? { startMs: Math.round(offset + w.startMs), endMs: Math.round(offset + w.endMs) } : {}),
+      ...(w.isFinal ? { isFinal: true } : {}),
+    }));
+    this.line({ kind: h.kind, stream: h.stream, atMs: this.toMs(at), words }, "stt.jsonl");
   }
 
   voice(v: RecordedVoice, at = Date.now()): void {
@@ -162,8 +196,8 @@ export class SessionRecorder {
     return Math.round(mark[1] + (at - mark[0]));
   }
 
-  private line(o: object): void {
+  private line(o: object, file = "segments.jsonl"): void {
     if (!this.dir) return;
-    appendFileSync(path.join(this.dir, "segments.jsonl"), JSON.stringify(o) + "\n");
+    appendFileSync(path.join(this.dir, file), JSON.stringify(o) + "\n");
   }
 }

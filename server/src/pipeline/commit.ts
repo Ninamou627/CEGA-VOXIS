@@ -21,6 +21,10 @@
  * Chaque segment est daté deux fois : `tOrigin`, première apparition de son premier mot,
  * et `tEnd`, instant où son dernier mot a fini d'être prononcé — le départ de la latence
  * qui valide le projet (D19).
+ *
+ * Le STT renvoie le tour entier à chaque message et le révise. Les mots figés ne se retrouvent
+ * donc pas par leur rang, mais par alignement sur le début de la nouvelle hypothèse (D36,
+ * `alignedEnd`).
  */
 import type { Word } from "../providers/types";
 
@@ -127,6 +131,32 @@ export interface GateResult {
 const SAME_WORD_MS = 250;
 /** Mots envoyés gardés en mémoire : largement de quoi couvrir un tour repris. */
 const SENT_KEPT = 60;
+/**
+ * Contexte rejoué à une nouvelle session STT (D37) : autour du dernier mot parti, l'instant seul
+ * ne sépare pas un mot déjà dit d'un mot nouveau, même une fois les deux sessions recalées
+ * (`REPLAY_DRIFT_MS`). La fin d'un mot provisoire déborde jusqu'à ~0,6 s sur la suite (D22, D25),
+ * ce qui retarde son milieu de ~0,3 s, et deux sessions ne coupent pas deux mots au même endroit.
+ * Dans cette marge, de part et d'autre du milieu du dernier mot parti, un mot n'est tenu pour déjà
+ * dit que si la nouvelle session y rend le texte d'un mot parti.
+ */
+const REPLAY_MARGIN_MS = 400;
+/**
+ * Deux sessions STT ne datent pas au même endroit les mots du contexte rejoué (D37). Mesuré le
+ * 12/11/2026 sur la fixture, à la jonction : la session tombée avait étalé ses derniers mots vers
+ * l'arrière, dans la pause qui les précédait (« Its » 1,2 s trop tôt) ; la nouvelle avait tassé ses
+ * premiers mots vers le début du contexte (« is » 1,1 s trop tôt). D'une session à l'autre, un même
+ * mot s'est déplacé de 0,6 à 1,1 s, et « is », dit après le dernier mot parti, semblait le précéder
+ * de 0,7 s : il était perdu. Un mot que les deux sessions rendent, même texte, dans l'ordre, à moins
+ * de cet écart, les recale l'une sur l'autre ; tant qu'aucun ne l'a fait, un mot n'est tenu pour
+ * déjà dit par l'instant seul qu'à plus de cet écart avant le dernier mot parti.
+ */
+const REPLAY_DRIFT_MS = 1500;
+/**
+ * Le contexte rejoué commence où il peut, souvent au milieu d'un mot : la nouvelle session en
+ * rend un bout (« ree » pour « three »), au texte différent. Un mot qui commence dans ses 300
+ * premières ms et dont le milieu précède celui du dernier mot parti est ce mot coupé.
+ */
+const REPLAY_CUT_MS = 300;
 
 const TERMINAL = /[.!?…]["»)\]]?$/;
 const CLAUSE = /[,;:]["»)\]]?$/;
@@ -151,10 +181,76 @@ export function joinWords(words: Word[]): string {
   return words.map((w) => w.text).join(" ");
 }
 
+/**
+ * Où s'arrêtent, dans une nouvelle hypothèse, les mots déjà figés (D36) : le rang du premier mot
+ * qui ne l'est pas encore. `done` et `hyp` sont des mots sous leur forme comparée (`normalize`).
+ *
+ * Tant que le STT ne touche pas à ce qui est figé, c'est le nombre de mots figés. Mais il révise
+ * le tour entier à chaque message : un mot retiré, ajouté ou fusionné en amont (« twenty five »
+ * → « 25 » au texte définitif) décale tous les rangs suivants. Repérés par leur rang, un mot
+ * retiré faisait perdre le mot suivant, un mot inséré en faisait redire un, un texte définitif
+ * plus court faisait perdre le dernier mot — reproduit le 10/11/2026. Les mots figés sont donc
+ * alignés sur le début de l'hypothèse (distance d'édition), et l'on reprend après le dernier.
+ *
+ * Entre deux alignements de même coût, on retient celui où le dernier mot figé se retrouve tel
+ * quel, puis le plus proche du nombre de mots figés, puis le plus court : dans le doute, mieux
+ * vaut redire un mot que d'en perdre un. `cost` : mots figés que l'hypothèse contredit.
+ */
+export function alignedEnd(done: readonly string[], hyp: readonly string[]): { end: number; cost: number } {
+  const m = done.length;
+  const n = hyp.length;
+  if (!m) return { end: 0, cost: 0 };
+  // Cas ordinaire : l'hypothèse commence par les mots figés, tels quels.
+  let same = n >= m;
+  for (let i = 0; same && i < m; i++) same = done[i] === hyp[i];
+  if (same) return { end: m, cost: 0 };
+
+  // row[j] : coût d'aligner les mots figés lus jusqu'ici sur hyp[0..j).
+  let row: number[] = Array.from({ length: n + 1 }, (_, j) => j);
+  for (let i = 1; i <= m; i++) {
+    const next: number[] = [i];
+    for (let j = 1; j <= n; j++) {
+      next[j] = Math.min(row[j - 1] + (done[i - 1] === hyp[j - 1] ? 0 : 1), row[j] + 1, next[j - 1] + 1);
+    }
+    row = next;
+  }
+  const cost = Math.min(...row);
+  let end = -1;
+  let endOnLast = false;
+  for (let j = 0; j <= n; j++) {
+    if (row[j] !== cost) continue;
+    const onLast = j > 0 && hyp[j - 1] === done[m - 1];
+    if (end < 0 || (onLast && !endOnLast) || (onLast === endOnLast && Math.abs(j - m) < Math.abs(end - m))) {
+      end = j;
+      endOnLast = onLast;
+    }
+  }
+  return { end, cost };
+}
+
+/** Révisions du STT relevées par le découpage : ce que le rang seul aurait faussé (D36). */
+export interface GateRevisions {
+  /** Fois où un mot retiré ou ajouté en amont a décalé les rangs. */
+  shifts: number;
+  /** Mots de décalage cumulés. */
+  shiftedWords: number;
+  /** Mots figés que le texte définitif du tour a contredits (remplacés, retirés ou précédés d'un ajout). */
+  contradicted: number;
+}
+
 export class CommitGate {
   private prev: Word[] = [];
-  /** Nombre de mots figés dans l'énoncé courant (flushés + en tampon). */
-  private committedCount = 0;
+  /** `prev` sous sa forme comparée (`normalize`), mot par mot. */
+  private prevKeys: string[] = [];
+  /**
+   * Mots figés de l'énoncé courant (partis ou en tampon), sous leur forme comparée : le repère
+   * qui dit, dans chaque nouvelle hypothèse, où reprendre (`alignedEnd`). On n'y ajoute qu'à la
+   * fin : une hypothèse qui raccourcit un instant ne fait pas redire ce qu'elle a retiré.
+   */
+  private done: string[] = [];
+  /** Rang de reprise moins nombre de mots figés : non nul dès que le STT a retiré ou ajouté un mot en amont. */
+  private offset = 0;
+  private revisions: GateRevisions = { shifts: 0, shiftedWords: 0, contradicted: 0 };
   /** Mots figés pas encore partis, avec leur position dans l'énoncé (`i`). */
   private buf: { w: Word; i: number }[] = [];
   private bufStartedAt = 0;
@@ -191,17 +287,25 @@ export class CommitGate {
   }
   /** Mots de l'énoncé courant pas encore partis en segment, hypothèse non figée comprise. */
   get unsentCount(): number {
-    return Math.max(0, this.prev.length - (this.committedCount - this.buf.length));
+    return Math.max(0, this.prev.length - (this.done.length - this.buf.length));
+  }
+
+  /** Révisions du STT depuis le dernier relevé ; le compteur repart de zéro. */
+  takeRevisions(): GateRevisions {
+    const r = this.revisions;
+    this.revisions = { shifts: 0, shiftedWords: 0, contradicted: 0 };
+    return r;
   }
 
   /** Nouvelle hypothèse partielle (complète) de l'énoncé courant. */
   onPartial(words: Word[]): GateResult {
     const t = this.now();
     this.noteFirstSeen(words, t);
+    const keys = words.map((w) => normalize(w.text));
 
     let agree = 0;
-    const n = Math.min(this.prev.length, words.length);
-    while (agree < n && normalize(this.prev[agree].text) === normalize(words[agree].text)) agree++;
+    const n = Math.min(this.prevKeys.length, keys.length);
+    while (agree < n && this.prevKeys[agree] === keys[agree]) agree++;
 
     let stable = this.cfg.agreement ? agree : 0;
     if (this.cfg.holdLastWord) stable = Math.min(stable, words.length - 1);
@@ -213,22 +317,21 @@ export class CommitGate {
     while (providerFinal < words.length && words[providerFinal].isFinal) providerFinal++;
     if (providerFinal > stable) stable = providerFinal;
 
-    if (stable > this.committedCount) {
+    const from = this.resume(keys);
+    if (stable > from) {
       // On prend la forme de surface la plus récente (ponctuation à jour), pas celle de prev.
-      this.push(words.slice(this.committedCount, stable), this.committedCount, t);
-      this.committedCount = stable;
+      this.push(words.slice(from, stable), from, t);
     }
     this.prev = words;
+    this.prevKeys = keys;
     return { hypothesis: joinWords(words), segments: this.drain() };
   }
 
   /** Endpointing du fournisseur : tout ce qui reste de l'énoncé est figé et envoyé. */
   onUtteranceEnd(): Segment[] {
     const t = this.now();
-    if (this.prev.length > this.committedCount) {
-      this.push(this.prev.slice(this.committedCount), this.committedCount, t);
-      this.committedCount = this.prev.length;
-    }
+    const from = this.resume(this.prevKeys);
+    if (this.prev.length > from) this.push(this.prev.slice(from), from, t);
     const segs = this.drain("silence");
     this.reset();
     return segs;
@@ -238,10 +341,8 @@ export class CommitGate {
   onFinal(words: Word[]): Segment[] {
     const t = this.now();
     this.noteFirstSeen(words, t);
-    if (words.length > this.committedCount) {
-      this.push(words.slice(this.committedCount), this.committedCount, t);
-      this.committedCount = words.length;
-    }
+    const from = this.resume(words.map((w) => normalize(w.text)), true);
+    if (words.length > from) this.push(words.slice(from), from, t);
     const segs = this.drain("final");
     this.reset();
     return segs;
@@ -252,9 +353,70 @@ export class CommitGate {
     this.reset();
   }
 
-  /** Nouveau flux STT : ses horodatages repartent de zéro. */
-  newStream(): void {
+  /**
+   * Nouveau flux STT : ses horodatages repartent de zéro. `replayed` : il reçoit d'abord ce que
+   * le flux précédent n'avait pas rendu, précédé de quelques secondes de contexte (D37) ; ce que
+   * celui-là avait fait partir ne repart pas. Sans contexte rejoué, rien ne relie les deux flux.
+   */
+  newStream(replayed = false): void {
     this.sent = [];
+    this.replayNext = 0;
+    this.replayShift = undefined;
+    if (replayed) {
+      this.replayedUntil = this.lastSentMid;
+      // Une copie : ce que ce flux fera partir n'est pas ce qu'il réentend.
+      this.replayTail = [...this.spoken];
+      return;
+    }
+    this.spoken = [];
+    this.lastSentMid = undefined;
+    this.replayedUntil = undefined;
+    this.replayTail = [];
+  }
+
+  /**
+   * Mots partis datés à l'heure réelle (milieu prononcé, forme comparée), et le milieu du dernier
+   * (D37) : ce qui relie deux flux STT quand le second reçoit les dernières secondes du premier.
+   */
+  private spoken: { key: string; mid: number }[] = [];
+  private lastSentMid?: number;
+  /** Milieu du dernier mot parti avant le flux courant, quand celui-ci a reçu un contexte rejoué. */
+  private replayedUntil?: number;
+  /** Mots partis avant le flux courant, quand il a reçu un contexte rejoué : ce que la nouvelle session réentend. */
+  private replayTail: { key: string; mid: number }[] = [];
+  /** Rang, dans `replayTail`, du mot qui suit le dernier que la nouvelle session a rendu. */
+  private replayNext = 0;
+  /** Datation de l'ancienne session moins celle de la nouvelle, au dernier mot rendu par les deux. */
+  private replayShift?: number;
+
+  /**
+   * Déjà parti avant ce flux : un mot du contexte rejoué (D37). La nouvelle session réentend les
+   * derniers mots partis : chacun qu'elle rend, même texte, dans l'ordre, ne repart pas, et l'écart
+   * entre ses deux datations recale les mots suivants (`REPLAY_DRIFT_MS`). Un mot qu'elle n'a pas
+   * retrouvé est jugé à l'instant, recalé : bien avant le dernier mot parti, c'est un mot déjà dit,
+   * entendu autrement (« fifteen hundred » pour « 1,500 ») ; près de lui ou après, il part — dans le
+   * doute, mieux vaut redire un mot que d'en perdre un. Ne repartent pas non plus le bout de mot
+   * coupé au début du contexte, ni un mot relu au même endroit qu'un mot parti (D22).
+   */
+  private saidBefore(w: Word): boolean {
+    const until = this.replayedUntil;
+    if (until == null || w.startMs == null || w.endMs == null) return false;
+    const mid = this.timing?.spokenAt((w.startMs + w.endMs) / 2);
+    if (mid == null) return false;
+    // Daté comme l'ancienne session l'aurait fait, d'après le dernier mot rendu par les deux.
+    const at = mid + (this.replayShift ?? 0);
+    if (at > until + REPLAY_MARGIN_MS) return false;
+    if (w.startMs < REPLAY_CUT_MS && mid <= until) return true;
+    const key = normalize(w.text);
+    const tail = this.replayTail;
+    for (let i = this.replayNext; i < tail.length; i++) {
+      if (tail[i].key !== key || Math.abs(tail[i].mid - at) > REPLAY_DRIFT_MS) continue;
+      this.replayNext = i + 1;
+      this.replayShift = tail[i].mid - mid;
+      return true;
+    }
+    if (tail.some((s) => s.key === key && Math.abs(s.mid - at) < SAME_WORD_MS)) return true;
+    return at <= until - (this.replayShift != null ? REPLAY_MARGIN_MS : REPLAY_DRIFT_MS);
   }
 
   /** Ce mot est-il déjà parti (même texte, au même endroit de l'audio) ? */
@@ -288,10 +450,30 @@ export class CommitGate {
     for (let i = this.firstSeen.length; i < words.length; i++) this.firstSeen[i] = t;
   }
 
+  /**
+   * Rang, dans une hypothèse, du premier mot pas encore figé (`alignedEnd`), et relevé des
+   * révisions du STT : un décalage ne compte que s'il reste des mots après la reprise — une
+   * hypothèse plus courte que les mots figés n'a rien à couper. `final` : texte définitif du
+   * tour, dont le désaccord avec les mots figés est compté.
+   */
+  private resume(keys: string[], final = false): number {
+    const { end, cost } = alignedEnd(this.done, keys);
+    const offset = end - this.done.length;
+    if (end < keys.length && offset !== this.offset) {
+      this.revisions.shifts++;
+      this.revisions.shiftedWords += Math.abs(offset - this.offset);
+      this.offset = offset;
+    }
+    if (final) this.revisions.contradicted += cost;
+    return end;
+  }
+
   private push(words: Word[], firstIdx: number, t: number) {
     words.forEach((w, k) => {
-      // Déjà parti dans un segment : jamais deux fois aux apprenants.
-      if (this.alreadySent(w)) return;
+      // Figé, qu'il parte ou non : la prochaine hypothèse reprendra après lui.
+      this.done.push(normalize(w.text));
+      // Déjà parti dans un segment, de ce flux ou du précédent : jamais deux fois aux apprenants.
+      if (this.alreadySent(w) || this.saidBefore(w)) return;
       if (!this.buf.length) {
         this.bufStartedAt = t;
         this.bufOrigin = this.firstSeen[firstIdx + k] ?? t;
@@ -344,8 +526,17 @@ export class CommitGate {
     const startPos = words[0].startMs != null ? (this.timing?.speechStart?.(words[0].startMs) ?? words[0].startMs) : undefined;
     const started = startPos != null ? this.timing?.spokenAt(startPos) : undefined;
     const tStart = Math.min(started ?? this.bufOrigin, tEnd);
-    for (const w of words) if (w.startMs != null && w.endMs != null) this.sent.push(w);
+    for (const w of words) {
+      if (w.startMs == null || w.endMs == null) continue;
+      this.sent.push(w);
+      // À l'heure réelle, pour le flux suivant s'il reçoit ces secondes en contexte (D37).
+      const mid = this.timing?.spokenAt((w.startMs + w.endMs) / 2);
+      if (mid == null) continue;
+      this.spoken.push({ key: normalize(w.text), mid });
+      if (this.lastSentMid == null || mid > this.lastSentMid) this.lastSentMid = mid;
+    }
     if (this.sent.length > SENT_KEPT) this.sent.splice(0, this.sent.length - SENT_KEPT);
+    if (this.spoken.length > SENT_KEPT) this.spoken.splice(0, this.spoken.length - SENT_KEPT);
     const seg: Segment = { text: joinWords(words), words, tOrigin: this.bufOrigin, tEnd, tEndExact: spoken != null, tStart, startPos, endPos, reason };
     if (this.buf.length) {
       this.bufOrigin = this.firstSeen[this.buf[0].i] ?? this.now();
@@ -356,7 +547,9 @@ export class CommitGate {
 
   private reset() {
     this.prev = [];
-    this.committedCount = 0;
+    this.prevKeys = [];
+    this.done = [];
+    this.offset = 0;
     this.buf = [];
     this.firstSeen = [];
     this.holdUntil = 0;

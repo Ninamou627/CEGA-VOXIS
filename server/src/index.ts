@@ -141,8 +141,9 @@ if (recorder) {
     if (on) recorder.start();
     else stopTimer = setTimeout(() => recorder.stop(), 15_000);
   });
-  pipeline.on("stt.stream", ({ stream }) => recorder.stream(stream));
+  pipeline.on("stt.stream", ({ stream, warmupMs }) => recorder.stream(stream, warmupMs));
   pipeline.on("stt.audio", ({ pcm }) => recorder.audio(pcm));
+  pipeline.on("stt.turn", (e) => recorder.turn(e));
   pipeline.on("src.commit", (e) => recorder.segment(e));
   pipeline.on("audio", (e) => recorder.voice(e));
   metrics.onFirstPlay = (seq, at) => recorder.played(seq, at);
@@ -242,7 +243,10 @@ const logged = { loopLagMaxMs: 0, sttBacklogMaxMs: 0 };
  * ne sont pas des pannes de fournisseur.
  */
 setInterval(() => {
-  if (pipeline.isStarted) metrics.event("health", { loopLagMaxMs: Math.round(logged.loopLagMaxMs), sttBacklogMaxMs: logged.sttBacklogMaxMs });
+  if (pipeline.isStarted) {
+    const s = metrics.snapshot();
+    metrics.event("health", { loopLagMaxMs: Math.round(logged.loopLagMaxMs), sttBacklogMaxMs: logged.sttBacklogMaxMs, uplinkP50Ms: s.uplinkP50Ms, audioGapMs: s.audioGapMs, buffered: pipeline.audio.buffered });
+  }
   logged.loopLagMaxMs = 0;
   logged.sttBacklogMaxMs = 0;
 }, 5000).unref();
@@ -275,6 +279,10 @@ app.get("/api/health", async () => ({
     wsBinaryFrames: binaryFrames,
     received: pipeline.audio.received,
     forwarded: pipeline.audio.forwarded,
+    duplicates: pipeline.audio.duplicates,
+    missing: pipeline.audio.missing,
+    buffered: pipeline.audio.buffered,
+    droppedMs: pipeline.audio.dropped,
     bytes: pipeline.audio.bytes,
     lastFrameAgoMs: pipeline.audio.lastAt ? Date.now() - pipeline.audio.lastAt : null,
     sttOpen: pipeline.sttOpen,
@@ -337,7 +345,8 @@ if (startWarning) app.log.warn(startWarning);
 for (const sig of ["SIGINT", "SIGTERM"] as const) {
   process.on(sig, async () => {
     app.log.info("arrêt…");
-    await pipeline.stop().catch(() => {});
+    // Sans attendre le retard du STT (D37) : Docker tue le serveur 10 s après SIGTERM.
+    await pipeline.stop({ drain: false }).catch(() => {});
     recorder?.stop();
     totals.close();
     metrics.close();

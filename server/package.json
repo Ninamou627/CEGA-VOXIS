@@ -15,6 +15,7 @@
     "load": "tsx scripts/load.ts",
     "report": "tsx scripts/report.ts",
     "prosody": "tsx scripts/prosody.ts",
+    "gate": "tsx scripts/gate.ts",
     "cert:dev": "tsx scripts/dev-cert.ts",
     "cert:domain": "tsx scripts/domain-cert.ts"
   },

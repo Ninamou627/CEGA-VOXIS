@@ -70,6 +70,9 @@ export class Metrics {
   private mic: { t: number; db: number }[] = [];
   /** Dernier relevé de captation envoyé par la page formateur (D34). */
   private captureAt: { t: number; ratio: number } | null = null;
+  /** Retard montant de chaque trame datée, et son manquant constaté à l'arrivée (D37). */
+  private uplinks: { t: number; ms: number }[] = [];
+  private gaps: { t: number; ms: number }[] = [];
   private lastSpeechAt: number | null = null;
   readonly startedAt = Date.now();
   /** Démarrage du micro en cours : le silence se compte à partir de là, pas du lancement du serveur. */
@@ -141,9 +144,23 @@ export class Metrics {
     this.stages[name].push({ t: Date.now(), ms });
   }
 
+  /** Une trame datée est arrivée `ms` après sa captation (D37). Une trame sur vingt suffit à la médiane. */
+  uplink(ms: number): void {
+    if (this.uplinkSkip++ % 20) return;
+    this.uplinks.push({ t: Date.now(), ms });
+  }
+  private uplinkSkip = 0;
+
+  /** Des trames numérotées manquent à l'arrivée : `ms` de son jamais reçu (D37). */
+  audioGap(ms: number): void {
+    this.gaps.push({ t: Date.now(), ms });
+  }
+
   micReset(): void {
     this.mic = [];
     this.captureAt = null;
+    this.uplinks = [];
+    this.gaps = [];
     this.lastSpeechAt = null;
     this.micStartedAt = Date.now();
   }
@@ -194,6 +211,8 @@ export class Metrics {
       micSilentS: recent.length ? Math.round((now - (this.lastSpeechAt ?? this.micStartedAt)) / 1000) : null,
       // Un relevé toutes les 5 s : au-delà de 15 s sans relevé, on ne sait plus.
       micCapture: this.captureAt && now - this.captureAt.t < 15_000 ? Math.round(this.captureAt.ratio * 100) / 100 : null,
+      uplinkP50Ms: percentile((this.uplinks = this.uplinks.filter((u) => u.t >= cutoff)).map((u) => u.ms), 50),
+      audioGapMs: (this.gaps = this.gaps.filter((g) => g.t >= cutoff)).reduce((a, g) => a + g.ms, 0),
       uptimeS: Math.round((now - this.startedAt) / 1000),
     };
   }

@@ -5,6 +5,7 @@
  * de diffusion est garanti, et un retard se voit immédiatement dans `backlog` au lieu
  * de se cacher dans de la concurrence. C'est aussi une contre-pression naturelle.
  */
+import type { MicFrameInfo } from "../../../shared/framing";
 import type { DegradedMode, Lang, PipelineStatus } from "../../../shared/protocol";
 import type { Metrics } from "../metrics";
 import type { Providers, SttStream, Word } from "../providers/types";
@@ -129,6 +130,56 @@ const WARM_EVERY_MS = 5000;
  * la salle n'entend plus rien, et ce qui compte est le temps avant le premier son.
  */
 const TURN_GAP_MS = 1500;
+/**
+ * Audio gardé en attendant que le STT (r)ouvre, ou que la page réadmise renvoie son tampon de
+ * 30 s (D37). Mesuré le 11/11/2026 : une panne de 20 s du STT ne le rouvre qu'après 25 s (recul
+ * 1, 2, 4, 8 s) ; 15 s en jetaient 10. Au-delà, c'est une panne, et le plus ancien cède la place.
+ */
+const PENDING_MAX_MS = 40_000;
+/**
+ * Relève de la session STT (D37). AssemblyAI ferme une session au bout de 3 h (3008), au milieu
+ * d'une phrase s'il le faut, et ce qu'il n'avait pas encore rendu est perdu. Passé 2 h 50, la
+ * session est remplacée pendant une pause où plus rien n'attend : rien en vol, rien à perdre.
+ */
+const STT_ROTATE_AFTER_MS = 170 * 60_000;
+const ROTATE_PAUSE_MS = 600;
+const ROTATE_RETRY_MS = 60_000;
+/**
+ * Contexte rejoué à une nouvelle session STT en cours de captation, avant ce que la précédente
+ * n'avait pas rendu (D37). Mesuré le 11/11/2026 :
+ * une session neuve qui commence sur « liters per minute at 1,500 revolutions per minute » y
+ * entend du français (confiance 0,81) et le garde-fou de langue écarte la phrase ; précédée des
+ * 2 à 3 s d'avant, elle entend de l'anglais et rend la phrase entière. Les mots de ce contexte,
+ * déjà partis, ne repartent pas (`CommitGate.saidBefore`).
+ */
+const WARMUP_MS = 3000;
+/**
+ * Ce qu'une nouvelle session reçoit de la précédente, au plus (D37) : la parole que celle-ci
+ * n'avait pas encore rendue, précédée de `WARMUP_MS` de contexte. Mesuré le 11/11/2026 : une
+ * session coupée du réseau à 30 s n'avait pas rendu ses 3,5 dernières secondes ; les 3 s
+ * rejouées n'en couvraient que la fin, sans amorce en anglais, et 9 mots se sont perdus
+ * (« A10VSO, and it was installed on March 14, 2019. »). Le même jour, une liaison figée vers
+ * le STT a retenu jusqu'à 30 s d'audio dans la connexion. Au-delà de 40 s, le plus ancien cède.
+ */
+const REPLAY_MAX_MS = 40_000;
+/**
+ * Arrêt du micro : ce que le STT a reçu sans l'avoir encore rendu arrive encore, et part (D37).
+ * Mesuré le 11/11/2026 sur AssemblyAI U3.5 Pro : après `Terminate`, il rend tout ce qu'il a reçu,
+ * au rythme où il le transcrit, puis envoie `Termination` — le dernier tour 0,2 s après Terminate
+ * en temps réel, 21,5 s après une rafale de 30 s. Fermé en 200 ms, le flux perdait ce retard : la
+ * fin du texte quand le formateur s'arrêtait peu après une coupure de 20 s.
+ *
+ * L'attente est bornée par ce qui reste à entendre — l'audio envoyé au-delà du dernier mot rendu
+ * et du silence qui le suit, au rythme du temps réel (le STT rattrape plus vite : ×1,2 à 1,3
+ * mesuré) — plus une marge.
+ */
+const DRAIN_MARGIN_MS = 5000;
+const DRAIN_MAX_MS = 60_000;
+/**
+ * Relève (D37) : le STT doit avoir rendu la parole d'avant la pause, sinon l'ancienne session
+ * emporterait ce retard. Ses fins de mots précèdent de peu la fin d'énergie que voit `PauseDetector`.
+ */
+const CAUGHT_UP_SLACK_MS = 1500;
 
 export interface PipelineEvents extends Record<string, unknown> {
   "src.partial": { text: string };
@@ -152,9 +203,18 @@ export interface PipelineEvents extends Record<string, unknown> {
   /** Le micro du formateur démarre ou s'arrête. */
   mic: { on: boolean };
   /** Un flux STT vient de s'ouvrir : ses horodatages partent de la prochaine trame. */
-  "stt.stream": { stream: number };
+  /**
+   * `warmupMs` : audio rejoué en tête du flux — ce que le flux d'avant n'avait pas rendu, et son
+   * contexte —, la fin de ce qui est déjà enregistré (D37).
+   */
+  "stt.stream": { stream: number; warmupMs: number };
   /** Une trame transmise au STT, telle quelle. */
   "stt.audio": { pcm: Uint8Array };
+  /**
+   * Ce que le STT vient d'envoyer, tel quel (enregistreur) : hypothèse du tour, texte définitif,
+   * fin de tour ou tour écarté. De quoi rejouer le découpage hors ligne, mot pour mot (D36).
+   */
+  "stt.turn": { stream: number; kind: "partial" | "final" | "end" | "discard"; words: Word[] };
   "tr.segment": { seq: number; lang: Lang; text: string; srcSeq: number; untranslated?: boolean };
   audio: {
     seq: number;
@@ -183,6 +243,12 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
   /** La pause en cours a déjà servi à clore un tour. */
   private forcedThisPause = false;
   private stt?: SttStream;
+  /** Flux du formateur qui s'arrête, le temps qu'il rende son retard (`DRAIN_*`) : ses tours comptent encore. */
+  private draining?: SttStream;
+  /** Fin du dernier mot rendu par le flux (ms du flux) : jusqu'où le STT a entendu. */
+  private heardMs = 0;
+  /** Le même, prolongé du silence qui suit ce mot (`heardThrough`). */
+  private heardThroughMs = 0;
   private seq = 0;
   private muted = false;
   private tickTimer?: NodeJS.Timeout;
@@ -274,6 +340,12 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
   async start(): Promise<void> {
     if (this.started) return;
     this.started = true;
+    this.accepting = true;
+    // Sans captation identifiée, rien ne dit que ce micro continue le précédent : pas de contexte (D37).
+    if (!this.capture) {
+      this.recent = [];
+      this.recentBytes = 0;
+    }
     this.prevEnd = undefined;
     this.turnOpen = true;
     this.voice = new VoiceProfile(this.cfg.srcLang);
@@ -283,7 +355,18 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     // et restent chaudes pendant les pauses du formateur (D20).
     this.warmProviders(true);
     this.warmTimer = setInterval(() => this.warmProviders(false), WARM_EVERY_MS);
-    await this.openStt();
+    try {
+      await this.openStt();
+    } catch (error) {
+      // Le STT refuse ou ne répond pas (plafond de sessions, réseau) : l'audio attend dans le
+      // tampon et l'on réessaie avec recul. Sans cela, le micro restait ouvert sans reconnaissance.
+      this.emit("error", { stage: "stt", error: error as Error });
+      if (this.started) {
+        this.setDegraded("stt-lost", `reconnaissance vocale injoignable — ${(error as Error).message.slice(0, 160)}`);
+        this.scheduleSttRestart();
+      }
+    }
+    if (!this.started) return; // arrêté pendant l'ouverture
     this.tickTimer = setInterval(() => {
       this.handle(this.gate.tick());
       this.checkHeld();
@@ -299,8 +382,13 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     void this.providers.tts.warm?.(force).catch(() => {});
   }
 
-  async stop(): Promise<void> {
+  /**
+   * `drain: false` : fermer le STT sans attendre ce qu'il n'a pas encore rendu. Pour l'arrêt du
+   * serveur : Docker le tue 10 s après SIGTERM, et la salle se déconnecte avant d'entendre la suite.
+   */
+  async stop(opts: { drain?: boolean } = {}): Promise<void> {
     this.started = false;
+    this.accepting = false;
     if (this.tickTimer) clearInterval(this.tickTimer);
     this.tickTimer = undefined;
     if (this.warmTimer) clearInterval(this.warmTimer);
@@ -309,24 +397,60 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     this.restartTimer = undefined;
     const s = this.stt;
     this.stt = undefined;
+    // Micro arrêté : ce qui attendait le STT n'a plus de destinataire.
+    this.pending = [];
+    this.pendingBytes = 0;
+    this.pendingDroppedMs = 0;
+    this.audio.buffered = 0;
+    if (s) await this.closeStt(s, opts.drain ?? true);
     // Ce qui restait de la dernière phrase part ; le prochain démarrage du micro repart de
     // zéro, sans hériter des mots (ni de leurs instants) de cette prise.
     this.handle(this.gate.onUtteranceEnd());
     this.releaseHeld();
-    await s?.close();
     this.emit("mic", { on: false });
     this.emitStatus();
   }
 
+  /**
+   * Ferme le flux du formateur qui s'arrête, après l'avoir laissé rendre ce qu'il a reçu
+   * (`DRAIN_*`) : ses tours arrivent pendant l'attente et partent comme les autres.
+   */
+  private async closeStt(s: SttStream, drain: boolean): Promise<void> {
+    if (!drain) {
+      await s.close();
+      return;
+    }
+    const behindMs = Math.max(0, this.clock.audioMs - this.heardThrough());
+    const waitMs = Math.min(DRAIN_MAX_MS, behindMs + DRAIN_MARGIN_MS);
+    const t0 = Date.now();
+    this.draining = s;
+    const complete = await s.close(waitMs).catch(() => false);
+    if (this.draining === s) this.draining = undefined;
+    this.metrics.event("stt.drain", { behindMs: Math.round(behindMs), waitMs: Math.round(waitMs), ms: Date.now() - t0, complete: complete === true });
+  }
+
+  /** Les tours de ce flux comptent : c'est le flux en cours, ou celui qui rend son retard. */
+  private hears(stream: SttStream): boolean {
+    return stream === this.stt || stream === this.draining;
+  }
+
   private restartTimer?: NodeJS.Timeout;
   private restartAttempts = 0;
+
+  /** Ouverture de la session STT en cours, pour la relever avant la limite de 3 h. */
+  private sttOpenedAt = 0;
+  private rotating = false;
+  /** Sessions tombées (erreur ou fermeture) : une relève refusée ne rend pas la main à l'une d'elles. */
+  private lost = new WeakSet<SttStream>();
 
   private async openStt(): Promise<void> {
     const stream = await this.providers.stt.start(
       { lang: this.cfg.srcLang, sampleRate: this.cfg.sampleRate },
       {
         onPartial: (p) => {
-          if (this.stt !== stream) return; // session remplacée
+          if (!this.hears(stream)) return; // session remplacée
+          for (const w of p.words) if (w.endMs != null && w.endMs > this.heardMs) this.heardMs = w.endMs;
+          this.emit("stt.turn", { stream: this.streams, kind: p.isFinal ? "final" : "partial", words: p.words });
           if (p.isFinal) {
             this.handle(this.gate.onFinal(p.words));
           } else {
@@ -336,7 +460,8 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
           }
         },
         onUtteranceEnd: () => {
-          if (this.stt !== stream) return;
+          if (!this.hears(stream)) return;
+          this.emit("stt.turn", { stream: this.streams, kind: "end", words: [] });
           this.handle(this.gate.onUtteranceEnd());
           // Le STT a clos le tour de lui-même : la parole se recompte à partir d'ici.
           this.pause.cut();
@@ -344,12 +469,14 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
           if (this.pause.silence < TURN_GAP_MS) this.turnOpen = false;
         },
         onDiscard: () => {
-          if (this.stt !== stream) return;
+          if (!this.hears(stream)) return;
+          this.emit("stt.turn", { stream: this.streams, kind: "discard", words: [] });
           this.gate.discard();
           this.emit("src.partial", { text: "" });
         },
         onError: (error) => {
           this.emit("error", { stage: "stt", error });
+          this.lost.add(stream);
           if (this.stt !== stream) return;
           // Session STT perdue : on le dit à la salle, et on rouvre avec un léger recul.
           this.stt = undefined;
@@ -360,15 +487,45 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
         },
       },
     );
-    // Nouveau flux : ses horodatages repartent de zéro avec la première trame qu'il reçoit.
+    // Le micro s'est arrêté pendant l'ouverture : personne pour ce flux, il ne doit pas rester ouvert.
+    if (!this.started) {
+      void stream.close().catch(() => {});
+      return;
+    }
+    // Le nouveau flux reçoit d'abord ce que le flux d'avant avait reçu sans le rendre, précédé de
+    // 3 s de contexte pour la reconnaissance (D37). Ce qui en était déjà parti ne repart pas
+    // (`CommitGate.saidBefore`) ; le reste part, comme s'il venait d'être dit.
+    this.trimRecent();
+    const warm = this.recent;
+    const behindMs = warm.length ? Math.max(0, warm[warm.length - 1].end - this.heardThrough()) : 0;
+    this.gate.newStream(warm.length > 0);
     this.clock.reset();
+    this.heardMs = 0;
+    this.heardThroughMs = 0;
     this.pause.reset();
     this.live.reset();
-    this.gate.newStream();
+    // Un flux qui rendait encore son retard s'efface : ses mots se mêleraient à ceux du nouveau.
+    this.draining = undefined;
     this.stt = stream;
-    this.emit("stt.stream", { stream: ++this.streams });
+    this.sttOpenedAt = Date.now();
+    const warmupMs = Math.round((warm.reduce((a, f) => a + f.pcm.byteLength, 0) * 1000) / 2 / this.cfg.sampleRate);
+    this.emit("stt.stream", { stream: ++this.streams, warmupMs });
+    for (const f of warm) {
+      stream.sendAudio(f.pcm);
+      this.clock.push(f.pcm.byteLength, f.at);
+      this.pause.push(f.pcm, this.tuning.speechThresholdDb);
+      this.live.push(f.pcm);
+      // Rejouées, les trames restent à rejouer si ce flux tombe à son tour : datées dans celui-ci.
+      f.end = this.clock.audioMs;
+    }
+    if (warm.length) {
+      // Une fin de tour forcée attend de la parole neuve : le contexte reste dans le même tour qu'elle.
+      this.pause.cut();
+      this.metrics.event("stt.warmup", { ms: warmupMs, behindMs: Math.round(behindMs) });
+    }
     this.restartAttempts = 0;
     if (this.degraded === "stt-lost") this.setDegraded("none", "reconnaissance vocale rétablie");
+    this.flushPending();
   }
 
   private scheduleSttRestart() {
@@ -384,32 +541,203 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     }, delay);
   }
 
-  /** Compteurs de diagnostic : trames reçues du formateur, transmises au STT, dernière réception. */
-  readonly audio = { received: 0, forwarded: 0, bytes: 0, lastAt: 0 };
+  /**
+   * Compteurs de diagnostic : trames reçues du formateur, transmises au STT, dernière réception ;
+   * et, pour les trames numérotées (D37), celles reçues deux fois, celles jamais reçues, celles
+   * en attente que le STT rouvre, et les millisecondes jetées faute de STT au-delà de 15 s.
+   */
+  readonly audio = { received: 0, forwarded: 0, bytes: 0, lastAt: 0, duplicates: 0, missing: 0, buffered: 0, dropped: 0 };
+  /** Captation en cours (identifiant de la page) et dernier numéro de trame reçu. */
+  private capture?: { id: string; lastSeq: number };
+  /**
+   * Un formateur est admis : son audio est attendu, même si le pipeline n'a pas encore démarré.
+   * Après une liaison figée (D35), la page réadmise renvoie son tampon pendant que l'ancienne
+   * prise s'arrête encore (fermeture du STT : 200 ms chez AssemblyAI) ; ces trames étaient
+   * jetées, et comptées comme reçues, donc jamais rattrapées.
+   */
+  private accepting = false;
+  /**
+   * Trames reçues pendant que le STT n'est pas ouvert : au démarrage du micro (la page envoie dès
+   * son admission, le flux s'ouvre en ~0,5 s) et pendant une réouverture après panne (1 à 10 s).
+   * Elles partaient à la poubelle (`pushAudio` ignorait tout sans STT) : des mots perdus. Elles
+   * attendent désormais et partent d'un bloc à l'ouverture. Mesuré le 11/11/2026 : AssemblyAI
+   * U3.5 Pro accepte une rafale de 6,5 s d'audio et la transcrit en 2,3 s, sans fermer la session.
+   */
+  private pending: { pcm: Uint8Array; at: number }[] = [];
+  private pendingBytes = 0;
+  /** Ce que l'attente en cours a dû jeter, faute de place (ms). */
+  private pendingDroppedMs = 0;
 
-  pushAudio(pcm: Uint8Array): void {
+  /**
+   * Un formateur vient d'être admis : son audio est attendu dès maintenant. Même captation
+   * (liaison reprise) : rend la dernière trame déjà reçue, pour que la page ne renvoie que la
+   * suite. Captation inconnue (page rouverte, ou serveur redémarré) : les numéros repartent, rien
+   * n'est rendu.
+   */
+  setCapture(id: string | undefined): number | undefined {
+    this.accepting = true;
+    if (id && this.capture?.id === id) return this.capture.lastSeq;
+    // Autre captation : son audio n'a rien à voir avec celui d'avant, pas de contexte à rejouer.
+    this.recent = [];
+    this.recentBytes = 0;
+    this.capture = id ? { id, lastSeq: 0 } : undefined;
+    return undefined;
+  }
+
+  /** Dernière trame reçue de la captation en cours, confirmée à la page par les stats. */
+  get micSeq(): number | null {
+    return this.capture?.lastSeq ?? null;
+  }
+
+  /** Au-delà, l'attente est une panne, pas une réouverture : on garde les plus récentes. */
+  private get maxPendingBytes(): number {
+    return (PENDING_MAX_MS / 1000) * this.cfg.sampleRate * 2;
+  }
+
+  /**
+   * Une trame du micro. `info` (trame numérotée, D37) : une trame déjà reçue est écartée, une
+   * trame qui saute des numéros compte celles qui manquent, et l'instant de captation date la
+   * parole — sans jamais être postérieur à la réception.
+   */
+  pushAudio(pcm: Uint8Array, info?: MicFrameInfo): void {
+    const now = Date.now();
+    this.audio.lastAt = now;
+    // Personne n'attend cet audio (formateur parti) : la trame ne compte pas comme reçue, et la
+    // même trame renvoyée plus tard ne sera pas prise pour un doublon.
+    if (!this.accepting) return;
+    let at = now;
+    if (info && this.capture) {
+      const c = this.capture;
+      if (c.lastSeq && info.seq <= c.lastSeq) {
+        this.audio.duplicates++;
+        return;
+      }
+      if (c.lastSeq && info.seq > c.lastSeq + 1) {
+        const missing = info.seq - c.lastSeq - 1;
+        this.audio.missing += missing;
+        const ms = Math.round((missing * pcm.byteLength * 1000) / 2 / this.cfg.sampleRate);
+        this.metrics.audioGap(ms);
+        this.metrics.event("audio.gap", { frames: missing, ms, seq: info.seq });
+      }
+      c.lastSeq = info.seq;
+      if (Number.isFinite(info.tCapture)) {
+        this.metrics.uplink(Math.max(0, now - info.tCapture));
+        at = Math.min(now, info.tCapture);
+      }
+    }
     this.audio.received++;
     this.audio.bytes += pcm.byteLength;
-    this.audio.lastAt = Date.now();
-    if (this.muted || !this.stt) return;
+    if (this.muted) return;
+    if (!this.stt) {
+      this.pending.push({ pcm, at });
+      this.pendingBytes += pcm.byteLength;
+      let dropped = 0;
+      while (this.pendingBytes > this.maxPendingBytes) {
+        const old = this.pending.shift()!;
+        this.pendingBytes -= old.pcm.byteLength;
+        dropped += old.pcm.byteLength;
+      }
+      // Panne trop longue : le plus ancien ne sera jamais reconnu. Il se compte comme un trou.
+      if (dropped) {
+        const ms = Math.round((dropped * 1000) / 2 / this.cfg.sampleRate);
+        this.audio.dropped += ms;
+        this.pendingDroppedMs += ms;
+        this.metrics.audioGap(ms);
+      }
+      this.audio.buffered = this.pending.length;
+      return;
+    }
+    this.forward(pcm, at);
+  }
+
+  /** Les trames reçues pendant que le STT était fermé partent d'un bloc, dans l'ordre. */
+  private flushPending() {
+    const frames = this.pending;
+    this.pending = [];
+    this.pendingBytes = 0;
+    this.audio.buffered = 0;
+    if (frames.length) {
+      const ms = Math.round((frames.reduce((a, f) => a + f.pcm.byteLength, 0) * 1000) / 2 / this.cfg.sampleRate);
+      this.metrics.event("audio.flush", { frames: frames.length, ms, droppedMs: this.pendingDroppedMs });
+    }
+    this.pendingDroppedMs = 0;
+    for (const f of frames) this.forward(f.pcm, f.at);
+  }
+
+  private forward(pcm: Uint8Array, at: number) {
+    if (!this.stt) return;
     this.audio.forwarded++;
     this.metrics.audio(pcm);
     this.stt.sendAudio(pcm);
     this.live.push(pcm);
     this.emit("stt.audio", { pcm });
-    this.clock.push(pcm.byteLength, this.audio.lastAt);
-    this.endTurnOnPause(pcm);
+    this.clock.push(pcm.byteLength, at);
+    const silentMs = this.pause.push(pcm, this.tuning.speechThresholdDb);
+    this.remember(pcm, at, silentMs >= this.msOf(pcm.byteLength) - 0.01);
+    this.endTurnOnPause(silentMs);
+  }
+
+  private msOf(bytes: number): number {
+    return (bytes * 1000) / 2 / this.cfg.sampleRate;
+  }
+
+  /**
+   * Ce que le flux en cours a reçu et qu'il faudrait rejouer au suivant (D37) : tout ce qui suit
+   * son dernier mot rendu — la parole qu'il n'a pas encore rendue —, plus `WARMUP_MS` de
+   * contexte ; `REPLAY_MAX_MS` au plus. `end` : position dans le flux à la fin de la trame ;
+   * `silent` : la trame entière sous le seuil de parole.
+   */
+  private recent: { pcm: Uint8Array; at: number; end: number; silent: boolean }[] = [];
+  private recentBytes = 0;
+  private remember(pcm: Uint8Array, at: number, silent: boolean) {
+    this.recent.push({ pcm, at, end: this.clock.audioMs, silent });
+    this.recentBytes += pcm.byteLength;
+    this.trimRecent();
+  }
+
+  /** Oublie ce qui précède de plus de `WARMUP_MS` ce que le STT a tout rendu, et ce qui dépasse `REPLAY_MAX_MS`. */
+  private trimRecent() {
+    const keep = (WARMUP_MS / 1000) * this.cfg.sampleRate * 2;
+    const max = (REPLAY_MAX_MS / 1000) * this.cfg.sampleRate * 2;
+    const from = this.heardThrough() - WARMUP_MS;
+    while (this.recent.length > 1) {
+      const rest = this.recentBytes - this.recent[0].pcm.byteLength;
+      if (rest < keep || (rest < max && this.recent[0].end > from)) break;
+      this.recentBytes -= this.recent.shift()!.pcm.byteLength;
+    }
+  }
+
+  /**
+   * Jusqu'où le flux a tout rendu (ms du flux) : son dernier mot rendu, et le silence qui le suit,
+   * qui n'a pas de mots à rendre. Sans ce silence, une session tombée au milieu d'une longue pause
+   * rejouerait toute la pause, et la parole d'après arriverait d'autant en retard.
+   */
+  private heardThrough(): number {
+    let heard = Math.max(this.heardMs, this.heardThroughMs);
+    const r = this.recent;
+    let i = 0;
+    while (i < r.length && r[i].end <= heard) i++;
+    // Le tampon ne remonte plus jusque-là (STT en retard de plus de `REPLAY_MAX_MS`) : rien ne dit
+    // ce qu'il y avait entre les deux.
+    if (i === 0 && r.length && r[0].end - this.msOf(r[0].pcm.byteLength) > heard) return heard;
+    for (; i < r.length && r[i].silent; i++) heard = r[i].end;
+    // Gardé : ce silence quitte le tampon quand il dépasse `WARMUP_MS`, et reste entendu.
+    this.heardThroughMs = heard;
+    return heard;
   }
 
   /**
    * Pendant une pause du formateur, après au moins ~4 mots de parole depuis la dernière coupe,
    * on demande au STT de clore le tour : ces mots partent aussitôt, au lieu d'attendre le délai
-   * de coupe. Une fois par pause.
+   * de coupe. Une fois par pause. `silentMs` : silence en cours à la fin de la trame.
    */
-  private endTurnOnPause(pcm: Uint8Array) {
-    const silentMs = this.pause.push(pcm, this.tuning.speechThresholdDb);
+  private endTurnOnPause(silentMs: number) {
     if (silentMs === 0) {
       this.forcedThisPause = false;
+      return;
+    }
+    if (silentMs >= ROTATE_PAUSE_MS && this.rotationDue(silentMs)) {
+      void this.rotateStt();
       return;
     }
     // Un silence assez long pour que la salle ait tout entendu : la prochaine parole ouvre une
@@ -429,6 +757,55 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     this.gate.holdTimeout(FORCE_HOLD_MS);
     this.stt.forceEndpoint();
     this.metrics.event("endpoint", { speechMs: Math.round(speechMs), words: this.gate.unsentCount, silentMs: Math.round(silentMs), quick });
+  }
+
+  /**
+   * La session approche de la limite, et rien n'attend : ni parole que le STT n'a pas encore rendue
+   * (retard après une coupure), ni mot à figer, ni morceau retenu.
+   */
+  private rotationDue(silentMs: number): boolean {
+    return (
+      !!this.stt &&
+      !this.rotating &&
+      Date.now() - this.sttOpenedAt >= STT_ROTATE_AFTER_MS &&
+      Date.now() >= this.rotateRetryAt &&
+      this.heardMs >= this.clock.audioMs - silentMs - CAUGHT_UP_SLACK_MS &&
+      this.gate.unsentCount === 0 &&
+      !this.held
+    );
+  }
+
+  /** Après une relève refusée, la suivante attend : la session en place sert encore. */
+  private rotateRetryAt = 0;
+
+  /**
+   * Relève : l'audio attend la nouvelle session dans le tampon, l'ancienne se ferme ensuite. Si la
+   * nouvelle est refusée, l'ancienne reprend le tampon : il lui reste dix minutes avant la limite.
+   */
+  private async rotateStt(): Promise<void> {
+    const old = this.stt;
+    if (!old) return;
+    this.rotating = true;
+    this.stt = undefined;
+    this.metrics.event("stt.rotate", { ageMs: Date.now() - this.sttOpenedAt });
+    try {
+      await this.openStt();
+      void old.close().catch(() => {});
+    } catch (error) {
+      this.emit("error", { stage: "stt", error: error as Error });
+      this.rotateRetryAt = Date.now() + ROTATE_RETRY_MS;
+      if (!this.started || this.stt) void old.close().catch(() => {});
+      else if (!this.lost.has(old)) {
+        this.stt = old;
+        this.flushPending();
+      } else {
+        // L'ancienne est tombée pendant la tentative : plus de session du tout, on rouvre avec recul.
+        this.setDegraded("stt-lost", `reconnaissance vocale interrompue — ${(error as Error).message.slice(0, 160)}`);
+        this.scheduleSttRestart();
+      }
+    } finally {
+      this.rotating = false;
+    }
   }
 
   /** Les téléphones auront fini, ou presque, quand le premier morceau sera prêt. */
@@ -600,6 +977,8 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
     const firstSpoken = first != null ? this.clock.spokenAt(first) : undefined;
     const sttLagMs = firstSpoken != null ? seg.tOrigin - firstSpoken : null;
     if (sttLagMs != null) this.metrics.stage("sttLag", sttLagMs);
+    // Révisions du STT depuis le segment précédent : ce que le découpage a dû réaligner (D36).
+    const revised = this.gate.takeRevisions();
     this.metrics.event("commit", {
       sttLagMs,
       seq,
@@ -615,6 +994,9 @@ export class Pipeline extends TypedEmitter<PipelineEvents> {
       reason: seg.reason,
       joined: seg.joined ?? 1,
       heldMs: Math.round(heldMs),
+      sttShifts: revised.shifts,
+      sttShiftedWords: revised.shiftedWords,
+      sttContradicted: revised.contradicted,
       confidence: confidence != null ? Math.round(confidence * 1000) / 1000 : null,
       voice: prosody
         ? {

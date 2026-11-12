@@ -42,6 +42,11 @@ export interface StageState {
 
 /** Une erreur d'étage compte pendant deux minutes. */
 const RECENT_ERROR_MS = 120_000;
+/**
+ * Retard montant (D37) : de la captation d'une trame sur le poste du formateur à sa réception,
+ * médiane de la dernière minute. Au-delà d'une seconde, la salle entend d'autant plus tard.
+ */
+const UPLINK_ALERT_MS = 1000;
 
 function recentError(sig: Signals, stage: Stage) {
   const e = sig.overview?.lastErrors[stage];
@@ -68,7 +73,11 @@ export function stageStates(sig: Signals): StageState[] {
         ? { id: "mic", label: "Microphone", icon: "mic_off", tone: "crit", status: "Muet", metric: `plus de son depuis ${delay(lastFrame)}` }
         : st?.micCapture != null && st.micCapture < CAPTURE_ALERT_BELOW
           ? { id: "mic", label: "Microphone", icon: "mic", tone: "warn", status: "Son perdu", metric: `${Math.round((1 - st.micCapture) * 100)} % perdu par le navigateur` }
-          : { id: "mic", label: "Microphone", icon: "mic", tone: "ok", status: "Connecté", metric: `${(h?.audio.received ?? 0).toLocaleString("fr-FR")} trames` };
+          : (st?.audioGapMs ?? 0) > 0
+            ? { id: "mic", label: "Microphone", icon: "mic", tone: "crit", status: "Son perdu", metric: `${delay(st!.audioGapMs!)} jamais reçues` }
+            : st?.uplinkP50Ms != null && st.uplinkP50Ms > UPLINK_ALERT_MS
+              ? { id: "mic", label: "Microphone", icon: "mic", tone: "warn", status: "En retard", metric: `reçu ${delay(st.uplinkP50Ms)} après la captation` }
+              : { id: "mic", label: "Microphone", icon: "mic", tone: "ok", status: "Connecté", metric: `${(h?.audio.received ?? 0).toLocaleString("fr-FR")} trames` };
 
   const audio: StageState =
     !lecturer || db == null
@@ -172,6 +181,29 @@ export function computeAlerts(sig: Signals): Alert[] {
       severity: "warn",
       title: `Le PC du formateur perd ${lost} % du son du micro`,
       detail: "Perdu dans son navigateur, avant l'envoi : la reconnaissance manque des mots. Onglet formateur en arrière-plan, économie d'énergie ou PC surchargé ?",
+      to: "supervision",
+      stage: "mic",
+    });
+  }
+  // Trames numérotées jamais reçues (D37) : ni en direct, ni renvoyées par la page, qui en garde 30 s.
+  const gap = st?.audioGapMs ?? 0;
+  if (lecturer && gap > 0) {
+    out.push({
+      id: "audio-gap",
+      severity: "crit",
+      title: `${delay(gap)} de son du micro jamais reçues`,
+      detail: "Sur la dernière minute : coupure plus longue que la réserve de la page (30 s) ou que l'attente du serveur (40 s). La reconnaissance n'a pas entendu ces passages.",
+      to: "supervision",
+      stage: "mic",
+    });
+  }
+  const uplink = st?.uplinkP50Ms ?? null;
+  if (lecturer && uplink != null && uplink > UPLINK_ALERT_MS) {
+    out.push({
+      id: "uplink-delay",
+      severity: uplink > 3000 ? "crit" : "warn",
+      title: `La voix du formateur arrive au serveur ${delay(uplink)} après avoir été dite`,
+      detail: "Médiane de la dernière minute. Après une coupure, la page renvoie le son qu'elle a gardé : rien n'est perdu, mais tout arrive en retard. Sans coupure, la connexion du PC du formateur ne suit pas.",
       to: "supervision",
       stage: "mic",
     });

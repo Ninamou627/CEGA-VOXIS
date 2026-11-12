@@ -8,6 +8,7 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { CAPTURE_ALERT_BELOW } from "../../../shared/capture";
+import { MicUplink } from "../../../shared/uplink";
 import type { AudioHeader, ClientSettings, FloorState, Lang, ServerEvent, StatsPayload } from "../../../shared/protocol";
 import { desktop } from "../lib/desktop";
 import { listMics, listOutputs, startMic, type MicHandle } from "../lib/mic";
@@ -91,6 +92,12 @@ export function App() {
   const gainRef = useRef(0);
   const stopTimer = useRef<number>(undefined);
   const playingTimer = useRef<number>(undefined);
+  /**
+   * Captation en cours (D37) : son identifiant, et la liaison montante qui numérote les trames,
+   * garde les 30 dernières secondes et, à chaque admission, renvoie ce que le serveur n'a pas.
+   */
+  const captureId = useRef(Math.random().toString(36).slice(2, 12));
+  const uplink = useRef<MicUplink>(undefined);
 
   useEffect(() => {
     questionsRef.current = questions;
@@ -147,7 +154,7 @@ export function App() {
         h.push(lvl);
         if (h.length > WAVE_BARS) h.splice(0, h.length - WAVE_BARS);
         setHistory([...h]);
-        if (frame.byteLength) sock.current?.sendBinary(frame);
+        if (frame.byteLength) uplink.current?.push(new Uint8Array(frame));
       },
       {
         deviceId: id || undefined,
@@ -197,11 +204,32 @@ export function App() {
       // Dans le geste de démarrage : c'est le seul moment où un navigateur accepte de demander.
       void askToNotify();
 
+      // Nouvelle captation, avant le micro : ce qui se dit pendant la connexion part à l'admission.
+      captureId.current = Math.random().toString(36).slice(2, 12);
+      uplink.current = new MicUplink(
+        (f) => sock.current?.sendBinary(f),
+        () => Date.now() + clockOffset.current,
+      );
       await openMic(deviceId);
 
       const s = new SalleSocket(
-        { t: "join", role: "lecturer", code: code || undefined, sampleRate: mic.current!.sampleRate, ua: navigator.userAgent.slice(0, 200) },
-        { onState: setConn, onEvent: handleEvent, onAudio: handleAudio },
+        {
+          t: "join",
+          role: "lecturer",
+          code: code || undefined,
+          sampleRate: mic.current!.sampleRate,
+          capture: captureId.current,
+          ua: navigator.userAgent.slice(0, 200),
+        },
+        {
+          onState: (st) => {
+            // Socket tombé ou rouvert : les trames attendent la prochaine admission (D37).
+            uplink.current?.detach();
+            setConn(st);
+          },
+          onEvent: handleEvent,
+          onAudio: handleAudio,
+        },
       );
       sock.current = s;
       s.connect();
@@ -218,6 +246,7 @@ export function App() {
     mic.current = undefined;
     sock.current?.close();
     sock.current = undefined;
+    uplink.current = undefined;
     player.current?.destroy();
     player.current = undefined;
     clearTimeout(playingTimer.current);
@@ -271,6 +300,8 @@ export function App() {
         setFloor(e.floor);
         applySettings(e.settings);
         setDegraded(e.pipeline.degraded === "none" ? undefined : e.pipeline.degraded);
+        // Admis : ce que le serveur n'a pas de cette captation repart, puis le direct (D37).
+        uplink.current?.admit(e.resumeSeq);
         break;
       case "src.partial":
         setPartial(e.text);
@@ -294,6 +325,7 @@ export function App() {
         break;
       case "stats":
         setStats(e.stats);
+        uplink.current?.confirm(e.stats.micSeq);
         break;
       case "settings":
         applySettings(e.settings);

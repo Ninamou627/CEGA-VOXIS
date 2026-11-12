@@ -51,7 +51,11 @@ export interface SttStream {
    * sature, ils s'accumulent ici : c'est le signe que le retard vient du réseau local.
    */
   backlogBytes?(): number;
-  close(): Promise<void>;
+  /**
+   * Ferme la session. `drainMs` : attendre d'abord, au plus ce délai, que le fournisseur ait rendu
+   * ce qu'il a reçu sans l'avoir encore transcrit (D37) ; rend `true` s'il a confirmé avoir tout rendu.
+   */
+  close(drainMs?: number): Promise<boolean | void>;
 }
 
 export interface SttProvider {

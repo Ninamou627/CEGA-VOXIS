@@ -1087,6 +1087,198 @@ de sonde. Quand son ancienne liaison s'est fermée d'elle-même, il est entré 3
 - Le lecteur à deux `<audio>` (ElementPlayer) n'a toujours pas de garde si `ended` ne vient
   jamais.
 
+## D36 — Les mots figés se retrouvent par alignement, plus par leur rang
+
+Première correction de l'audit du 10/11/2026 (`docs/AUDIT-2026-11.md`, défaut F-01).
+
+**Constat.** Le découpage repérait les mots déjà figés par leur rang dans le tour. Or le STT renvoie
+le tour entier à chaque message et le révise. Reproduit sur `CommitGate`, hors serveur :
+
+| Révision du STT | Avant | Après |
+|---|---|---|
+| un mot retiré en amont (« the ») | « …pipeline friday morning. » : « on » perdu | « …pipeline on friday morning. » |
+| un mot inséré en amont (« brand ») | « …new pipeline pipeline on… » : mot doublé | « …new pipeline on… » |
+| texte définitif plus court (« twenty five » → « 25 ») | « …dollars per » : « user. » perdu, plus de point final | « …dollars per user. » |
+
+**Décision.** Les mots figés sont alignés sur le début de chaque hypothèse (distance d'édition,
+`alignedEnd` dans `pipeline/commit.ts`) et l'on reprend après le dernier. Sans révision, le
+comportement est inchangé. Entre deux alignements de même coût : celui où le dernier mot figé se
+retrouve tel quel, puis le plus proche, puis le plus court — mieux vaut redire un mot qu'en perdre un.
+
+**De quoi mesurer en séance.** Jusqu'ici, rien ne gardait ce que le STT envoie : impossible de dire
+si un mot manquant n'avait jamais été reconnu ou s'était perdu au découpage.
+- Avec `RECORD_DIR`, l'enregistreur écrit `stt.jsonl` : hypothèses, textes définitifs, fins de tour,
+  tours écartés.
+- `npm run gate -- <séance>` rejoue le découpage dessus, hors ligne, et compte les mots perdus,
+  doublés, ajoutés après coup, déjà dits au tour précédent, figés puis contredits.
+- Le journal porte, à chaque segment, `sttShifts`, `sttShiftedWords` et `sttContradicted`.
+
+**Vérifié.** 205 tests sur 205 (10 nouveaux). Sur une séance de synthèse de 7 tours, le contrôle
+trouve 2 mots perdus et 1 doublé avec l'ancien découpage (commit 6727546), aucun avec le nouveau.
+
+**Limites.**
+- La fréquence de ces révisions en séance réelle n'est pas mesurée : il faut une séance enregistrée
+  depuis cette version. Indice : 18 tours sur 46 de l'essai 6 s'étaient clos sans ponctuation finale.
+- Un mot que le STT ajoute en amont de mots déjà figés n'est toujours pas dit (« brand » ci-dessus),
+  et un mot figé puis corrigé reste dit dans sa première forme : ce qui est figé ne se réécrit pas,
+  même s'il n'est pas encore parti. `npm run gate` compte ces cas ; les rendre révisables tant
+  qu'ils sont en tampon est la suite possible, à décider sur ces chiffres.
+
+## D37 — Aucun son perdu entre le micro et la reconnaissance
+
+Deuxième correction de l'audit du 10/11/2026 (étape 1.2, défauts F-02 et F-07).
+
+**Constat.**
+- La page du formateur envoyait du PCM brut, sans numéro, et ne gardait rien. Pendant une coupure,
+  tout ce qui se disait était perdu : la coupure, plus les ~6 s qu'il faut pour la repérer (D35).
+- Le serveur jetait toute trame arrivée sans session STT ouverte : au démarrage du micro (~0,5 s),
+  et pendant une réouverture après panne (1 à 10 s).
+- Une session refusée par AssemblyAI passait pour ouverte et avalait l'audio.
+- La session s'arrêtait au bout de 3 h (3008), au milieu d'une phrase.
+
+**Décision.**
+- *Page* (`shared/uplink.ts`, `shared/framing.ts`). Chaque trame de 50 ms part avec son numéro et
+  l'instant de sa captation (en-tête de 16 octets ; du PCM brut reste accepté). Les 30 dernières
+  secondes restent en réserve. Rien ne part avant l'admission. À chaque admission, la page renvoie
+  ce que le serveur n'a pas :
+  - liaison reprise : il dit où il en est (`resumeSeq`) ;
+  - serveur redémarré : elle repart de la dernière trame qu'il a confirmée (`micSeq`, toutes les 2 s).
+- *Serveur* (`pipeline.ts`).
+  - Une trame reçue deux fois est écartée ; une trame jamais reçue est comptée (`audio.gap`).
+  - L'instant de captation date la parole, et mesure le retard montant (`uplinkP50Ms`).
+  - Sans session STT ouverte, l'audio attend, 40 s au plus ; au-delà, le plus ancien cède et se compte.
+  - Un formateur admis est attendu même pendant l'arrêt de la prise précédente.
+- *Ouverture du STT* (`assemblyai.ts`). La session n'est ouverte qu'à `Begin`, attendu 10 s au plus.
+  Refusée, l'audio attend et l'on réessaie avec recul (1 à 10 s). Le motif d'AssemblyAI est
+  journalisé : 1008 couvre aussi bien la clé que le plafond de sessions.
+- *Rejeu à une nouvelle session.* Une nouvelle session de la même captation reçoit d'abord ce que
+  la précédente avait reçu sans le rendre, précédé de 3 s de contexte ; 40 s au plus. Le silence
+  qui suit le dernier mot rendu ne se rejoue pas : une session tombée pendant une longue pause ne
+  retarde pas la parole d'après. Ce qui était déjà parti ne repart pas (`CommitGate.saidBefore`) :
+  - les mots partis que la nouvelle session rend à son tour, même texte, dans le même ordre, sont
+    écartés ; l'écart entre leurs deux datations recale la suite ;
+  - un mot qu'elle ne retrouve pas est jugé à l'horloge de la parole, recalée : bien avant le
+    dernier mot parti (plus de 1,5 s, ou de 400 ms une fois recalée), c'est un mot déjà dit,
+    entendu autrement ; plus près ou après, il part ;
+  - le bout de mot coupé en tête du contexte est écarté.
+- *Relève avant 3 h.* Passé 2 h 50, pendant une pause, quand rien n'attend et que le STT a rendu la
+  parole d'avant la pause. Refusée, la session en place continue ; nouvel essai une minute après.
+- *Arrêt du micro.* Le STT rend son retard avant de fermer : `Terminate`, puis attente de
+  `Termination`. L'attente dure au plus l'audio non encore rendu (le silence après le dernier mot
+  n'y compte pas), plus 5 s, et une minute au maximum. Le micro ne se dit éteint qu'ensuite. L'arrêt du serveur, lui, n'attend pas : Docker
+  le tue 10 s après SIGTERM.
+- *Mesure.* `/api/health` porte les trames doublées, manquantes, en attente et jetées.
+  `stt.jsonl` note le début de chaque flux et ce qui lui a été rejoué ; l'événement `stt.warmup`,
+  ce que la session d'avant n'avait pas rendu (`behindMs`). `npm run gate` compte à part les mots
+  « déjà dits par la session d'avant ».
+- *Tableau de bord.* Le retard montant y est visible : « Voix du formateur » dans les tendances,
+  micro « En retard » et alerte au-delà de 1 s (critique au-delà de 3 s). Le son jamais reçu
+  aussi : micro « Son perdu » et alerte critique. Les deux étaient mesurés sans être montrés.
+
+**Mesuré les 11 et 12/11/2026 sur AssemblyAI U3.5 Pro.**
+- Ouverture. Au plafond de sessions simultanées, AssemblyAI accepte la connexion, envoie « Too many
+  concurrent sessions » à la place de `Begin`, puis ferme (1008) 0,15 s plus tard. `Begin` arrive
+  ~1,1 s après la connexion.
+- Langue. Une session neuve qui commence sur « liters per minute at 1,500 revolutions per minute »
+  y entend du français (confiance 0,81), et le garde-fou écarte la phrase. Précédée des 2 à 3 s
+  d'avant, elle entend de l'anglais.
+- Rafale. 45 s d'audio envoyées d'un coup sont acceptées, sans fermeture 3007. Les ~13 premières
+  secondes sont transcrites aussitôt, le reste au rythme du temps réel ; le retard se résorbe
+  ensuite à ×1,2–1,3.
+- Arrêt. Après `Terminate`, AssemblyAI rend encore tout ce qu'il a reçu : le dernier tour arrive
+  21,5 s après une rafale de 30 s, 0,2 s en temps réel.
+- Session tombée en retard. Coupée du réseau à 30 s, une session n'avait pas rendu ses 3,5
+  dernières secondes. Les 3 s alors rejouées n'en couvraient que la fin, sans amorce en anglais :
+  9 mots perdus (« A10VSO, and it was installed on March 14, 2019. »). D'où le rejeu de tout ce
+  qui n'a pas été rendu.
+- Jonction de deux sessions. Elles ne datent pas au même endroit les mots du contexte rejoué. Le
+  12/11, les trois séances coupées côté STT perdaient « is » à la jonction (et « 45 » une fois).
+  Le diagnostic de la troisième : la session tombée avait rendu « 2019 Its nominal flow » en
+  étalant « Its » et « nominal » vers l'arrière, dans la pause qui les précède (« Its » 1,2 s avant
+  sa place dans la fixture) ; la nouvelle a tassé ses premiers mots vers le début du contexte
+  (« is » 1,1 s trop tôt). D'une session à l'autre, un même mot s'est déplacé de 0,6 à 1,1 s.
+  Comparé au dernier mot parti à ±400 ms près, « is », dit après lui, semblait le précéder de
+  0,7 s : écarté comme déjà dit. D'où le recalage sur les mots rendus par les deux sessions.
+- Banc d'essai. Quatre séances en parallèle depuis le même poste saturent sa connexion montante.
+  Le 12/11, dans la séance sans coupure d'un tel lot, jusqu'à 9 s d'audio attendaient dans notre
+  connexion vers AssemblyAI, et le texte arrivait 8,4 s après la parole (médiane) ; des sessions
+  tombaient (1011 « keepalive ping timeout », 1006). Seule, 30 min plus tard : 0,45 s et 1,1 s.
+  Les séances coupées se mesurent donc une à une. En production, le serveur est hébergé.
+
+Banc d'essai de bout en bout : le vrai serveur (`attachWs`, pipeline, AssemblyAI ; traduction et
+voix simulées), un relais TCP qu'on fige, et un poste formateur qui fait comme la page (vraie
+liaison montante, chien de garde de 6 s). Fixture : 123 s de voix de synthèse, 209 mots ; coupure
+à 30 s. Mots du texte perdus, par rapport à une séance sans coupure :
+
+| Coupure | Première version (réserve 10 s, attente 15 s) | + contexte rejoué, `Begin` attendu | + retard rendu à l'arrêt | + tout le non-rendu rejoué, jonction recalée |
+|---|---|---|---|---|
+| Réseau du formateur, 5 s | 0 | — | 0 | 0 |
+| Réseau du formateur, 20 s | 24 (235 trames jamais reçues) | 10, dont la fin du texte (9) | 2 \* | 0 |
+| STT injoignable, 5 s | 11 (phrase écartée par le garde-fou de langue) | 1 \* | — | 0 |
+| STT injoignable, 20 s | 23 (10,4 s d'audio jetées) | 11, dont la fin du texte (9) | 0 | 0 |
+
+\* Les mots comptés perdus sont là, soudés par le STT au mot suivant : « notevery », « hf2208 ».
+C'est une graphie du STT, pas une perte du chemin audio. Elle est plus fréquente quand une
+seconde session s'est ouverte en cours de route : « hf2208 » dans 16 séances coupées sur 20, contre
+1 sur 4 sans coupure ; « notevery » dans 8 sur 20, jamais sans coupure.
+
+Dernière colonne : le 12/11, séances une à une, après une séance témoin sans coupure (texte 0,8 s
+après la parole, rien en attente vers AssemblyAI). Le « we'll, we'll » en trop de la coupure de 5 s
+côté formateur est une graphie du STT, à 72 s, loin de la coupure et dans la même session ; il était
+déjà là avant le recalage.
+
+Dans les séances des quatre dernières colonnes, aucune trame n'a manqué, n'a été reçue deux fois ou
+n'a été jetée.
+
+Le retard se voit au tableau de bord. Le banc relève toutes les 2 s les médianes de la dernière
+minute qu'il affiche, séances une à une, le 12/11 (deux séries ; la seconde avec la version finale) :
+- sans coupure (trois séances), le texte reconnu arrive 0,8 à 1,1 s après la parole, jamais plus de 3 s ;
+- après 20 s de coupure, jusqu'à 24,5 et 24,3 s (STT), 20,7 et 19,4 s (formateur), au-dessus du
+  seuil d'alerte (3 s) pendant 50 à 53 s. Côté formateur, la voix arrive au serveur jusqu'à 10,7 et
+  10,5 s après sa captation, au-dessus de 1 s pendant 18 s ;
+- après 5 s de coupure du STT, 4,7 s au plus et au-dessus de 3 s pendant 50 s dans la première
+  série ; 1,9 s, jamais au-dessus, dans la seconde. Le rattrapage d'AssemblyAI varie d'une séance à
+  l'autre : la médiane ne montre pas toujours une coupure courte. Une coupure de 5 s côté formateur
+  ne déplace aucune médiane (100 trames en retard sur 1 200 dans la minute) : rien ne s'affiche, et
+  rien ne se perd.
+
+**Vérifié.** 252 tests sur 252 (47 nouveaux) ; types vérifiés sans erreur. Les trois règles de la
+jonction (recalage, mot relu au même endroit, instant seul sans recalage) ont chacune un test qui
+échoue sans elle, dont un sur les horodatages réels du 12/11. De bout en bout, version finale :
+aucun mot perdu dans les quatre coupures (tableau, dernière colonne). À la jonction, « is 45 liters… »
+passe ; après 5 s de coupure du STT, « flow », que la session tombée n'avait pas rendu, aussi —
+l'ancienne règle l'aurait écarté (0,58 s avant le dernier mot parti). Le tableau de bord n'a pas été
+regardé dans un navigateur : les chiffres ci-dessus sont ceux qu'il lit.
+
+**Limites.**
+- Redémarrage du serveur : le nouveau processus ne connaît ni la captation ni son contexte. Jusqu'à
+  2 s sont redites, et la première session démarre sans contexte. Sur la fixture : 7 mots perdus,
+  dont « is 45 » et « 1500 revolutions per », comme avec une session neuve (10 avant ces changements).
+- Le rattrapage d'AssemblyAI est plafonné (ci-dessus). Le réduire est à décider ; rien n'est fait.
+  Les pistes : des sessions en parallèle pour l'arriéré, ou les silences compressés. Plafonner
+  l'arriéré, lui, perdrait du contenu.
+- Une session qui tombe avec plus de 40 s de retard emporte le plus ancien de ce qu'elle n'avait
+  pas rendu. Le rejeu s'ajoute à la rafale de la réouverture, donc au rattrapage plafonné.
+- À la reprise du STT, le rejeu et l'audio en attente passent d'un bloc par l'analyse de la hauteur
+  de la voix (`LiveProsody`, ~5 ms par trame de 100 ms sur le poste de développement) : la boucle
+  d'événements du serveur se fige, pour toutes les salles, 3,4 s dans le pire cas (40 s rejouées et
+  40 s en attente, mesuré hors réseau) ; ~1,5 s estimées pour la coupure de 20 s du banc, ~0,15 s
+  avant D37 (3 s rejouées). À corriger ; la manière est à décider. Cette analyse coûte aussi ~5 %
+  d'un cœur par formateur, en continu.
+- À la reprise du STT, l'audio rejoué attend dans notre connexion vers AssemblyAI (4,4 s et 8,9 s
+  au plus, contre 0 dans la séance témoin) : l'alerte « La voix du formateur part avec … de
+  retard » s'affiche, et son texte accuse la connexion du PC, à tort. Elle date d'avant D37 ; la
+  reformuler pour ce cas est à décider.
+- Après une longue pause, la nouvelle session reçoit les 3 dernières secondes de la pause, pas la
+  parole d'avant : pas d'amorce dans la langue, comme une session neuve (voir « Langue »). Non mesuré.
+- Près du dernier mot parti, un mot que la nouvelle session entend autrement (« for » pour
+  « four. ») est redit : mieux vaut redire un mot que d'en perdre un. Si elle ne retrouve aucun des
+  mots partis et les décale de plus de 1,5 s, le mot qui suit le dernier mot parti peut encore se
+  perdre (mesuré : 1,1 s au plus).
+- Un formateur réadmis pendant une longue attente d'arrêt voit son audio attendre, 40 s au plus.
+- Une séance par scénario, voix de synthèse. D'une séance à l'autre, le STT soude, sépare ou écrit
+  autrement des mots et des nombres : un écart de cet ordre ne se lit pas comme une perte.
+
 ## Ce que six semaines (au lieu de 48 h) remettent sur la table
 
 Dans l'ordre de valeur : tests automatisés dès le départ (fait) ; multilingue réel

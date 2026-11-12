@@ -31,6 +31,7 @@
  * anglais approximatif : l'heuristique ne le reconnaît qu'après quelques mots (mesuré :
  * au 7e). Avec lui, le casque fermé du formateur est la vraie protection (D11, D19).
  */
+import type { ClientRequest, IncomingMessage } from "node:http";
 import WebSocket from "ws";
 import type { Lang } from "../../../../shared/protocol";
 import type { SttEvents, SttProvider, SttStream, Word } from "../types";
@@ -41,6 +42,8 @@ export interface AssemblyAiOptions {
   model?: string;
   /** Résidence des données : eu (RGPD), us, ou edge (au plus près, non garanti). */
   region?: "eu" | "us" | "edge";
+  /** Adresse du flux, à la place de celle de la région (tests). */
+  endpoint?: string;
   mode?: "min_latency" | "balanced" | "max_accuracy";
   /** Description de la séance en langage naturel (≤ ~1500 caractères). */
   prompt?: string;
@@ -63,13 +66,35 @@ export interface AssemblyAiOptions {
 }
 
 const CLOSE_CODES: Record<number, string> = {
-  1008: "clé API invalide ou manquante",
+  // 1008 ferme aussi bien une clé refusée qu'un compte au plafond de sessions simultanées
+  // (« Unauthorized Connection: Too many concurrent sessions », mesuré le 11/11/2026) : le motif
+  // donné par AssemblyAI dit lequel.
+  1008: "session refusée (clé API, ou plafond de sessions simultanées)",
   3005: "session annulée côté serveur",
   3006: "message ou paramètre invalide (un réglage non accepté par ce modèle ?)",
   3007: "trame audio hors 50–1000 ms, ou envoyée plus vite que le temps réel",
   3008: "session expirée (limite de 3 h)",
   3009: "trop de sessions simultanées",
 };
+
+/** Ce que veut dire un code de fermeture, avec le motif tel qu'AssemblyAI le donne. */
+export function describeClose(code: number, reason: Buffer | string): string {
+  const said = reason.toString().trim().slice(0, 160);
+  const known = CLOSE_CODES[code];
+  if (!known) return said || "sans motif";
+  return said ? `${known} : ${said}` : known;
+}
+
+/**
+ * La session n'est ouverte qu'à son message `Begin`, pas à l'ouverture du socket. Mesuré le
+ * 11/11/2026 : au plafond de sessions simultanées, AssemblyAI accepte la connexion, envoie
+ * « Unauthorized Connection: Too many concurrent sessions » à la place de Begin, puis ferme
+ * (1008) ~0,15 s plus tard. Rendu dès l'ouverture du socket, le flux recevait l'audio qui
+ * attendait la reconnaissance (D37), perdu avec la session ; et chaque tentative « réussie »
+ * remettait le recul à zéro : une tentative toutes les 1,3 s. Begin arrive ~1,1 s après la
+ * connexion (mesuré) ; au-delà de 10 s, la session ne s'ouvrira pas.
+ */
+const BEGIN_TIMEOUT_MS = 10_000;
 
 const LANGUAGE_GATE_CONFIDENCE = 0.6;
 
@@ -132,7 +157,7 @@ export class AssemblyAiStt implements SttProvider {
     this.universal3 = this.model.startsWith("universal-3");
     const region = opts.region ?? "eu";
     this.restBase = region === "eu" ? "https://api.eu.assemblyai.com" : "https://api.assemblyai.com";
-    this.wsBase = region === "edge" ? "wss://streaming.assemblyai.com/v3/ws" : `wss://streaming.${region}.assemblyai.com/v3/ws`;
+    this.wsBase = opts.endpoint ?? (region === "edge" ? "wss://streaming.assemblyai.com/v3/ws" : `wss://streaming.${region}.assemblyai.com/v3/ws`);
   }
 
   get name(): string {
@@ -156,18 +181,51 @@ export class AssemblyAiStt implements SttProvider {
     const ws = new WebSocket(`${this.wsBase}?${params}`, { headers: { Authorization: this.opts.apiKey } });
 
     let closed = false;
+    /** Fermeture qui attend la fin de ce qu'AssemblyAI a encore à rendre (`close(drainMs)`). */
+    let onTermination: (() => void) | undefined;
     /** Tour courant jugé suspect par l'heuristique : ses partiels sont retenus. */
     let suspectTurn: number | null = null;
     let ignoredTurns = 0;
 
+    // Toujours écouté : une erreur sans auditeur ferait tomber le serveur.
+    ws.on("error", () => {});
     await new Promise<void>((resolve, reject) => {
-      ws.once("open", () => resolve());
-      ws.once("error", reject);
-      ws.once("unexpected-response", (_req, res) => {
+      const timer = setTimeout(() => fail(new Error(`AssemblyAI : session non ouverte après ${BEGIN_TIMEOUT_MS / 1000} s`)), BEGIN_TIMEOUT_MS);
+      const cleanup = () => {
+        clearTimeout(timer);
+        ws.off("message", onMessage);
+        ws.off("close", onClose);
+        ws.off("error", onError);
+        ws.off("unexpected-response", onResponse);
+      };
+      const fail = (error: Error) => {
+        cleanup();
+        ws.terminate();
+        reject(error);
+      };
+      const onMessage = (raw: WebSocket.RawData) => {
+        let m: any;
+        try {
+          m = JSON.parse(raw.toString());
+        } catch {
+          return;
+        }
+        if (m.type === "Begin") {
+          cleanup();
+          resolve();
+        } else if (m.error) fail(new Error(`AssemblyAI : ${m.error}`));
+      };
+      const onClose = (code: number, reason: Buffer) => fail(new Error(`AssemblyAI fermé à l'ouverture (${code} — ${describeClose(code, reason)})`));
+      const onError = (err: Error) => fail(err);
+      const onResponse = (_req: ClientRequest, res: IncomingMessage) => {
         let body = "";
         res.on("data", (c) => (body += c));
-        res.on("end", () => reject(new Error(`AssemblyAI ${res.statusCode} : ${body.slice(0, 200)}`)));
-      });
+        res.on("end", () => fail(new Error(`AssemblyAI ${res.statusCode} : ${body.slice(0, 200)}`)));
+      };
+      ws.on("message", onMessage);
+      ws.on("close", onClose);
+      ws.on("error", onError);
+      ws.on("unexpected-response", onResponse);
     });
 
     const toWords = (m: any): Word[] =>
@@ -192,8 +250,10 @@ export class AssemblyAiStt implements SttProvider {
         return;
       }
       if (m.type !== "Turn") {
-        if (m.type === "Termination") closed = true;
-        else if (m.error) ev.onError(new Error(`AssemblyAI : ${m.error}`));
+        if (m.type === "Termination") {
+          closed = true;
+          onTermination?.();
+        } else if (m.error) ev.onError(new Error(`AssemblyAI : ${m.error}`));
         return;
       }
 
@@ -233,7 +293,7 @@ export class AssemblyAiStt implements SttProvider {
     });
     ws.on("error", (err) => ev.onError(err));
     ws.on("close", (code, reason) => {
-      if (!closed) ev.onError(new Error(`AssemblyAI fermé (${code} — ${CLOSE_CODES[code] ?? (reason.toString() || "sans motif")})`));
+      if (!closed) ev.onError(new Error(`AssemblyAI fermé (${code} — ${describeClose(code, reason)})`));
     });
 
     return {
@@ -245,13 +305,40 @@ export class AssemblyAiStt implements SttProvider {
         if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: "ForceEndpoint" }));
       },
       backlogBytes: () => ws.bufferedAmount,
-      close: async () => {
-        closed = true;
+      // Mesuré le 11/11/2026 : après Terminate, AssemblyAI rend encore tout ce qu'il a reçu, au
+      // rythme où il le transcrit (dernier tour 21,5 s après une rafale de 30 s, 0,2 s en temps
+      // réel), puis envoie Termination et ferme (1000). Sans `drainMs`, ce reste est perdu.
+      close: async (drainMs = 0) => {
         if (ignoredTurns) console.info(`[assemblyai] ${ignoredTurns} tour(s) écarté(s) : autre langue que « ${opts.lang} »`);
-        if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: "Terminate" }));
-        // Laisser partir Terminate avant de fermer le socket.
-        await new Promise((r) => setTimeout(r, 200));
+        if (ws.readyState !== ws.OPEN) {
+          closed = true;
+          ws.close();
+          return false;
+        }
+        ws.send(JSON.stringify({ type: "Terminate" }));
+        if (drainMs <= 0) {
+          closed = true;
+          // Laisser partir Terminate avant de fermer le socket.
+          await new Promise((r) => setTimeout(r, 200));
+          ws.close();
+          return false;
+        }
+        // Une fermeture avant Termination (réseau) se dit encore par onError : ce reste est perdu.
+        const complete = await new Promise<boolean>((resolve) => {
+          const finish = (done: boolean) => {
+            clearTimeout(timer);
+            ws.off("close", onClose);
+            onTermination = undefined;
+            resolve(done);
+          };
+          const onClose = () => finish(false);
+          const timer = setTimeout(() => finish(false), drainMs);
+          onTermination = () => finish(true);
+          ws.on("close", onClose);
+        });
+        closed = true;
         ws.close();
+        return complete;
       },
     };
   }

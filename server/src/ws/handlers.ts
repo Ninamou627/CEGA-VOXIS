@@ -9,7 +9,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { RawData, WebSocket, WebSocketServer } from "ws";
-import { encodeFrame } from "../../../shared/framing";
+import { decodeMicFrame, encodeFrame } from "../../../shared/framing";
 import { ClientEventSchema, PROTOCOL_VERSION, type AudioHeader, type JoinEvent, type Lang, type ServerEvent } from "../../../shared/protocol";
 import { COOKIE_NAME, cookieValue, type Auth } from "../auth";
 import { clientAddress } from "../client-address";
@@ -123,7 +123,7 @@ export function attachWs(wss: WebSocketServer, ctx: WsContext): void {
     const snap = metrics.snapshot();
     room.broadcast({
       t: "stats",
-      stats: { listeners: room.count("listener"), byLang: room.listenersByLang(), ...snap, pipeline: pipeline.status },
+      stats: { listeners: room.count("listener"), byLang: room.listenersByLang(), ...snap, micSeq: pipeline.micSeq, pipeline: pipeline.status },
     });
   }, 2000);
   wss.on("close", () => clearInterval(statsTimer));
@@ -146,7 +146,8 @@ export function attachWs(wss: WebSocketServer, ctx: WsContext): void {
         binaryFrames++;
         if (!me) return;
         if (me.role === "lecturer") {
-          pipeline.pushAudio(toBytes(data));
+          const { pcm, info } = decodeMicFrame(toBytes(data));
+          pipeline.pushAudio(pcm, info);
         } else if (me.role === "listener" && room.floor.state === "question" && room.floor.who === me.id) {
           questionAudio.push(new Uint8Array(toBytes(data))); // copie : le Buffer de ws peut être recyclé
         }
@@ -357,6 +358,8 @@ export function attachWs(wss: WebSocketServer, ctx: WsContext): void {
       log.info({ id, role: evt.role, lang, remote }, "participant connecté");
       metrics.event("join", { id, role: evt.role, lang, ua: evt.ua });
 
+      // Même captation qu'avant la coupure : la page ne renverra que ce qui suit (D37).
+      const resumeSeq = evt.role === "lecturer" ? pipeline.setCapture(evt.capture) : undefined;
       if (evt.role === "lecturer") {
         const sampleRate = evt.sampleRate ?? 16000;
         pipelineStopping
@@ -384,6 +387,7 @@ export function attachWs(wss: WebSocketServer, ctx: WsContext): void {
         floor: room.floor,
         pipeline: pipeline.status,
         settings: clientSettings(ctx.settings()),
+        resumeSeq,
       });
     }
 

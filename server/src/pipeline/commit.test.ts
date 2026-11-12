@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CommitGate, DEFAULT_COMMIT } from "./commit";
+import { alignedEnd, CommitGate, DEFAULT_COMMIT } from "./commit";
 
 const W = (s: string) => s.split(" ").filter(Boolean).map((text) => ({ text }));
 
@@ -290,6 +290,117 @@ describe("CommitGate — un mot ne part jamais deux fois (D22)", () => {
   });
 });
 
+describe("CommitGate — contexte rejoué à une nouvelle session (D37)", () => {
+  /**
+   * Premier flux : position p ↔ heure réelle 10 000 + p. `restart(from)` : le flux suivant
+   * commence par l'audio dit à 10 000 + from (le contexte rejoué), position 0.
+   */
+  function replay() {
+    let origin = 10_000;
+    const g = new CommitGate(DEFAULT_COMMIT, () => 30_000, { spokenAt: (ms) => origin + ms });
+    const restart = (from: number, replayed = true) => {
+      g.newStream(replayed);
+      origin = 10_000 + from;
+    };
+    return { g, restart };
+  }
+  const w = (text: string, startMs: number, endMs = startMs + 250) => ({ text, startMs, endMs });
+  const texts = (segs: { text: string }[]) => segs.map((s) => s.text);
+  // Parti du premier flux : milieux à 11 375, 11 675, 11 975 et 12 275.
+  const FIRST = T("one@1500 two@1800 three@2100 four.@2400");
+
+  it("rien de ce qui est parti ne repart ; ce que l'ancienne session n'avait pas encore rendu passe", () => {
+    const { g, restart } = replay();
+    expect(texts(g.onFinal(FIRST))).toEqual(["one two three four."]);
+    restart(500); // le contexte commence à 10 500 : « one » est à 750 dans le nouveau flux
+    const again = [w("on", 0, 150), w("one", 750), w("two", 1050), w("three", 1350), w("four.", 1650), w("five", 1950), w("six.", 2250)];
+    expect(texts(g.onFinal(again))).toEqual(["five six."]);
+  });
+
+  it("près du dernier mot parti, un mot entendu autrement est redit plutôt que perdu", () => {
+    const { g, restart } = replay();
+    g.onFinal(FIRST);
+    restart(500);
+    // « four. » devient « for » : même endroit, autre texte. Dans le doute, il repart.
+    expect(texts(g.onFinal([w("three", 1350), w("for", 1650), w("five.", 1950)]))).toEqual(["for five."]);
+  });
+
+  it("le bout de mot coupé au début du contexte ne part pas, même s'il ne ressemble à rien", () => {
+    const { g, restart } = replay();
+    g.onFinal(FIRST);
+    restart(1900); // le contexte commence au milieu de « four. »
+    expect(texts(g.onFinal([w("our", 0, 200), w("five", 350), w("six.", 650)]))).toEqual(["five six."]);
+  });
+
+  it("une vraie répétition du formateur, juste après le dernier mot parti, passe (« no, no »)", () => {
+    const { g, restart } = replay();
+    g.onFinal(T("no,@1500")); // milieu 11 375
+    restart(500);
+    expect(texts(g.onFinal([w("no,", 750), w("no.", 1050)]))).toEqual(["no."]);
+  });
+
+  it("un tour écarté (autre langue) n'a pas été dit : rendu par la nouvelle session, il part", () => {
+    const { g, restart } = replay();
+    g.onFinal(T("one@1500 two.@1800"));
+    g.onPartial(T("trois@2100 quatre@2400 cinq@2700"));
+    g.onPartial(T("trois@2100 quatre@2400 cinq@2700 six@3000"));
+    g.discard(); // garde-fou de langue : rien de ce tour n'est parti
+    restart(500);
+    expect(texts(g.onFinal([w("two.", 1050), w("three", 1350), w("four", 1650), w("five.", 1950)]))).toEqual(["three four five."]);
+  });
+
+  it("deux sessions datent autrement les mêmes mots : ce qui suit le dernier mot parti passe (banc du 12/11/2026)", () => {
+    // Horodatages réels : la session tombée avait rendu « 2019 ITS nominal flow », étalés vers
+    // l'arrière ; la nouvelle reçoit le contexte depuis la position 25 950 de l'ancienne et tasse
+    // ces mots vers le début : d'une session à l'autre, ils se déplacent de 0,6 à 1,1 s. « is », dit
+    // après « flow », semblait le précéder de 0,7 s : il était perdu.
+    const { g, restart } = replay();
+    g.onFinal([w("2019", 25728, 26429), w("ITS", 26464, 26990), w("nominal", 27025, 28253), w("flow", 28288, 28989)]);
+    restart(25950);
+    const again = [
+      w("ITS", 0, 388), w("nominal", 413, 1318), w("flow", 1343, 1860), w("is", 1885, 2143), w("45", 2168, 2426),
+      w("liters", 2451, 3227), w("per", 3252, 3640), w("minute", 3665, 4441), w("at", 4466, 4724),
+      w("1,500", 4749, 5395), w("revolutions", 5420, 6842), w("per", 6867, 7255), w("minute.", 7280, 8185),
+    ];
+    expect(texts(g.onFinal(again))).toEqual(["is 45 liters per minute at 1,500 revolutions per minute."]);
+  });
+
+  it("au-delà de l'écart toléré, les mots rendus par les deux sessions les recalent", () => {
+    // Plus que mesuré : l'écart grandit de 1,25 à 1,85 s au fil du contexte. Sans recalage, « is »
+    // semblerait précéder de 1,55 s le dernier mot parti.
+    const { g, restart } = replay();
+    g.onFinal([w("the", 1000, 1500), w("nominal", 1600, 2100), w("flow", 2200, 2700), w("rate", 2800, 3300)]);
+    restart(0);
+    const again = [w("the", 175), w("nominal", 475), w("flow", 775), w("rate", 1075), w("is", 1375), w("45.", 1675)];
+    expect(texts(g.onFinal(again))).toEqual(["is 45."]);
+  });
+
+  it("sans mot rendu par les deux sessions, l'instant seul n'écarte que ce qui précède de loin le dernier mot parti", () => {
+    // La nouvelle session date tout 1 s plus tôt et entend autrement chacun des mots partis : loin
+    // avant « four. », ils ne repartent pas ; près de lui, ils sont redits ; la suite passe.
+    const { g, restart } = replay();
+    g.onFinal(FIRST);
+    restart(-500);
+    const again = [w("won", 750), w("too", 1050), w("tree", 1350), w("for", 1650), w("five", 1950), w("six.", 2250)];
+    expect(texts(g.onFinal(again))).toEqual(["tree for five six."]);
+  });
+
+  it("un mot que le tour suivant relit au même endroit ne repart pas, même retrouvé avant (D22)", () => {
+    const { g, restart } = replay();
+    g.onFinal(FIRST);
+    restart(500);
+    expect(texts(g.onFinal([w("one", 750), w("two", 1050), w("three", 1350), w("four.", 1650)]))).toEqual([]);
+    expect(texts(g.onFinal([w("four", 1650), w("five", 1950), w("six.", 2250)]))).toEqual(["five six."]);
+  });
+
+  it("sans contexte rejoué, rien n'est écarté, même daté plus tôt (autre poste, autre horloge)", () => {
+    const { g, restart } = replay();
+    g.onFinal(FIRST);
+    restart(-5000, false);
+    expect(texts(g.onFinal([w("hello", 6000), w("again.", 6300)]))).toEqual(["hello again."]);
+  });
+});
+
 describe("CommitGate — fin de tour demandée", () => {
   it("le délai de coupe attend le texte définitif demandé au STT", () => {
     const { g, advance } = gate({ timeoutMs: 1000, minWords: 3 });
@@ -328,5 +439,88 @@ describe("CommitGate — un mot nouveau n'est jamais pris pour une répétition"
     advance(3000);
     g.onFinal(T("no,@1000"));
     expect(g.onFinal(T("no.@1400")).map((s) => s.text)).toEqual(["no."]);
+  });
+});
+
+describe("CommitGate — le STT révise le nombre de mots (D36)", () => {
+  it("un mot retiré en amont ne fait pas perdre le mot suivant", () => {
+    const { g } = gate();
+    g.onPartial(W("we deploy the new pipeline"));
+    g.onPartial(W("we deploy the new pipeline on")); // « we deploy the new pipeline » figés
+    g.onPartial(W("we deploy new pipeline on friday")); // le STT retire « the »
+    g.onPartial(W("we deploy new pipeline on friday morning"));
+    const segs = g.onFinal(W("we deploy new pipeline on friday morning."));
+    // Repéré par son rang, « on » était perdu : « …pipeline friday morning. »
+    expect(segs.map((s) => s.text)).toEqual(["we deploy the new pipeline on friday morning."]);
+  });
+
+  it("un mot inséré en amont ne fait pas redire un mot déjà figé", () => {
+    const { g } = gate();
+    g.onPartial(W("we deploy the new pipeline"));
+    g.onPartial(W("we deploy the new pipeline on"));
+    g.onPartial(W("we deploy the brand new pipeline on friday")); // le STT ajoute « brand »
+    g.onPartial(W("we deploy the brand new pipeline on friday morning"));
+    const segs = g.onFinal(W("we deploy the brand new pipeline on friday morning."));
+    // Repéré par son rang, « pipeline » partait deux fois. L'ajout, lui, arrive trop tard pour être dit.
+    expect(segs.map((s) => s.text)).toEqual(["we deploy the new pipeline on friday morning."]);
+  });
+
+  it("un texte définitif plus court (« twenty five » → « 25 ») garde le dernier mot et son point", () => {
+    const { g } = gate();
+    g.onPartial(W("it costs twenty five dollars"));
+    g.onPartial(W("it costs twenty five dollars per"));
+    g.onPartial(W("it costs twenty five dollars per user"));
+    const segs = g.onFinal(W("It costs 25 dollars per user."));
+    // Repéré par son rang, « user. » était perdu, et le segment partait sans ponctuation finale.
+    expect(segs.map((s) => [s.text, s.reason])).toEqual([["it costs twenty five dollars per user.", "punctuation"]]);
+  });
+
+  it("un mot ajouté juste avant le dernier mot figé ne le fait pas redire", () => {
+    const { g } = gate();
+    g.onPartial(W("the cat sat"));
+    g.onPartial(W("the cat sat down")); // « the cat sat » figés
+    g.onPartial(W("the cat really sat down now"));
+    g.onPartial(W("the cat really sat down now then"));
+    expect(g.pendingText).toBe("the cat sat down now");
+  });
+
+  it("une hypothèse qui raccourcit puis revient ne redit rien", () => {
+    const { g } = gate();
+    g.onPartial(W("a b c d"));
+    g.onPartial(W("a b c d e")); // « a b c d » figés
+    g.onPartial(W("a b")); // le STT retire la queue un instant
+    g.onPartial(W("a b c d e f"));
+    g.onPartial(W("a b c d e f g"));
+    expect(g.pendingText).toBe("a b c d e f");
+    expect(g.takeRevisions().shifts).toBe(0); // rien n'était à couper pendant le retrait
+  });
+
+  it("une vraie répétition reste, même après un mot figé identique", () => {
+    const { g } = gate();
+    g.onPartial(W("no way"));
+    g.onPartial(W("no way no")); // « no way » figés
+    g.onPartial(W("no way no way out"));
+    g.onPartial(W("no way no way out now"));
+    expect(g.pendingText).toBe("no way no way out");
+  });
+
+  it("compte les décalages et les mots figés que le texte définitif contredit", () => {
+    const { g } = gate();
+    g.onPartial(W("we deploy the new pipeline"));
+    g.onPartial(W("we deploy the new pipeline on"));
+    g.onPartial(W("we deploy new pipeline on friday"));
+    g.onPartial(W("we deploy new pipeline on friday morning"));
+    g.onFinal(W("we deploy new pipeline on friday morning."));
+    expect(g.takeRevisions()).toEqual({ shifts: 1, shiftedWords: 1, contradicted: 1 });
+    expect(g.takeRevisions()).toEqual({ shifts: 0, shiftedWords: 0, contradicted: 0 }); // relevé remis à zéro
+  });
+
+  it("sans révision, rien n'est compté et la reprise est le nombre de mots figés", () => {
+    const { g } = gate();
+    g.onPartial(W("today we are going"));
+    g.onPartial(W("today we are going home"));
+    g.onFinal(W("Today we are going home now."));
+    expect(g.takeRevisions()).toEqual({ shifts: 0, shiftedWords: 0, contradicted: 0 });
+    expect(alignedEnd(["today", "we"], ["today", "we", "are"])).toEqual({ end: 2, cost: 0 });
   });
 });

@@ -88,6 +88,18 @@ export interface StatsPayload {
    * null sans relevé récent. Sous 0,95, la reconnaissance manque des mots.
    */
   micCapture: number | null;
+  /**
+   * Retard montant : de la captation d'une trame sur le poste du formateur à sa réception par le
+   * serveur, médiane sur 60 s (ms) ; null sans trame datée (D37). Son du micro manquant à
+   * l'arrivée sur la même fenêtre (ms) : trames jamais reçues, ni en direct ni renvoyées.
+   */
+  uplinkP50Ms?: number | null;
+  audioGapMs?: number;
+  /**
+   * Dernière trame du micro reçue de la captation en cours ; null sans captation numérotée (D37).
+   * La page s'en sert après un redémarrage du serveur, qui ne connaît plus sa captation.
+   */
+  micSeq?: number | null;
   pipeline: PipelineStatus;
   uptimeS: number;
 }
@@ -126,6 +138,11 @@ export type ServerEvent =
       floor: FloorState;
       pipeline: PipelineStatus;
       settings: ClientSettings;
+      /**
+       * Formateur : dernière trame que le serveur a déjà de cette captation (D37). Absent quand il
+       * ne la connaît pas : première admission, ou serveur redémarré depuis.
+       */
+      resumeSeq?: number;
     }
   /** Un administrateur a enregistré des réglages : les clients s'y accordent tout de suite. */
   | { t: "settings"; settings: ClientSettings }
@@ -212,6 +229,12 @@ export const ClientEventSchema = z.discriminatedUnion("t", [
     ua: z.string().max(300).optional(),
     /** Formateur : fréquence d'échantillonnage réelle du micro (PCM 16 bits mono). */
     sampleRate: z.number().int().min(8000).max(48000).optional(),
+    /**
+     * Formateur : identifiant de la captation en cours (tiré au hasard à l'ouverture de la page).
+     * Les numéros de trame repartent de zéro avec une nouvelle captation ; dans la même, une
+     * reconnexion renvoie les dernières trames et le serveur écarte celles qu'il a déjà (D37).
+     */
+    capture: z.string().max(32).optional(),
   }),
   /** Envoyé au démarrage effectif de la lecture d'un segment. Base de la mesure bout-en-bout. */
   z.object({
@@ -243,6 +266,8 @@ export type JoinEvent = Extract<ClientEvent, { t: "join" }>;
 
 /*
  * Binaire client → serveur :
- *   - formateur : PCM 16 bits little-endian mono, à `sampleRate`, par trames de ~100 ms ;
+ *   - formateur : trames de 50 ms de PCM 16 bits little-endian mono, à `sampleRate`, chacune
+ *     précédée de son numéro et de son instant de captation (`encodeMicFrame`, framing.ts) ;
+ *     du PCM brut sans en-tête reste accepté (rejeu, test de charge) ;
  *   - apprenant : fichier audio complet de la question (webm/opus ou mp4), après `ask start`.
  */

@@ -17,10 +17,36 @@ const LOUD = (() => {
 class FakeStt implements SttProvider {
   readonly name = "fake-stt";
   ev?: SttEvents;
+  /** Trames reçues par chaque flux ouvert, dans l'ordre. */
+  streams: Uint8Array[][] = [];
+  /** Durée de la fermeture d'un flux (AssemblyAI : 200 ms, le temps que `Terminate` parte). */
+  closeMs = 0;
+  /** Durée de l'ouverture d'un flux (AssemblyAI : ~0,4 s). */
+  startMs = 0;
+  /** Flux fermés, par numéro d'ouverture. */
+  closed: number[] = [];
+  /** Attente demandée à chaque fermeture (D37), dans l'ordre. */
+  drains: (number | undefined)[] = [];
+  /**
+   * Ce que le fournisseur fait d'une fermeture qui attend son retard : rend ses derniers tours,
+   * puis confirme (`true`) ou non. Sans lui, la fermeture est immédiate (après `closeMs`).
+   */
+  onDrain?: (ev: SttEvents, drainMs: number) => Promise<boolean>;
   constructor(readonly finalWords: boolean) {}
   async start(_o: unknown, ev: SttEvents) {
+    if (this.startMs) await new Promise((resolve) => setTimeout(resolve, this.startMs));
     this.ev = ev;
-    return { sendAudio: () => {}, close: async () => {} };
+    const received: Uint8Array[] = [];
+    const n = this.streams.push(received) - 1;
+    return {
+      sendAudio: (pcm: Uint8Array) => void received.push(pcm),
+      close: (drainMs?: number) => {
+        this.closed.push(n);
+        this.drains.push(drainMs);
+        if (drainMs && this.onDrain) return this.onDrain(ev, drainMs);
+        return new Promise<void>((resolve) => (this.closeMs ? setTimeout(resolve, this.closeMs) : resolve()));
+      },
+    };
   }
   async transcribeOnce() {
     return "";
@@ -138,15 +164,16 @@ describe("Pipeline — latence fin de phrase → voix (D19)", () => {
     await r.pipeline.stop();
   });
 
-  it("une nouvelle session STT repart de zéro sur l'horloge audio", async () => {
+  it("une nouvelle session STT repart de zéro sur l'horloge audio, contexte rejoué compris", async () => {
     const r = room();
     await r.pipeline.start();
     await r.speak(10);
     r.stt.ev!.onError(new Error("coupure"));
     await vi.advanceTimersByTimeAsync(1000); // reconnexion après 1 s
     await r.speak(5); // nouvelle session : ses horodatages repartent de zéro
-    r.stt.ev!.onPartial({ words: [{ text: "again.", startMs: 100, endMs: 300, isFinal: true }], isFinal: false });
-    // Session rouverte à T0 + 2000 : la position 300 du nouveau flux a été dite à T0 + 2300.
+    r.stt.ev!.onPartial({ words: [{ text: "again.", startMs: 1100, endMs: 1300, isFinal: true }], isFinal: false });
+    // Rouverte à T0 + 2000, elle a d'abord reçu la seconde d'avant (dite de T0 à T0 + 1000, D37) :
+    // sa position 1 300 a été dite à T0 + 2300.
     expect(r.commits.at(-1)!.tEnd).toBe(T0 + 2300);
     await r.pipeline.stop();
   });
@@ -184,6 +211,526 @@ describe("Pipeline — mots définitifs du fournisseur", () => {
     r.stt.ev!.onPartial(hyp("part"));
     await r.speak(45);
     expect(r.commits.map((c) => c.text)).toEqual(["how the pipeline handles part"]);
+    await r.pipeline.stop();
+  });
+});
+
+describe("Pipeline — aucune trame du micro perdue ni doublée (D37)", () => {
+  it("les trames reçues pendant une réouverture du STT partent au nouveau flux, dans l'ordre", async () => {
+    const r = room();
+    await r.pipeline.start();
+    await r.speak(5);
+    expect(r.stt.streams[0]).toHaveLength(5);
+    r.stt.ev!.onError(new Error("coupure"));
+    // 1 s de recul avant la réouverture : dix trames arrivent entre-temps.
+    const frames = Array.from({ length: 10 }, (_, i) => new Uint8Array(3200).fill(i + 1));
+    for (const f of frames) {
+      await vi.advanceTimersByTimeAsync(50);
+      r.pipeline.pushAudio(f);
+    }
+    expect(r.pipeline.audio.buffered).toBe(10);
+    expect(r.stt.streams).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(600); // réouverture
+    expect(r.stt.streams).toHaveLength(2);
+    // D'abord les dernières secondes que l'ancien flux avait reçues (le contexte, D37), puis l'attente.
+    expect(r.stt.streams[1].slice(0, 5)).toEqual(r.stt.streams[0]);
+    expect(r.stt.streams[1].slice(5).map((f) => f[0])).toEqual(frames.map((f) => f[0]));
+    expect(r.pipeline.audio.buffered).toBe(0);
+    await r.pipeline.stop();
+  });
+
+  it("une trame renvoyée après une coupure n'est pas transmise deux fois ; une trame manquante est comptée", async () => {
+    const r = room();
+    r.pipeline.setCapture("page-1");
+    const events = vi.spyOn(r.metrics, "event");
+    await r.pipeline.start();
+    const push = (seq: number) => r.pipeline.pushAudio(LOUD, { seq, tCapture: Date.now() - 40 });
+    push(1);
+    push(2);
+    push(2); // renvoyée à la réadmission
+    push(1);
+    push(5); // 3 et 4 jamais arrivées
+    expect(r.stt.streams[0]).toHaveLength(3);
+    expect(r.pipeline.audio.duplicates).toBe(2);
+    expect(r.pipeline.audio.missing).toBe(2);
+    expect(events).toHaveBeenCalledWith("audio.gap", { frames: 2, ms: 200, seq: 5 });
+    expect(r.metrics.snapshot().audioGapMs).toBe(200);
+    // Nouvelle captation (page rouverte) : les numéros repartent, rien n'est pris pour un doublon.
+    r.pipeline.setCapture("page-2");
+    push(1);
+    expect(r.stt.streams[0]).toHaveLength(4);
+    await r.pipeline.stop();
+  });
+
+  it("date la parole à la captation, jamais après la réception, et mesure le retard montant", async () => {
+    const r = room();
+    r.pipeline.setCapture("page-1");
+    await r.pipeline.start();
+    // Dix trames captées 300 ms avant d'arriver : la liaison montante est lente.
+    for (let i = 1; i <= 10; i++) {
+      await vi.advanceTimersByTimeAsync(100);
+      r.pipeline.pushAudio(LOUD, { seq: i, tCapture: Date.now() - 300 });
+    }
+    r.stt.ev!.onPartial({ words: [{ text: "hello.", startMs: 100, endMs: 1000, isFinal: true }], isFinal: false });
+    // La position 1 000 ms du flux a été captée à T0 + 1 000 − 300, pas reçue à T0 + 1 000.
+    expect(r.commits[0].tEnd).toBe(T0 + 700);
+    expect(r.metrics.snapshot().uplinkP50Ms).toBe(300);
+    await r.pipeline.stop();
+  });
+
+  it("les trames renvoyées à la réadmission, arrivées pendant l'arrêt de l'ancienne prise, vont au nouveau flux", async () => {
+    // Le chemin de `handlers.ts` après une liaison figée (D35) : l'ancienne liaison est coupée,
+    // son arrêt ferme le STT (200 ms chez AssemblyAI), et pendant ce temps la page réadmise
+    // renvoie son tampon de 10 s.
+    const r = room();
+    r.stt.closeMs = 200;
+    r.pipeline.setCapture("page-1");
+    await r.pipeline.start();
+    const frame = (seq: number) => new Uint8Array(3200).fill(seq);
+    for (let seq = 1; seq <= 5; seq++) {
+      await vi.advanceTimersByTimeAsync(100);
+      r.pipeline.pushAudio(frame(seq), { seq, tCapture: Date.now() });
+    }
+    // La liaison gèle : les trames 6 à 12 restent dans la page.
+    await vi.advanceTimersByTimeAsync(700);
+    const stopping = r.pipeline.stop();
+    r.pipeline.setCapture("page-1");
+    const started = stopping.then(() => r.pipeline.start());
+    for (let seq = 1; seq <= 12; seq++) r.pipeline.pushAudio(frame(seq), { seq, tCapture: T0 + seq * 100 });
+    await vi.advanceTimersByTimeAsync(300);
+    await started;
+    expect(r.stt.streams).toHaveLength(2);
+    expect(r.stt.streams[0].map((f) => f[0])).toEqual([1, 2, 3, 4, 5]);
+    // Même captation : le nouveau flux reçoit d'abord 1 à 5 en contexte (D37), puis la suite, sans trou.
+    expect(r.stt.streams[1].map((f) => f[0])).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    expect(r.pipeline.audio.duplicates).toBe(5);
+    expect(r.pipeline.audio.missing).toBe(0);
+    const stopped = r.pipeline.stop();
+    await vi.advanceTimersByTimeAsync(300);
+    await stopped;
+  });
+
+  it("une panne du STT plus longue que l'attente garde les 40 dernières secondes et compte le reste", async () => {
+    const r = room();
+    const events = vi.spyOn(r.metrics, "event");
+    await r.pipeline.start();
+    r.stt.ev!.onError(new Error("coupure"));
+    // La réouverture échoue tant que la panne dure.
+    const start = r.stt.start.bind(r.stt);
+    r.stt.start = async () => {
+      throw new Error("injoignable");
+    };
+    for (let i = 0; i < 450; i++) {
+      await vi.advanceTimersByTimeAsync(100);
+      r.pipeline.pushAudio(new Uint8Array(3200).fill(i % 250));
+    }
+    expect(r.pipeline.audio.buffered).toBe(400);
+    expect(r.pipeline.audio.dropped).toBe(5000);
+    expect(r.metrics.snapshot().audioGapMs).toBe(5000);
+    r.stt.start = start;
+    await vi.advanceTimersByTimeAsync(11_000); // essais à 1, 3, 7, 15, 25, 35, 45 s ; celui de 55 s aboutit
+    expect(r.stt.streams[1]).toHaveLength(400); // les 40 dernières secondes, dans l'ordre
+    expect(r.stt.streams[1][0][0]).toBe(50);
+    expect(events).toHaveBeenCalledWith("audio.flush", { frames: 400, ms: 40_000, droppedMs: 5000 });
+    await r.pipeline.stop();
+  });
+
+  it("dit à la page réadmise où il en est de sa captation, et rien à une captation inconnue", async () => {
+    const r = room();
+    expect(r.pipeline.setCapture("page-1")).toBeUndefined();
+    expect(r.pipeline.micSeq).toBe(0);
+    await r.pipeline.start();
+    for (let seq = 1; seq <= 4; seq++) r.pipeline.pushAudio(LOUD, { seq, tCapture: Date.now() });
+    expect(r.pipeline.micSeq).toBe(4);
+    await r.pipeline.stop();
+    expect(r.pipeline.setCapture("page-1")).toBe(4); // la même page revient : elle renverra la suite
+    expect(r.pipeline.setCapture("page-2")).toBeUndefined(); // autre page : tout est nouveau
+    expect(r.pipeline.setCapture(undefined)).toBeUndefined(); // page sans numéros
+  });
+
+  it("relève la session STT avant 3 h, pendant une pause, sans perdre une trame", async () => {
+    const r = room();
+    const events = vi.spyOn(r.metrics, "event");
+    r.stt.startMs = 300;
+    const start = r.pipeline.start();
+    await vi.advanceTimersByTimeAsync(300);
+    await start;
+    let pushed = 0;
+    const push = async (n: number, pcm: Uint8Array) => {
+      for (let i = 0; i < n; i++) {
+        await vi.advanceTimersByTimeAsync(100);
+        r.pipeline.pushAudio(pcm);
+        pushed++;
+      }
+    };
+    await push(10, LOUD);
+    await push(10, FRAME); // une pause avant 2 h 50 : rien ne se passe
+    expect(r.stt.streams).toHaveLength(1);
+    vi.setSystemTime(Date.now() + 170 * 60_000);
+    await push(10, LOUD);
+    // Une phrase reconnue mais pas encore figée : la pause qui suit ne relève pas la session.
+    r.stt.ev!.onPartial({ words: [{ text: "so", startMs: 100, endMs: 300 }, { text: "the", startMs: 300, endMs: 500 }], isFinal: false });
+    await push(10, FRAME);
+    expect(r.stt.streams).toHaveLength(1);
+    r.stt.ev!.onPartial({ words: [{ text: "so", startMs: 100, endMs: 300 }, { text: "the", startMs: 300, endMs: 500 }], isFinal: true });
+    r.stt.ev!.onUtteranceEnd();
+    await vi.advanceTimersByTimeAsync(10_000); // les morceaux retenus partent
+    await push(4, LOUD);
+    r.stt.ev!.onPartial({ words: [{ text: "right.", startMs: 4000, endMs: 4400 }], isFinal: true });
+    r.stt.ev!.onUtteranceEnd();
+    await push(10, FRAME); // pause, rien n'attend, le STT a tout rendu : relève
+    await push(10, LOUD);
+    expect(events).toHaveBeenCalledWith("stt.rotate", expect.objectContaining({ ageMs: expect.any(Number) }));
+    expect(r.stt.streams).toHaveLength(2);
+    expect(r.stt.closed).toEqual([0]); // l'ancienne fermée une fois la nouvelle ouverte
+    // L'ancienne avait tout rendu : la nouvelle reçoit ses 3 dernières secondes en contexte (D37),
+    // les 30 dernières trames, et rien de plus.
+    expect(events).toHaveBeenCalledWith("stt.warmup", { ms: 3000, behindMs: 0 });
+    expect(r.stt.streams[1].slice(0, 30)).toEqual(r.stt.streams[0].slice(-30));
+    // Les trames reçues pendant l'ouverture de la relève (300 ms) ont attendu : aucune perdue.
+    expect(r.stt.streams[0].length + r.stt.streams[1].length - 30).toBe(pushed);
+    await r.pipeline.stop();
+  });
+
+  it("une relève refusée garde la session en place, qui reçoit ce qui attendait ; nouvel essai une minute après", async () => {
+    const r = room();
+    await r.pipeline.start();
+    let pushed = 0;
+    const push = async (n: number, pcm: Uint8Array) => {
+      for (let i = 0; i < n; i++) {
+        await vi.advanceTimersByTimeAsync(100);
+        r.pipeline.pushAudio(pcm);
+        pushed++;
+      }
+    };
+    const start = r.stt.start.bind(r.stt);
+    let refused = 0;
+    r.stt.start = async () => {
+      refused++;
+      throw new Error("AssemblyAI : Unauthorized Connection: Too many concurrent sessions");
+    };
+    vi.setSystemTime(Date.now() + 170 * 60_000);
+    await push(10, LOUD);
+    await push(10, FRAME); // pause : relève tentée, refusée
+    expect(refused).toBe(1);
+    expect(r.stt.closed).toEqual([]);
+    await push(10, LOUD);
+    await push(10, FRAME); // moins d'une minute après : pas de nouvel essai
+    expect(refused).toBe(1);
+    expect(r.stt.streams).toHaveLength(1);
+    expect(r.stt.streams[0]).toHaveLength(pushed); // la session en place a tout reçu
+    r.stt.start = start;
+    vi.setSystemTime(Date.now() + 60_000);
+    await push(10, LOUD);
+    r.stt.ev!.onPartial({ words: [{ text: "okay.", startMs: 4200, endMs: 4900 }], isFinal: true });
+    r.stt.ev!.onUtteranceEnd();
+    await push(10, FRAME);
+    expect(r.stt.streams).toHaveLength(2);
+    expect(r.stt.closed).toEqual([0]);
+    await r.pipeline.stop();
+  });
+
+  it("une session rouverte reçoit d'abord ce que l'ancienne n'avait pas rendu, avec 3 s de contexte : rien de déjà dit ne repart, le reste passe", async () => {
+    const r = room();
+    const events = vi.spyOn(r.metrics, "event");
+    await r.pipeline.start();
+    await r.speak(100); // 10 s de parole : la position p du premier flux a été dite à T0 + p
+    const w = (text: string, startMs: number) => ({ text, startMs, endMs: startMs + 250 });
+    r.stt.ev!.onPartial({ words: [w("one", 4850), w("two", 5150), w("three", 5450), w("four.", 5750)], isFinal: true });
+    r.stt.ev!.onUtteranceEnd();
+    expect(r.commits.map((c) => c.text)).toEqual(["one two three four."]);
+    // La session tombe à T0 + 10 000, en retard : elle n'a rien rendu après « four. » (6 000), 4 s.
+    r.stt.ev!.onError(new Error("coupure"));
+    await r.speak(10); // recul de 1 s : la réouverture a lieu pendant ces trames
+    expect(r.stt.streams).toHaveLength(2);
+    // 3 s de contexte avant la fin de « four. », puis tout ce qui suit : les trames 31 à 100 du
+    // premier flux, telles quelles — pas seulement ses 3 dernières secondes.
+    expect(r.stt.streams[1].slice(0, 70)).toEqual(r.stt.streams[0].slice(30));
+    expect(r.stt.streams[1]).toHaveLength(80);
+    expect(events).toHaveBeenCalledWith("stt.warmup", { ms: 7000, behindMs: 4000 });
+    // Le nouveau flux commence à T0 + 3 000 : « one », dit à T0 + 4 850, y est à 1 850. Les mots
+    // déjà partis, puis ce que l'ancienne n'avait pas rendu — « five six. », avant ses 3 dernières
+    // secondes, s'y serait perdu.
+    const again = [w("one", 1850), w("two", 2150), w("three", 2450), w("four.", 2750), w("five", 3050), w("six.", 3350), w("seven.", 4650)];
+    r.stt.ev!.onPartial({ words: again, isFinal: true });
+    r.stt.ev!.onUtteranceEnd();
+    expect(r.commits.map((c) => c.text)).toEqual(["one two three four.", "five six.", "seven."]);
+    await r.pipeline.stop();
+  });
+
+  it("une session tombée après une longue pause ne la rejoue pas : 3 s de la pause, puis la parole pas encore rendue", async () => {
+    const r = room();
+    const events = vi.spyOn(r.metrics, "event");
+    await r.pipeline.start();
+    const push = async (n: number, pcm: Uint8Array) => {
+      for (let i = 0; i < n; i++) {
+        await vi.advanceTimersByTimeAsync(100);
+        r.pipeline.pushAudio(pcm);
+      }
+    };
+    await push(30, LOUD); // 3 s de parole, toutes rendues
+    r.stt.ev!.onPartial({ words: [said("so", 2400), said("we.", 2750)], isFinal: true });
+    r.stt.ev!.onUtteranceEnd();
+    await push(200, FRAME); // 20 s de silence : aucun mot à rendre
+    await push(20, LOUD); // la parole reprend ; la session tombe avant d'en rendre un mot
+    r.stt.ev!.onError(new Error("coupure"));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(r.stt.streams).toHaveLength(2);
+    // Rejouer la pause entière retarderait d'autant la parole d'après.
+    expect(r.stt.streams[1]).toEqual(r.stt.streams[0].slice(-50));
+    expect(events).toHaveBeenCalledWith("stt.warmup", { ms: 5000, behindMs: 2000 });
+    await r.pipeline.stop();
+  });
+
+  it("un STT muet depuis plus de 40 s : la nouvelle session en reçoit les 40 dernières secondes", async () => {
+    const r = room();
+    const events = vi.spyOn(r.metrics, "event");
+    await r.pipeline.start();
+    await r.speak(600); // une minute de parole, aucun mot rendu
+    r.stt.ev!.onError(new Error("coupure"));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(r.stt.streams[1]).toHaveLength(400);
+    expect(events).toHaveBeenCalledWith("stt.warmup", { ms: 40_000, behindMs: 60_000 });
+    await r.pipeline.stop();
+    // ~5 s : chaque trame de parole passe par l'analyse de la hauteur (`LiveProsody`, ~5 ms
+    // mesurées par trame de 100 ms), et 1 000 trames passent ici.
+  }, 20_000);
+
+  it("une session rouverte qui tombe à son tour rejoue à la suivante, datée dans son propre flux", async () => {
+    const r = room();
+    await r.pipeline.start();
+    let seq = 0;
+    const push = async (n: number) => {
+      for (let i = 0; i < n; i++) {
+        await vi.advanceTimersByTimeAsync(100);
+        r.pipeline.pushAudio(new Uint8Array(3200).fill(++seq));
+      }
+    };
+    const range = (a: number, b: number) => Array.from({ length: b - a + 1 }, (_, i) => a + i);
+    await push(60);
+    r.stt.ev!.onPartial({ words: [said("one.", 3750)], isFinal: true }); // rendu jusqu'à 4 000
+    r.stt.ev!.onError(new Error("coupure"));
+    await vi.advanceTimersByTimeAsync(1000);
+    // 3 s avant 4 000 : à partir de la trame 11.
+    expect(r.stt.streams[1].map((f) => f[0])).toEqual(range(11, 60));
+    // Le deuxième flux rend jusqu'à sa position 4 000 (la trame 50), puis tombe.
+    r.stt.ev!.onPartial({ words: [said("two.", 3750)], isFinal: true });
+    r.stt.ev!.onError(new Error("coupure"));
+    await vi.advanceTimersByTimeAsync(1000);
+    // 3 s avant, dans ses positions à lui (pas celles du premier flux) : à partir de la trame 21.
+    expect(r.stt.streams[2].map((f) => f[0])).toEqual(range(21, 60));
+    expect(r.commits.map((c) => c.text)).toEqual(["one.", "two."]);
+    await r.pipeline.stop();
+  });
+
+  it("une autre captation ne reçoit pas le contexte de la précédente", async () => {
+    const r = room();
+    const events = vi.spyOn(r.metrics, "event");
+    r.pipeline.setCapture("page-1");
+    await r.pipeline.start();
+    await r.speak(20);
+    await r.pipeline.stop();
+    r.pipeline.setCapture("page-2");
+    await r.pipeline.start();
+    expect(r.stt.streams[1]).toHaveLength(0);
+    expect(events).not.toHaveBeenCalledWith("stt.warmup", expect.anything());
+    await r.pipeline.stop();
+  });
+
+  it("si le STT refuse d'ouvrir au démarrage du micro, l'audio attend et la reconnaissance reprend avec recul", async () => {
+    const r = room();
+    const degraded: string[] = [];
+    r.pipeline.on("degraded", (d) => degraded.push(d.mode));
+    const start = r.stt.start.bind(r.stt);
+    let refusals = 2;
+    r.stt.start = async (o, ev) => {
+      if (refusals-- > 0) throw new Error("AssemblyAI : Unauthorized Connection: Too many concurrent sessions");
+      return start(o, ev);
+    };
+    await r.pipeline.start(); // ne lève pas : le micro ne reste pas ouvert sans reconnaissance
+    expect(degraded).toEqual(["stt-lost"]);
+    await r.speak(35); // essais à 1 s (refusé) puis à 3 s (accepté)
+    expect(r.stt.streams).toHaveLength(1);
+    expect(r.stt.streams[0]).toHaveLength(35); // rien de perdu
+    expect(degraded).toEqual(["stt-lost", "none"]);
+    await r.pipeline.stop();
+  });
+
+  const said = (text: string, startMs: number) => ({ text, startMs, endMs: startMs + 250 });
+
+  it("à l'arrêt du micro, ce que le STT n'avait pas encore rendu arrive encore et part, puis le micro se dit éteint", async () => {
+    const r = room();
+    const events = vi.spyOn(r.metrics, "event");
+    const order: string[] = [];
+    r.pipeline.on("src.commit", (e) => order.push(e.text));
+    r.pipeline.on("mic", (e) => order.push(e.on ? "micro ouvert" : "micro éteint"));
+    await r.pipeline.start();
+    await r.speak(100); // 10 s de parole
+    r.stt.ev!.onPartial({ words: [said("one", 1000), said("two.", 1300)], isFinal: true });
+    r.stt.ev!.onUtteranceEnd();
+    // Le STT est en retard (rafale après une coupure) : il n'a rendu que jusqu'à 1 550 ms sur 10 000.
+    r.stt.onDrain = async (ev) => {
+      await new Promise((resolve) => setTimeout(resolve, 6000)); // le temps de transcrire le reste
+      ev.onPartial({ words: [said("three", 8000), said("four.", 8300)], isFinal: true });
+      ev.onUtteranceEnd();
+      return true;
+    };
+    const stopped = r.pipeline.stop();
+    await vi.advanceTimersByTimeAsync(6000);
+    await stopped;
+    expect(order).toEqual(["micro ouvert", "one two.", "three four.", "micro éteint"]);
+    // L'attente se borne à ce qui reste à entendre, plus 5 s : 10 000 − 1 550 + 5 000.
+    expect(r.stt.drains).toEqual([13_450]);
+    expect(events).toHaveBeenCalledWith("stt.drain", { behindMs: 8450, waitMs: 13_450, ms: 6000, complete: true });
+  });
+
+  it("l'attente de l'arrêt est bornée, à une minute au plus ; après elle, ce flux ne compte plus", async () => {
+    const r = room();
+    const events = vi.spyOn(r.metrics, "event");
+    await r.pipeline.start();
+    await r.speak(20); // 2 s de parole, rien de rendu
+    r.stt.onDrain = async (_ev, drainMs) => {
+      await new Promise((resolve) => setTimeout(resolve, drainMs)); // le STT ne confirme jamais
+      return false;
+    };
+    const stopped = r.pipeline.stop();
+    await vi.advanceTimersByTimeAsync(7000);
+    await stopped;
+    expect(r.stt.drains).toEqual([7000]);
+    expect(events).toHaveBeenCalledWith("stt.drain", { behindMs: 2000, waitMs: 7000, ms: 7000, complete: false });
+    // Un tour arrivé trop tard : le micro est éteint, il ne part pas.
+    r.stt.ev!.onPartial({ words: [said("ghost.", 100)], isFinal: true });
+    r.stt.ev!.onUtteranceEnd();
+    expect(r.commits).toEqual([]);
+
+    // 70 s sans un mot rendu : l'attente ne dépasse pas une minute.
+    r.stt.onDrain = undefined;
+    await r.pipeline.start();
+    await r.speak(700);
+    await r.pipeline.stop();
+    expect(r.stt.drains).toEqual([7000, 60_000]);
+    // ~3,5 s : l'analyse de la hauteur (`LiveProsody`) de près de 800 trames de parole.
+  }, 20_000);
+
+  it("à l'arrêt du serveur, le STT se ferme sans attendre son retard", async () => {
+    const r = room();
+    const events = vi.spyOn(r.metrics, "event");
+    await r.pipeline.start();
+    await r.speak(20);
+    await r.pipeline.stop({ drain: false });
+    expect(r.stt.drains).toEqual([undefined]);
+    expect(events).not.toHaveBeenCalledWith("stt.drain", expect.anything());
+  });
+
+  it("formateur réadmis pendant l'attente : son audio attend la fin de l'ancien flux, sans s'y mêler", async () => {
+    // Le chemin de `handlers.ts` : le démarrage suit l'arrêt, qui attend le retard du STT.
+    const r = room();
+    r.pipeline.setCapture("page-1");
+    await r.pipeline.start();
+    const frame = (seq: number) => new Uint8Array(3200).fill(seq);
+    for (let seq = 1; seq <= 30; seq++) {
+      await vi.advanceTimersByTimeAsync(100);
+      r.pipeline.pushAudio(frame(seq), { seq, tCapture: Date.now() });
+    }
+    r.stt.onDrain = async (ev) => {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      ev.onPartial({ words: [said("late.", 2500)], isFinal: true });
+      ev.onUtteranceEnd();
+      return true;
+    };
+    const stopping = r.pipeline.stop();
+    r.pipeline.setCapture("page-1");
+    const started = stopping.then(() => r.pipeline.start());
+    for (let seq = 31; seq <= 40; seq++) {
+      await vi.advanceTimersByTimeAsync(100);
+      r.pipeline.pushAudio(frame(seq), { seq, tCapture: Date.now() });
+    }
+    await vi.advanceTimersByTimeAsync(1000);
+    await started;
+    expect(r.commits.map((c) => c.text)).toEqual(["late."]);
+    expect(r.commits[0].tEnd).toBe(T0 + 2750); // daté par l'horloge de son flux, pas du suivant
+    expect(r.stt.streams).toHaveLength(2);
+    // Le contexte d'abord (les 3 dernières secondes : trames 1 à 30), puis ce qui a attendu.
+    expect(r.stt.streams[1].map((f) => f[0])).toEqual(Array.from({ length: 40 }, (_, i) => i + 1));
+    expect(r.pipeline.audio.dropped).toBe(0);
+    r.stt.onDrain = undefined;
+    await r.pipeline.stop();
+  });
+
+  it("la relève attend que le STT ait rendu la parole d'avant la pause : l'ancienne session n'emporte rien", async () => {
+    const r = room();
+    await r.pipeline.start();
+    const push = async (n: number, pcm: Uint8Array) => {
+      for (let i = 0; i < n; i++) {
+        await vi.advanceTimersByTimeAsync(100);
+        r.pipeline.pushAudio(pcm);
+      }
+    };
+    vi.setSystemTime(Date.now() + 170 * 60_000);
+    await push(30, LOUD); // 3 s de parole
+    r.stt.ev!.onPartial({ words: [said("so", 100), said("we.", 300)], isFinal: true });
+    r.stt.ev!.onUtteranceEnd();
+    await push(20, FRAME); // 2 s de pause, mais le STT n'a rendu que la première demi-seconde
+    expect(r.stt.streams).toHaveLength(1);
+    r.stt.ev!.onPartial({ words: [said("start", 1500), said("now.", 2600)], isFinal: true });
+    r.stt.ev!.onUtteranceEnd();
+    await push(2, FRAME); // la même pause, le STT à jour : relève
+    expect(r.stt.streams).toHaveLength(2);
+    expect(r.commits.map((c) => c.text)).toEqual(["so we.", "start now."]);
+    await r.pipeline.stop();
+  });
+
+  it("un flux STT qui s'ouvre après l'arrêt du micro est refermé", async () => {
+    const r = room();
+    r.stt.startMs = 500;
+    const start = r.pipeline.start();
+    const stop = r.pipeline.stop(); // le formateur repart pendant l'ouverture
+    await vi.advanceTimersByTimeAsync(500);
+    await Promise.all([start, stop]);
+    expect(r.stt.streams).toHaveLength(1);
+    expect(r.stt.closed).toEqual([0]);
+  });
+
+  it("sans formateur admis, une trame n'est ni gardée ni comptée comme reçue", async () => {
+    const r = room();
+    r.pipeline.setCapture("page-1");
+    await r.pipeline.start();
+    r.pipeline.pushAudio(LOUD, { seq: 1, tCapture: Date.now() });
+    await r.pipeline.stop();
+    // Une trame en retard de l'ancienne liaison : personne ne l'attend.
+    r.pipeline.pushAudio(LOUD, { seq: 2, tCapture: Date.now() });
+    expect(r.pipeline.audio.buffered).toBe(0);
+    // La même page revient : la trame 2, renvoyée, n'est pas prise pour un doublon.
+    r.pipeline.setCapture("page-1");
+    await r.pipeline.start();
+    r.pipeline.pushAudio(LOUD, { seq: 2, tCapture: Date.now() });
+    expect(r.stt.streams[1]).toHaveLength(2); // la trame 1 en contexte (D37), puis la 2
+    expect(r.pipeline.audio.duplicates).toBe(0);
+    await r.pipeline.stop();
+  });
+});
+
+describe("Pipeline — le STT révise le nombre de mots (D36)", () => {
+  const words = (s: string) => s.split(" ").map((text, i) => ({ text, startMs: i * 300, endMs: i * 300 + 250 }));
+
+  it("un mot retiré en amont ne fait perdre aucun mot à la salle, et la révision est journalisée", async () => {
+    const r = room(false);
+    const turns: string[] = [];
+    r.pipeline.on("stt.turn", (e) => turns.push(`${e.kind}:${e.words.length}`));
+    const events = vi.spyOn(r.metrics, "event");
+    await r.pipeline.start();
+    await r.speak(30);
+    r.stt.ev!.onPartial({ words: words("we deploy the new pipeline"), isFinal: false });
+    r.stt.ev!.onPartial({ words: words("we deploy the new pipeline on"), isFinal: false });
+    r.stt.ev!.onPartial({ words: words("we deploy new pipeline on friday"), isFinal: false }); // « the » retiré
+    r.stt.ev!.onPartial({ words: words("we deploy new pipeline on friday morning."), isFinal: true });
+    r.stt.ev!.onUtteranceEnd();
+
+    expect(r.commits.map((c) => c.text)).toEqual(["we deploy the new pipeline on friday morning."]);
+    // Tout ce que le STT a envoyé part vers l'enregistreur, dans l'ordre.
+    expect(turns).toEqual(["partial:5", "partial:6", "partial:6", "final:7", "end:0"]);
+    const commit = events.mock.calls.find(([type]) => type === "commit")![1];
+    expect(commit).toMatchObject({ sttShifts: 1, sttShiftedWords: 1, sttContradicted: 1 });
     await r.pipeline.stop();
   });
 });

@@ -63,6 +63,7 @@ export function Trends({ history, stats }: { history: Sample[]; stats?: StatsPay
       </div>
       <dl className="flex flex-wrap gap-x-10 gap-y-3 pt-5 border-t border-outline-variant/15">
         {[
+          { k: "Voix du formateur", v: stats?.uplinkP50Ms != null ? delay(stats.uplinkP50Ms) : "—", hint: "captée → reçue par le serveur" },
           { k: "Reconnaissance", v: sg?.endCommitP50 != null ? delay(sg.endCommitP50) : "—", hint: "fin de phrase → segment figé" },
           { k: "Retard du texte", v: sg?.sttLagP50 != null ? delay(sg.sttLagP50) : "—", hint: "mot prononcé → texte reçu" },
           { k: "Traduction", v: sg?.mtP50 != null ? delay(sg.mtP50) : "—", hint: "appel au moteur" },

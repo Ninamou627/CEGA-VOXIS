@@ -27,3 +27,43 @@ export function decodeFrame<T = unknown>(buf: Uint8Array): { header: T; payload:
   const header = JSON.parse(dec.decode(buf.subarray(4, 4 + hl))) as T;
   return { header, payload: buf.subarray(4 + hl) };
 }
+
+/**
+ * Trame du micro du formateur (D37) : chaque trame PCM porte son numéro et l'instant de sa
+ * captation, estimé à l'horloge du serveur (horloge de la page + décalage mesuré au `hello`).
+ *
+ *   [u16 magie « VX »] [u8 version = 1] [u8 réservé] [u32 BE : numéro] [f64 BE : captation, ms] [PCM]
+ *
+ * Le numéro permet au serveur d'écarter une trame renvoyée deux fois et de compter celles qui
+ * manquent ; l'instant de captation date la parole sans supposer la liaison instantanée, et
+ * mesure le retard montant. Une trame sans cet en-tête (ancienne page, rejeu, test de charge)
+ * reste du PCM brut : `decodeMicFrame` la rend telle quelle.
+ */
+const MIC_MAGIC = 0x5658;
+const MIC_VERSION = 1;
+export const MIC_HEADER_BYTES = 16;
+
+export interface MicFrameInfo {
+  seq: number;
+  /** Instant de captation de la fin de la trame, à l'horloge du serveur (ms). */
+  tCapture: number;
+}
+
+export function encodeMicFrame(info: MicFrameInfo, pcm: Uint8Array): Uint8Array {
+  const out = new Uint8Array(MIC_HEADER_BYTES + pcm.byteLength);
+  const dv = new DataView(out.buffer);
+  dv.setUint16(0, MIC_MAGIC, false);
+  dv.setUint8(2, MIC_VERSION);
+  dv.setUint32(4, info.seq >>> 0, false);
+  dv.setFloat64(8, info.tCapture, false);
+  out.set(pcm, MIC_HEADER_BYTES);
+  return out;
+}
+
+/** Trame du micro : son PCM et, si elle en porte un, son en-tête. */
+export function decodeMicFrame(buf: Uint8Array): { pcm: Uint8Array; info?: MicFrameInfo } {
+  if (buf.byteLength < MIC_HEADER_BYTES) return { pcm: buf };
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  if (dv.getUint16(0, false) !== MIC_MAGIC || dv.getUint8(2) !== MIC_VERSION) return { pcm: buf };
+  return { pcm: buf.subarray(MIC_HEADER_BYTES), info: { seq: dv.getUint32(4, false), tCapture: dv.getFloat64(8, false) } };
+}

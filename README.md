@@ -38,9 +38,9 @@ latence — est donc exercé pour de vrai, sans dépenser un centime.
 | Brique | Fichier | État |
 |---|---|---|
 | Contrat d'événements (révisable vs définitif) | `shared/protocol.ts` | ✅ |
-| Trame binaire audio | `shared/framing.ts` | ✅ |
-| Commit verrouillé LocalAgreement-2 + règles de coupe | `server/src/pipeline/commit.ts` | ✅ testé |
-| Orchestration STT → MT → TTS, série par langue, backlog | `server/src/pipeline/pipeline.ts` | ✅ |
+| Trame binaire audio ; micro du formateur en trames numérotées et datées, 30 s gardées et renvoyées à la reconnexion (D37) | `shared/framing.ts`, `shared/uplink.ts` | ✅ testé |
+| Commit verrouillé LocalAgreement-2 + règles de coupe, insensible aux révisions du STT (D36) | `server/src/pipeline/commit.ts` | ✅ testé |
+| Orchestration STT → MT → TTS, série par langue, backlog ; aucun son perdu entre micro et STT : attente pendant une réouverture, parole non rendue rejouée avec son contexte, relève avant 3 h, retard rendu à l'arrêt (D37) | `server/src/pipeline/pipeline.ts` | ✅ testé |
 | Fournisseurs simulés | `server/src/providers/*/mock.ts` | ✅ |
 | Traduction Claude (registre interprète, glossaire, cache) | `server/src/providers/mt/anthropic.ts` | ✅ à valider avec une clé |
 | STT AssemblyAI (primaire) / Deepgram (secours + questions) | `server/src/providers/stt/` | ✅ écrits, à valider avec une clé (`npm run check`) |
@@ -75,6 +75,7 @@ npm run check        # valide les fournisseurs du .env en 30 s (écrit fixtures/
 npm run load -- 50 80   # 50 apprenants simulés pendant 80 s (serveur + fan-out, pas le Wi-Fi)
 npm run report -- server/metrics.jsonl --from 15:58 --to 16:15   # d'où vient le délai d'une séance
 npm run prosody -- data/enregistrements/<séance> [<autre séance>] [--stt] [--judge]   # fidélité de la voix
+npm run gate -- data/enregistrements/<séance>   # aucun mot du STT perdu ni doublé par le découpage ? (hors ligne, D36)
 ```
 
 Test de charge du 16/09/2026, serveur isolé avec simulateurs (audio WAV non compressé,
