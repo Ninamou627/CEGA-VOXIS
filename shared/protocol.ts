@@ -259,7 +259,8 @@ export const ClientEventSchema = z.discriminatedUnion("t", [
    * Captation du micro, toutes les 5 s (D34) : part du temps réel que le navigateur du formateur
    * a réellement livrée au worklet (1 = rien de perdu), et l'état de l'onglet à ce moment-là.
    */
-  z.object({ t: z.literal("lecturer.capture"), ratio: z.number().min(0).max(2), visible: z.boolean(), focused: z.boolean() }),
+  // `mode` : variante de captation (D38, essai F-03) — « 16k », « natif48k brut »… — pour attribuer les pertes après coup.
+  z.object({ t: z.literal("lecturer.capture"), ratio: z.number().min(0).max(2), visible: z.boolean(), focused: z.boolean(), mode: z.string().max(40).optional() }),
 ]);
 export type ClientEvent = z.infer<typeof ClientEventSchema>;
 export type JoinEvent = Extract<ClientEvent, { t: "join" }>;

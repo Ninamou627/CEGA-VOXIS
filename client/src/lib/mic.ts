@@ -6,7 +6,10 @@
 import { CaptureMeter } from "../../../shared/capture";
 
 export interface MicHandle {
+  /** Fréquence du PCM envoyé au serveur : toujours 16 kHz, quel que soit le contexte. */
   sampleRate: number;
+  /** Fréquence du contexte audio : 16 kHz (conversion par le navigateur) ou native (D38). */
+  contextRate: number;
   /** Libellé du périphérique réellement ouvert par le navigateur. */
   label: string;
   deviceId: string;
@@ -48,28 +51,45 @@ export interface MicOptions {
    */
   echoCancellation?: boolean;
   /**
+   * Réduction de bruit et gain automatique du navigateur (D38). Les couper est l'une des
+   * pistes de l'essai F-03 : ces traitements tournent dans la chaîne de capture, là où le
+   * navigateur jetait des paquets entiers du micro certains jours (jusqu'à 26 %, test 7).
+   */
+  processing?: boolean;
+  /**
+   * Contexte audio à la fréquence native du périphérique (48 kHz en général) au lieu de
+   * 16 kHz imposés (D38). À 16 kHz, c'est le navigateur qui rééchantillonne le micro vers
+   * le contexte — l'autre piste de l'essai F-03 ; en natif, le worklet s'en charge et le
+   * PCM envoyé reste à 16 kHz.
+   */
+  nativeRate?: boolean;
+  /**
    * Toutes les 5 s de son : part du temps réel que le navigateur a vraiment livrée (1 = rien
    * de perdu). Calculée à l'arrivée des trames, pas sur une minuterie (D34).
    */
   onCapture?: (ratio: number) => void;
 }
 
+/** Fréquence du PCM envoyé au serveur, quelle que soit celle du contexte. */
+const OUT_RATE = 16000;
+
 export async function startMic(onFrame: (pcm: ArrayBuffer, level: number) => void, opts: MicOptions = {}): Promise<MicHandle> {
+  const processing = opts.processing ?? true;
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: {
       ...(opts.deviceId ? { deviceId: { exact: opts.deviceId } } : {}),
       channelCount: 1,
       echoCancellation: opts.echoCancellation ?? true,
-      noiseSuppression: true,
-      autoGainControl: true,
+      noiseSuppression: processing,
+      autoGainControl: processing,
     },
     video: false,
   });
   const track = stream.getAudioTracks()[0];
   const settings = track?.getSettings() ?? {};
-  const ctx = new AudioContext({ sampleRate: 16000 });
+  const ctx = new AudioContext(opts.nativeRate ? {} : { sampleRate: OUT_RATE });
   // Le paramètre de version évite qu'un navigateur garde en cache une ancienne version du worklet.
-  await ctx.audioWorklet.addModule("/pcm-worklet.js?v=3");
+  await ctx.audioWorklet.addModule("/pcm-worklet.js?v=4");
   const source = ctx.createMediaStreamSource(stream);
   // Gain après le contrôle automatique du navigateur : ce que le serveur reçoit, et ce que mesure le vumètre.
   const gain = ctx.createGain();
@@ -87,7 +107,8 @@ export async function startMic(onFrame: (pcm: ArrayBuffer, level: number) => voi
   // La sourdine n'arrête pas le worklet : la captation se mesure aussi pendant qu'elle est mise.
   const meter = new CaptureMeter();
   node.port.onmessage = (e: MessageEvent<ArrayBuffer>) => {
-    const ratio = meter.frame(performance.now(), (e.data.byteLength / 2 / ctx.sampleRate) * 1000);
+    // Le worklet livre toujours du 16 kHz, même quand le contexte tourne à la fréquence native.
+    const ratio = meter.frame(performance.now(), (e.data.byteLength / 2 / OUT_RATE) * 1000);
     if (ratio != null) opts.onCapture?.(ratio);
     const level = rms(e.data);
     if (!muted) onFrame(e.data, level);
@@ -95,7 +116,8 @@ export async function startMic(onFrame: (pcm: ArrayBuffer, level: number) => voi
   };
 
   return {
-    sampleRate: ctx.sampleRate,
+    sampleRate: OUT_RATE,
+    contextRate: ctx.sampleRate,
     label: track?.label || "micro par défaut",
     deviceId: settings.deviceId ?? opts.deviceId ?? "",
     setGainDb: (db) => {

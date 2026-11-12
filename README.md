@@ -38,7 +38,7 @@ latence — est donc exercé pour de vrai, sans dépenser un centime.
 | Brique | Fichier | État |
 |---|---|---|
 | Contrat d'événements (révisable vs définitif) | `shared/protocol.ts` | ✅ |
-| Trame binaire audio ; micro du formateur en trames numérotées et datées, 30 s gardées et renvoyées à la reconnexion (D37) | `shared/framing.ts`, `shared/uplink.ts` | ✅ testé |
+| Trame binaire audio ; micro du formateur en trames numérotées et datées, 30 s gardées et renvoyées à la reconnexion (D37) ; variantes de captation à l'essai — traitements coupés, conversion vers 16 kHz dans la page (D38) | `shared/framing.ts`, `shared/uplink.ts`, `client/public/pcm-worklet.js` | ✅ testé |
 | Commit verrouillé LocalAgreement-2 + règles de coupe, insensible aux révisions du STT (D36) | `server/src/pipeline/commit.ts` | ✅ testé |
 | Orchestration STT → MT → TTS, série par langue, backlog ; aucun son perdu entre micro et STT : attente pendant une réouverture, parole non rendue rejouée avec son contexte, relève avant 3 h, retard rendu à l'arrêt (D37) | `server/src/pipeline/pipeline.ts` | ✅ testé |
 | Fournisseurs simulés | `server/src/providers/*/mock.ts` | ✅ |

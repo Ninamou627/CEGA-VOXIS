@@ -8,6 +8,14 @@ export interface MicSelectProps {
   onDevice: (id: string) => void;
   aec: boolean;
   onAec: (on: boolean) => void;
+  /** Réduction de bruit et gain automatique du navigateur ; les couper est une piste de l'essai F-03 (D38). */
+  processing: boolean;
+  onProcessing: (on: boolean) => void;
+  /** Conversion vers 16 kHz faite ici (contexte natif) plutôt que par le navigateur — l'autre piste (D38). */
+  nativeRate: boolean;
+  onNativeRate: (on: boolean) => void;
+  /** Fréquence du contexte réellement ouvert, affichée quand le micro tourne. */
+  contextRate?: number;
   /** Sorties audio. Absentes là où le navigateur ne sait pas en choisir (Safari, iOS). */
   outputs?: MediaDeviceInfo[];
   outputId?: string;
@@ -56,27 +64,47 @@ export function MicSelect(p: MicSelectProps) {
         />
       )}
       <div className="grid grid-cols-2 gap-2">
-        <button
-          type="button"
-          onClick={() => p.onAec(!p.aec)}
-          aria-pressed={p.aec}
+        <Toggle
+          label="Annulation d'écho"
+          on={p.aec}
+          value={p.aec ? "Active" : "Inactive"}
           title="Obligatoire si la traduction sort des haut-parleurs de ce PC (test sur une seule machine)"
-          className="bg-surface-container-low hover:bg-surface-container rounded-xl p-2.5 border border-outline-variant/20 flex flex-col gap-1 text-left transition-colors"
-        >
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] text-on-surface-variant font-medium">Annulation d'écho</span>
-            <span className={`w-2 h-2 rounded-full ${p.aec ? "bg-secondary" : "bg-outline"}`}></span>
-          </div>
-          <span className="text-xs font-bold text-on-surface">{p.aec ? "Active" : "Inactive"}</span>
-        </button>
-        <div className="bg-surface-container-low rounded-xl p-2.5 border border-outline-variant/20 flex flex-col gap-1" title="Réduction de bruit et gain automatique du navigateur">
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] text-on-surface-variant font-medium">Bruit + gain auto</span>
-            <span className="w-2 h-2 rounded-full bg-secondary"></span>
-          </div>
-          <span className="text-xs font-bold text-on-surface">Navigateur</span>
-        </div>
+          onClick={() => p.onAec(!p.aec)}
+        />
+        <Toggle
+          label="Bruit + gain auto"
+          on={p.processing}
+          value={p.processing ? "Navigateur" : "Coupés"}
+          title="Réduction de bruit et gain automatique du navigateur. Les couper est un essai de diagnostic : si le son perdu disparaît, c'est eux (D38)."
+          onClick={() => p.onProcessing(!p.processing)}
+        />
       </div>
+      <Toggle
+        label="Conversion vers 16 kHz"
+        on={!p.nativeRate}
+        value={p.nativeRate ? `Dans la page${p.contextRate ? ` (micro à ${Math.round(p.contextRate / 1000)} kHz)` : ""}` : "Par le navigateur"}
+        title="Par le navigateur : chemin habituel, où du son se perdait certains jours. Dans la page : le micro reste à sa fréquence native et la page convertit elle-même (D38)."
+        onClick={() => p.onNativeRate(!p.nativeRate)}
+      />
     </div>
+  );
+}
+
+/** Un réglage à deux états, même habillage que les tuiles du panneau audio. */
+function Toggle(p: { label: string; on: boolean; value: string; title: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={p.onClick}
+      aria-pressed={p.on}
+      title={p.title}
+      className="bg-surface-container-low hover:bg-surface-container rounded-xl p-2.5 border border-outline-variant/20 flex flex-col gap-1 text-left transition-colors"
+    >
+      <div className="flex items-center justify-between">
+        <span className="text-[11px] text-on-surface-variant font-medium">{p.label}</span>
+        <span className={`w-2 h-2 rounded-full ${p.on ? "bg-secondary" : "bg-outline"}`}></span>
+      </div>
+      <span className="text-xs font-bold text-on-surface">{p.value}</span>
+    </button>
   );
 }

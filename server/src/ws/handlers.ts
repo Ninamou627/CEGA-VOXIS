@@ -260,7 +260,7 @@ export function attachWs(wss: WebSocketServer, ctx: WsContext): void {
       }
       if (evt.t === "lecturer.capture") {
         if (me.role !== "lecturer") return sendErr("not_lecturer", "réservé au formateur");
-        metrics.capture(evt.ratio, evt.visible, evt.focused);
+        metrics.capture(evt.ratio, evt.visible, evt.focused, evt.mode);
         return;
       }
     });

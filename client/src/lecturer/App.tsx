@@ -64,11 +64,17 @@ export function App() {
   const [mics, setMics] = useState<MediaDeviceInfo[]>([]);
   const [deviceId, setDeviceId] = useState<string>(localStorage.getItem("salle.mic") ?? "");
   const [aec, setAec] = useState<boolean>(localStorage.getItem("salle.aec") !== "off");
+  /** Réduction de bruit et gain automatique du navigateur ; les couper est une piste de l'essai F-03 (D38). */
+  const [proc, setProc] = useState<boolean>(localStorage.getItem("salle.bruit") !== "off");
+  /** Contexte audio à la fréquence native (le worklet convertit) au lieu de 16 kHz (le navigateur convertit). */
+  const [native, setNative] = useState<boolean>(localStorage.getItem("salle.natif") === "on");
   /** Sortie du retour audio : le casque du formateur, pas les haut-parleurs de la salle. */
   const [outputs, setOutputs] = useState<MediaDeviceInfo[]>([]);
   const [outputId, setOutputId] = useState<string>(localStorage.getItem("salle.sortie") ?? "");
   const [micLabel, setMicLabel] = useState<string>();
   const [sampleRate, setSampleRate] = useState<number>();
+  /** Fréquence du contexte audio réellement ouvert (16 kHz ou native), pour l'affichage. */
+  const [contextRate, setContextRate] = useState<number>();
   const [now, setNow] = useState(Date.now());
   const [stopArmed, setStopArmed] = useState(false);
   /** Réglages de l'administration : gain du micro, seuil de parole, alerte de silence. */
@@ -98,6 +104,8 @@ export function App() {
    */
   const captureId = useRef(Math.random().toString(36).slice(2, 12));
   const uplink = useRef<MicUplink>(undefined);
+  /** Variante de captation en cours (D38), jointe à chaque relevé : elle attribue les pertes après coup. */
+  const captureMode = useRef<string>("");
 
   useEffect(() => {
     questionsRef.current = questions;
@@ -143,7 +151,7 @@ export function App() {
     });
   }, [running]);
 
-  async function openMic(id: string, echoCancellation = aec) {
+  async function openMic(id: string, echoCancellation = aec, processing = proc, nativeRate = native) {
     mic.current?.stop();
     const m = await startMic(
       (frame, lvl) => {
@@ -159,9 +167,18 @@ export function App() {
       {
         deviceId: id || undefined,
         echoCancellation,
+        processing,
+        nativeRate,
         onCapture: (ratio) => {
-          // L'état de l'onglet part avec le relevé : il dira, après coup, ce qui faisait perdre du son.
-          sock.current?.send({ t: "lecturer.capture", ratio, visible: document.visibilityState === "visible", focused: document.hasFocus() });
+          // L'état de l'onglet et la variante de captation (D38) partent avec le relevé : ils
+          // diront, après coup, ce qui faisait perdre du son.
+          sock.current?.send({
+            t: "lecturer.capture",
+            ratio,
+            visible: document.visibilityState === "visible",
+            focused: document.hasFocus(),
+            mode: captureMode.current || undefined,
+          });
           // Deux relevés bas de suite (10 s) avant d'alerter : un à-coup isolé ne compte pas.
           const low = ratio < CAPTURE_ALERT_BELOW;
           setCaptureLoss(low && lastCaptureLow.current ? 1 - ratio : undefined);
@@ -170,10 +187,12 @@ export function App() {
       },
     );
     mic.current = m;
+    captureMode.current = `${nativeRate ? `natif${Math.round(m.contextRate / 1000)}k` : "16k"}${processing ? "" : " brut"}${echoCancellation ? "" : " sans-aec"}`;
     m.setMuted(mutedRef.current);
     m.setGainDb(gainRef.current);
     setMicLabel(m.label);
     setSampleRate(m.sampleRate);
+    setContextRate(m.contextRate);
     setDeviceId(m.deviceId);
     localStorage.setItem("salle.mic", m.deviceId);
     // Après l'autorisation, les libellés des périphériques deviennent visibles.
@@ -290,6 +309,20 @@ export function App() {
     setAec(on);
     localStorage.setItem("salle.aec", on ? "on" : "off");
     if (running) void openMic(deviceId, on).catch((e) => setErr((e as Error).message));
+  }
+
+  /** Essai F-03 (D38) : couper la réduction de bruit et le gain automatique du navigateur. */
+  function changeProcessing(on: boolean) {
+    setProc(on);
+    localStorage.setItem("salle.bruit", on ? "on" : "off");
+    if (running) void openMic(deviceId, aec, on).catch((e) => setErr((e as Error).message));
+  }
+
+  /** Essai F-03 (D38) : contexte audio à la fréquence native, conversion dans le worklet. */
+  function changeNative(on: boolean) {
+    setNative(on);
+    localStorage.setItem("salle.natif", on ? "on" : "off");
+    if (running) void openMic(deviceId, aec, proc, on).catch((e) => setErr((e as Error).message));
   }
 
   function handleEvent(e: ServerEvent) {
@@ -470,6 +503,11 @@ export function App() {
             onDevice={changeDevice}
             aec={aec}
             onAec={changeAec}
+            processing={proc}
+            onProcessing={changeProcessing}
+            nativeRate={native}
+            onNativeRate={changeNative}
+            contextRate={contextRate}
             outputs={outputs}
             outputId={outputId}
             onOutput={changeOutput}
@@ -483,6 +521,11 @@ export function App() {
               onDevice={changeDevice}
               aec={aec}
               onAec={changeAec}
+              processing={proc}
+              onProcessing={changeProcessing}
+              nativeRate={native}
+              onNativeRate={changeNative}
+              contextRate={contextRate}
               outputs={outputs}
               outputId={outputId}
               onOutput={changeOutput}

@@ -1279,6 +1279,50 @@ regardé dans un navigateur : les chiffres ci-dessus sont ceux qu'il lit.
 - Une séance par scénario, voix de synthèse. D'une séance à l'autre, le STT soude, sépare ou écrit
   autrement des mots et des nombres : un écart de cet ordre ne se lit pas comme une perte.
 
+## D38 — Le son que le navigateur perd se traque : variantes de captation à l'essai
+
+Troisième correction de l'audit du 10/11/2026 (étape 1.3, défaut F-03).
+
+**Constat.** Certains jours, le navigateur du poste formateur jette 15 à 27 % du son du micro
+avant même le worklet (test 7 du 9/11 : 74 % reçus, mots manquants ou déformés) ; d'autres jours,
+rien, avec le même code. La cause n'est pas établie. Les pistes de l'audit : le rééchantillonnage
+imposé par le contexte à 16 kHz (le micro tourne à 48 kHz, le navigateur convertit), les
+traitements (réduction de bruit, gain automatique) sous charge, l'envoi depuis le thread principal.
+
+**Décision.** L'essai se prépare : chaque piste devient un réglage du poste formateur, et chaque
+relevé de captation dit sous quelle variante il a été pris. Par défaut, rien ne change.
+- Deux réglages nouveaux, à côté de l'annulation d'écho, gardés d'une séance à l'autre et
+  changeables en cours de séance : « Bruit + gain auto » (navigateur / coupés) et « Conversion
+  vers 16 kHz » (par le navigateur / dans la page).
+- « Dans la page » : le contexte audio s'ouvre à la fréquence native du micro — le navigateur ne
+  rééchantillonne plus rien — et le worklet convertit lui-même (passe-bas à 7,2 kHz, sinc fenêtré,
+  phases précalculées ; position tenue en entiers). Le PCM envoyé reste du 16 kHz : serveur, D34
+  et D37 inchangés.
+- Chaque relevé (toutes les 5 s de son) porte la variante (`mode` de `lecturer.capture`, journal
+  `capture`) : les pertes s'attribueront après coup, jour faste ou néfaste.
+- L'envoi depuis un Worker (troisième piste) n'est pas construit : depuis D37, un thread principal
+  bloqué retarde les trames (numérotées, 30 s de réserve, renvoyées) mais n'en perd plus, et ce
+  retard se lit déjà (`uplinkP50Ms`). À revoir si l'essai montre des pertes que les deux premières
+  variantes n'expliquent pas.
+
+**Vérifié.** Le worklet est chargé tel quel dans les tests (5) : à 16 kHz, conversion directe
+inchangée ; à 48 kHz, durée conservée et ton préservé (RMS à ±2 %), un ton à 11 kHz filtré au lieu
+de se replier (< 5 % résiduel) ; à 44,1 kHz (rapport non entier), pareil ; et deux découpages en
+blocs différents du même signal donnent les mêmes échantillons — ce dernier test a attrapé une
+dérive d'un ulp de la position flottante, corrigée en passant la position en entiers. Coût mesuré :
+3,65 % du temps réel à 48 kHz (poste de développement, bac à sable Node). Types vérifiés.
+
+**Limites.**
+- L'essai lui-même reste à faire, sur le poste et le micro réels : 15 minutes par variante, onglet
+  caché et PC sur batterie compris ; critère de l'audit, captation ≥ 99,5 % sur 30 minutes.
+  L'instrument est prêt ; la cause, elle, n'est toujours pas établie — rien ne prouve encore
+  qu'une variante supprime la perte.
+- Traitements coupés : le niveau d'entrée n'est plus régulé (le gain de l'administration reste),
+  et sans annulation d'écho non plus, un poste unique reboucle micro et haut-parleurs (le
+  garde-fou de langue reste le dernier recours).
+- Les nouveaux réglages n'ont pas été regardés dans un navigateur (pas de micro ici) : types et
+  tests seulement.
+
 ## Ce que six semaines (au lieu de 48 h) remettent sur la table
 
 Dans l'ordre de valeur : tests automatisés dès le départ (fait) ; multilingue réel

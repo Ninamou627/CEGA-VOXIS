@@ -168,10 +168,11 @@ export class Metrics {
   /**
    * Relevé de la page formateur : part du son du micro livrée par son navigateur (D34). Au test 7,
    * 74 % seulement, perdus par morceaux de 10 ms avant même l'envoi ; la reconnaissance manquait des mots.
+   * `mode` : variante de captation de l'essai F-03 (D38), pour attribuer les pertes à une variante.
    */
-  capture(ratio: number, visible: boolean, focused: boolean): void {
+  capture(ratio: number, visible: boolean, focused: boolean, mode?: string): void {
     this.captureAt = { t: Date.now(), ratio };
-    this.event("capture", { ratio: Math.round(ratio * 1000) / 1000, visible, focused });
+    this.event("capture", { ratio: Math.round(ratio * 1000) / 1000, visible, focused, mode: mode ?? null });
   }
 
   snapshot() {
